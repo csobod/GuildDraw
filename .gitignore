@@ -1,0 +1,19 @@
+# Virtual environment
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# PyInstaller output
+build/
+dist/
+
+# Test / tool caches
+.pytest_cache/
+.ruff_cache/
+
+# Editor / OS noise
+.vscode/
+Thumbs.db
+.DS_Store

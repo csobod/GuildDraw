@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M2 15 C5 15 7.5 12 10 10.5"/>
+  <path d="M10 10.5 C12.5 9 15 7 18 5"/>
+  <circle fill="currentColor" stroke="none" cx="10" cy="10.5" r="1.6"/>
+  <line x1="10" y1="8.9" x2="10" y2="4.5"/>
+  <polyline points="8.5,6.5 10,4.5 11.5,6.5"/>
+</svg>
