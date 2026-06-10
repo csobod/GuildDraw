@@ -1,12 +1,83 @@
-from PySide6.QtWidgets import QGraphicsScene, QGraphicsPixmapItem
+from PySide6.QtWidgets import QGraphicsScene, QGraphicsPixmapItem, QGraphicsPathItem
 from PySide6.QtCore import QRectF, Qt, QPointF
-from PySide6.QtGui import QColor, QPen, QPixmap, QPainterPath
+from PySide6.QtGui import QBrush, QColor, QPen, QPixmap, QPainterPath
 
 from ..document import Curve, Layer
 from . import items as _items
 from .mirror import MirrorAxis
 
 _DEFAULT_RECT = QRectF(-150, -100, 300, 200)   # mm
+
+_TEXT_DRAG_THRESHOLD_PX = 4   # screen px of travel before a text drag begins
+
+
+class TextItem(QGraphicsPathItem):
+    """Rendered TextObject — selectable, draggable, double-click to re-edit.
+
+    The glyph path is built relative to the anchor (anchor at item origin)
+    and the item is positioned AT the anchor, so Qt's move machinery maps
+    directly onto anchor_x / anchor_y.
+    """
+
+    def __init__(self, text_obj, on_drag_start=None, on_double_click=None):
+        super().__init__()
+        self.text_obj = text_obj
+        self._on_drag_start   = on_drag_start
+        self._on_double_click = on_double_click
+        self._press_screen    = None
+        self._drag_started    = False
+        self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(self.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(self.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setZValue(10)
+        self.refresh()
+
+    def refresh(self):
+        from dataclasses import replace
+        from ..textpath import text_outline_path
+        from .items import _layer_pen
+        t = self.text_obj
+        # Build glyphs about the origin; the item itself sits at the anchor.
+        self.setPath(text_outline_path(replace(t, anchor_x=0.0, anchor_y=0.0)))
+        pen = _layer_pen(t.layer, t.line_weight)
+        self.setPen(pen)
+        fill = QColor(pen.color())
+        fill.setAlpha(70)
+        self.setBrush(QBrush(fill))
+        self.setPos(t.anchor_x, t.anchor_y)
+
+    def itemChange(self, change, value):
+        if change == self.GraphicsItemChange.ItemPositionHasChanged:
+            self.text_obj.anchor_x = self.pos().x()
+            self.text_obj.anchor_y = self.pos().y()
+        return super().itemChange(change, value)
+
+    def mousePressEvent(self, event):
+        self._press_screen = event.screenPos()
+        self._drag_started = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        # Push the undo snapshot once, just before the first real movement
+        # (a plain click-to-select must not create an undo step).
+        if (not self._drag_started and self._press_screen is not None
+                and (event.screenPos() - self._press_screen).manhattanLength()
+                    > _TEXT_DRAG_THRESHOLD_PX):
+            self._drag_started = True
+            if self._on_drag_start:
+                self._on_drag_start()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._press_screen = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if self._on_double_click:
+            self._on_double_click(self.text_obj)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 # Layers whose curves cast a live mirror ghost
 _GHOST_LAYERS = {Layer.LENS, Layer.HINGE, Layer.OUTLINE, Layer.SCULPT}
@@ -40,10 +111,17 @@ class FrameScene(QGraphicsScene):
         self._curve_items: dict = {}   # id(Curve) -> CurveItem
         self._ghost_items: dict = {}   # id(Curve) -> QGraphicsPathItem
         self._dim_items:   dict = {}   # id(DimLine) -> DimItem
+        self._text_items:  dict = {}   # id(TextObject) -> TextItem
+        self._text_edit_cb = None      # (TextObject) -> None; double-click re-edit
         self._mirror_display = True
         self._dim_drag_cb = None   # () -> None; pushed-undo hook for DimItem drags
         self._layer_visible: dict = {}   # Layer -> bool (default True)
         self._layer_locked:  dict = {}   # Layer -> bool (default False)
+        # Frame fill overlay (display-only; never exported)
+        self._fill_visible: bool = False
+        self._fill_color = QColor("#2a6099")
+        self._fill_opacity: float = 0.50
+        self._fill_item: QGraphicsPathItem | None = None
         # Store the cross extents so set_dark_mode can redraw them correctly
         self._cross_hw: float = 150.0
         self._cross_hh: float = 100.0
@@ -224,6 +302,8 @@ class FrameScene(QGraphicsScene):
         _items.set_dark_mode(dark)
         for item in self._curve_items.values():
             item.refresh()
+        for item in self._text_items.values():
+            item.refresh()
         self._update_ghosts()
         self._clear_cross()
         self._draw_cross(0.0, 0.0, self._cross_hw, self._cross_hh)
@@ -259,12 +339,19 @@ class FrameScene(QGraphicsScene):
             ci = self._curve_items.get(cid)
             if ci is not None and ci.curve.layer == layer:
                 ghost.setVisible(on)
+        for item in self._text_items.values():
+            if item.text_obj.layer == layer:
+                self._apply_layer_state_to_text(item)
+        self.rebuild_fill()
 
     def set_layer_locked(self, layer, locked: bool):
         self._layer_locked[layer] = locked
         for item in self._curve_items.values():
             if item.curve.layer == layer:
                 self._apply_layer_state_to_item(item)
+        for item in self._text_items.values():
+            if item.text_obj.layer == layer:
+                self._apply_layer_state_to_text(item)
 
     def reset_layer_states(self):
         """All layers visible and unlocked (File > New / before a load)."""
@@ -272,6 +359,76 @@ class FrameScene(QGraphicsScene):
         self._layer_locked.clear()
         for item in self._curve_items.values():
             self._apply_layer_state_to_item(item)
+        for item in self._text_items.values():
+            self._apply_layer_state_to_text(item)
+
+    # ------------------------------------------------------------------
+    # Frame fill overlay (display-only — never exported)
+    # ------------------------------------------------------------------
+
+    def set_fill_visible(self, on: bool):
+        self._fill_visible = bool(on)
+        self.rebuild_fill()
+
+    def set_fill_color(self, color):
+        """color: QColor or '#rrggbb' string."""
+        self._fill_color = QColor(color)
+        self.rebuild_fill()
+
+    def set_fill_opacity(self, opacity: float):
+        self._fill_opacity = max(0.0, min(1.0, opacity))
+        self.rebuild_fill()
+
+    def fill_state(self) -> dict:
+        return {"visible": self._fill_visible,
+                "color":   self._fill_color.name(),
+                "opacity": self._fill_opacity}
+
+    def rebuild_fill(self):
+        """Recompute the frame interior: union of OUTLINE (real + ghost)
+        minus LENS apertures (real + ghost). No-op while hidden so the
+        boolean path ops never run during normal editing."""
+        if not self._fill_visible:
+            if self._fill_item is not None:
+                self._fill_item.setVisible(False)
+            return
+        from .items import build_path
+
+        def _vis(layer):
+            return self.is_layer_visible(layer)
+
+        combined = QPainterPath()
+        lens     = QPainterPath()
+        for item in self._curve_items.values():
+            c = item.curve
+            if c.layer == Layer.OUTLINE and _vis(c.layer):
+                combined = combined.united(build_path(c))
+            elif c.layer == Layer.LENS and _vis(c.layer):
+                lens = lens.united(build_path(c))
+        for cid, ghost in self._ghost_items.items():
+            ci = self._curve_items.get(cid)
+            if ci is None or not ghost.isVisible():
+                continue
+            if ci.curve.layer == Layer.OUTLINE:
+                combined = combined.united(ghost.path())
+            elif ci.curve.layer == Layer.LENS:
+                lens = lens.united(ghost.path())
+        combined = combined.subtracted(lens)
+
+        if self._fill_item is None:
+            it = QGraphicsPathItem()
+            # Above face photos (z=-1000…), below the origin cross (z=0)
+            # and all geometry (z=10).
+            it.setZValue(-500)
+            it.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable, False)
+            self.addItem(it)
+            self._fill_item = it
+        color = QColor(self._fill_color)
+        color.setAlphaF(self._fill_opacity)
+        self._fill_item.setBrush(QBrush(color))
+        self._fill_item.setPen(QPen(Qt.PenStyle.NoPen))
+        self._fill_item.setPath(combined)
+        self._fill_item.setVisible(True)
 
     # ------------------------------------------------------------------
     # Curve management
@@ -284,6 +441,7 @@ class FrameScene(QGraphicsScene):
         self._curve_items[id(curve)] = item
         self._apply_layer_state_to_item(item)
         self._update_ghost_for(curve)
+        self.rebuild_fill()
         return item
 
     def refresh_curve(self, curve: Curve):
@@ -291,6 +449,7 @@ class FrameScene(QGraphicsScene):
         if item:
             item.refresh()
         self._update_ghost_for(curve)
+        self.rebuild_fill()
 
     def remove_curve(self, curve: Curve):
         item = self._curve_items.pop(id(curve), None)
@@ -299,6 +458,7 @@ class FrameScene(QGraphicsScene):
         ghost = self._ghost_items.pop(id(curve), None)
         if ghost:
             self.removeItem(ghost)
+        self.rebuild_fill()
 
     # ------------------------------------------------------------------
     # Mirror ghost display
@@ -307,6 +467,7 @@ class FrameScene(QGraphicsScene):
     def set_mirror_display(self, on: bool):
         self._mirror_display = on
         self._update_ghosts()
+        self.rebuild_fill()
 
     def _ghost_eligible(self, curve: Curve) -> bool:
         if not self._mirror_display or self.mirror is None:
@@ -356,6 +517,43 @@ class FrameScene(QGraphicsScene):
             self._update_ghost_for(curve_item.curve)
 
     # ------------------------------------------------------------------
+    # Text objects (ENGRAVING)
+    # ------------------------------------------------------------------
+
+    def set_text_edit_callback(self, cb):
+        """cb(text_obj) is invoked when a TextItem is double-clicked."""
+        self._text_edit_cb = cb
+
+    def add_text(self, text_obj):
+        item = TextItem(text_obj,
+                        on_drag_start=self._dim_drag_cb,
+                        on_double_click=self._text_edit_cb)
+        self.addItem(item)
+        self._text_items[id(text_obj)] = item
+        self._apply_layer_state_to_text(item)
+        return item
+
+    def remove_text(self, text_obj):
+        item = self._text_items.pop(id(text_obj), None)
+        if item:
+            self.removeItem(item)
+
+    def refresh_text(self, text_obj):
+        item = self._text_items.get(id(text_obj))
+        if item:
+            item.refresh()
+
+    def _apply_layer_state_to_text(self, item):
+        layer   = item.text_obj.layer
+        visible = self.is_layer_visible(layer)
+        item.setVisible(visible)
+        interactable = visible and not self.is_layer_locked(layer)
+        item.setFlag(item.GraphicsItemFlag.ItemIsSelectable, interactable)
+        item.setFlag(item.GraphicsItemFlag.ItemIsMovable,    interactable)
+        if not interactable:
+            item.setSelected(False)
+
+    # ------------------------------------------------------------------
     # Dimension annotations
     # ------------------------------------------------------------------
 
@@ -383,6 +581,34 @@ class FrameScene(QGraphicsScene):
                 # return the item's .dim attribute
                 return it.dim
         return None
+
+    # ------------------------------------------------------------------
+    # Printing support (M8 — 1:1 print / PDF)
+    # ------------------------------------------------------------------
+
+    def geometry_rect(self) -> QRectF:
+        """Scene-mm bbox of visible curves, mirror ghosts, and texts.
+        Excludes guides, face photos, and the origin cross — this is the
+        extent that matters for a 1:1 paper test fit."""
+        rect = QRectF()
+        for items in (self._curve_items, self._ghost_items, self._text_items):
+            for it in items.values():
+                if it.isVisible():
+                    rect = rect.united(it.sceneBoundingRect())
+        return rect
+
+    def begin_print(self) -> list:
+        """Hide screen-only chrome (face photos, origin cross) for a print
+        render. Returns the hidden items for end_print."""
+        hidden = [it for it in (self._face_items + self._cross_items)
+                  if it.isVisible()]
+        for it in hidden:
+            it.setVisible(False)
+        return hidden
+
+    def end_print(self, hidden: list):
+        for it in hidden:
+            it.setVisible(True)
 
     # ------------------------------------------------------------------
     # Origin cross

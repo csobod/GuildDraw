@@ -48,6 +48,7 @@ DEFAULTS: dict = {
         "split_curve":  True,
         "offset":       True,
         "point_move":   True,
+        "text":         True,
         "ghost":        True,   # Ghost (mirror-axis toggle)
         "guides":       True,
         "snap":         True,
@@ -75,6 +76,7 @@ DEFAULTS: dict = {
         "split_curve":  "X",
         "offset":       "O",
         "point_move":   "G",
+        "text":         "I",
         "snap_node_ep": "E",
         "move_gizmo":   "M",
     },

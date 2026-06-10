@@ -14,14 +14,17 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QComboBox, QMessageBox,
     QDialog, QCheckBox, QHBoxLayout, QInputDialog, QListWidget, QListWidgetItem,
     QScrollArea, QTabWidget, QLineEdit, QTreeWidget, QTreeWidgetItem,
+    QColorDialog,
 )
 from PySide6.QtCore import Qt, QPointF, QSize, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QBrush, QIcon, QPainter, QPixmap
+from PySide6.QtGui import (
+    QAction, QActionGroup, QColor, QBrush, QIcon, QPainter, QPen, QPixmap,
+)
 
 from .canvas.items import CurveItem
 from .canvas.dim import DimItem
 from .canvas.measure_bar import MeasureBar
-from .canvas.scene import FrameScene
+from .canvas.scene import FrameScene, TextItem
 from .canvas.snapping import SnapEngine
 from .calibration import CalibTool
 from .construction import ConstructionGuides, BoxingGuide, RectGuide
@@ -39,6 +42,7 @@ from .tools.trim import TrimTool
 from .tools.split import SplitTool
 from .tools.offset import OffsetTool
 from .tools.point_move import PointMoveTool
+from .tools.text import TextTool, TextDialog
 
 _ICONS_DIR = Path(__file__).parent / "resources" / "icons"
 
@@ -344,6 +348,7 @@ _HOTKEY_ACTION_DEFS = [
     ("split_curve",  "Split Curve tool"),
     ("offset",       "Offset tool"),
     ("point_move",   "Point Move tool"),
+    ("text",         "Text tool"),
     ("snap_node_ep", "Snap Node to Endpoint"),
     ("move_gizmo",   "Move gizmo"),
 ]
@@ -421,6 +426,12 @@ class CanvasView(QGraphicsView):
                            and sc.is_layer_visible(item.curve.layer)
                            and not sc.is_layer_locked(item.curve.layer))
                 item.setFlag(item.GraphicsItemFlag.ItemIsSelectable, allowed)
+            elif isinstance(item, TextItem):
+                allowed = (tool is None
+                           and sc.is_layer_visible(item.text_obj.layer)
+                           and not sc.is_layer_locked(item.text_obj.layer))
+                item.setFlag(item.GraphicsItemFlag.ItemIsSelectable, allowed)
+                item.setFlag(item.GraphicsItemFlag.ItemIsMovable,    allowed)
 
     def set_dim_tool(self, tool):
         self._dim_tool = tool
@@ -705,6 +716,7 @@ class WorkspaceState:
         # ── Document state ────────────────────────────────────────────────
         self.doc_curves: list = []
         self.doc_dims:   list = []
+        self.doc_texts:  list = []   # TextObject (ENGRAVING, M8)
         self.bookmarks:  list = []
         self.undo_stack: list = []
         self.redo_stack: list = []
@@ -732,6 +744,7 @@ class WorkspaceState:
         self.split_tool  = SplitTool(parent_win)
         self.offset_tool     = OffsetTool(parent_win)
         self.point_move_tool = PointMoveTool(parent_win)
+        self.text_tool       = TextTool(parent_win)
 
         # ── Guides ────────────────────────────────────────────────────────
         self.const_guides = ConstructionGuides(self.scene)
@@ -767,6 +780,9 @@ class WorkspaceState:
         self.stock_h:        float = 85.0
         self.pad_w:          float = 45.0
         self.pad_h:          float = 45.0
+        self.fill_visible:   bool  = False        # frame fill overlay (M8)
+        self.fill_color:     str   = "#2a6099"
+        self.fill_opacity:   float = 0.50
         self.selected_face_idx: int       = -1
         self.face_image_paths:  list[str] = []
         self.fitted:            bool      = False   # True once fitInView has been called
@@ -799,6 +815,7 @@ class WorkspaceState:
         return {
             "curves": copy.deepcopy(self.doc_curves),
             "dims":   copy.deepcopy(self.doc_dims),
+            "texts":  copy.deepcopy(self.doc_texts),
         }
 
     def push_undo_snapshot(self):
@@ -833,8 +850,20 @@ class WorkspaceState:
         self.scene.remove_dim(dim)
         self._notify()
 
+    def add_text(self, text_obj):
+        self.doc_texts.append(text_obj)
+        item = self.scene.add_text(text_obj)
+        self._notify()
+        return item
+
+    def remove_text(self, text_obj):
+        if text_obj in self.doc_texts:
+            self.doc_texts.remove(text_obj)
+        self.scene.remove_text(text_obj)
+        self._notify()
+
     def clear_geometry(self):
-        """Remove every curve and dim. Undo stacks are left untouched."""
+        """Remove every curve, dim, and text. Undo stacks are left untouched."""
         self.edit_tool.clear()
         self.scene.clearSelection()
         for c in list(self.doc_curves):
@@ -843,6 +872,9 @@ class WorkspaceState:
         for d in list(self.doc_dims):
             self.scene.remove_dim(d)
         self.doc_dims.clear()
+        for t in list(self.doc_texts):
+            self.scene.remove_text(t)
+        self.doc_texts.clear()
         self._notify()
 
     def clear_document(self):
@@ -859,6 +891,8 @@ class WorkspaceState:
             self.add_curve(c)
         for d in snapshot["dims"]:
             self.add_dim(d)
+        for t in snapshot.get("texts", []):   # absent in pre-M8 bookmarks
+            self.add_text(t)
 
     def undo(self) -> bool:
         if not self.undo_stack:
@@ -1272,6 +1306,8 @@ class MainWindow(QMainWindow):
     def _offset_tool(self): return self._active_ws.offset_tool
     @property
     def _point_move_tool(self): return self._active_ws.point_move_tool
+    @property
+    def _text_tool(self): return self._active_ws.text_tool
 
     # Guides
     @property
@@ -1383,6 +1419,9 @@ class MainWindow(QMainWindow):
             ws.offset_tool.cancelled.connect(self._on_offset_cancelled)
             ws.point_move_tool.moved.connect(self._on_point_moved)
             ws.point_move_tool.status_message.connect(self._status.showMessage)
+            ws.text_tool.text_added.connect(self._on_text_added)
+            ws.text_tool.cancelled.connect(self._on_text_cancelled)
+            ws.text_tool.status_message.connect(self._status.showMessage)
             ws.point_move_tool.cancelled.connect(self._on_point_move_cancelled)
 
         self._build_toolbar()
@@ -1412,6 +1451,7 @@ class MainWindow(QMainWindow):
             "split_curve":  self._act_split_curve.trigger,
             "offset":       self._act_offset.trigger,
             "point_move":   self._act_point_move.trigger,
+            "text":         self._act_text.trigger,
             "snap_node_ep": self._snap_selected_node_to_endpoint,
             "move_gizmo":   self._toggle_move_gizmo,
         }
@@ -1444,6 +1484,7 @@ class MainWindow(QMainWindow):
             ws.view.set_escape_callback(self._hide_move_gizmo)
             ws.view.measure_bar.commit_radius.connect(self._on_measure_commit_radius)
             ws.scene.set_dim_drag_callback(self._pre_edit_snapshot)
+            ws.scene.set_text_edit_callback(self._edit_text_object)
             ws.on_document_changed = (
                 lambda ws=ws: self._schedule_layer_panel_refresh(ws))
 
@@ -1661,6 +1702,14 @@ class MainWindow(QMainWindow):
             "Esc to cancel."
         )
 
+        self._act_text = QAction("Text", self, checkable=True)
+        self._act_text.setToolTip(
+            "Text (I): click an anchor point to place engraving text\n"
+            "(any installed font, true mm cap height, rotatable).\n"
+            "Lands on the ENGRAVING layer; converted to outlines at DXF export.\n"
+            "Double-click placed text to edit it."
+        )
+
         self._act_select.triggered.connect(self._set_tool_select)
         self._act_line.triggered.connect(self._set_tool_line)
         self._act_spline.triggered.connect(self._set_tool_spline)
@@ -1671,9 +1720,11 @@ class MainWindow(QMainWindow):
         self._act_split_curve.triggered.connect(self._set_tool_split_curve)
         self._act_offset.triggered.connect(self._set_tool_offset)
         self._act_point_move.triggered.connect(self._set_tool_point_move)
+        self._act_text.triggered.connect(self._set_tool_text)
 
         for act in (self._act_select, self._act_line, self._act_spline,
                     self._act_circle, self._act_arc, self._act_dim,
+                    self._act_text,
                     self._act_trim, self._act_split_curve, self._act_offset,
                     self._act_point_move):
             tool_group.addAction(act)
@@ -1801,6 +1852,7 @@ class MainWindow(QMainWindow):
             "split_curve":  self._act_split_curve,
             "offset":       self._act_offset,
             "point_move":   self._act_point_move,
+            "text":         self._act_text,
             "ghost":        self._act_mirror,
             "guides":       self._act_guides,
             "snap":         self._act_snap,
@@ -2105,6 +2157,34 @@ class MainWindow(QMainWindow):
 
         guides_lay.addWidget(pad_box)
         self._pad_guide_box = pad_box   # ref for section show/hide
+
+        # ── Frame Fill (display-only render overlay, M8) ─────────────────
+        fill_box = QGroupBox("Frame Fill")
+        fill_lay = QFormLayout(fill_box)
+        fill_lay.setSpacing(6)
+
+        self._fill_show_chk = QCheckBox("Show fill")
+        self._fill_show_chk.setToolTip(
+            "Fill the frame interior (OUTLINE minus LENS apertures) with a\n"
+            "translucent colour over the face photo. Display-only — never\n"
+            "exported to DXF/SVG geometry."
+        )
+        self._fill_show_chk.toggled.connect(self._on_fill_visible_toggled)
+        fill_lay.addRow(self._fill_show_chk)
+
+        self._fill_color_btn = QPushButton("Colour…")
+        self._fill_color_btn.clicked.connect(self._on_fill_color_clicked)
+        self._update_fill_swatch("#2a6099")
+        fill_lay.addRow("Colour:", self._fill_color_btn)
+
+        self._fill_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self._fill_opacity_slider.setRange(0, 100)
+        self._fill_opacity_slider.setValue(50)
+        self._fill_opacity_slider.valueChanged.connect(self._on_fill_opacity_changed)
+        fill_lay.addRow("Opacity:", self._fill_opacity_slider)
+
+        guides_lay.addWidget(fill_box)
+        self._fill_box = fill_box   # ref for section show/hide
         guides_lay.addStretch()
 
         guides_scroll = QScrollArea()
@@ -2552,6 +2632,9 @@ class MainWindow(QMainWindow):
         ws.stock_h        = self._stock_h_spin.value()
         ws.pad_w          = self._pad_w_spin.value()
         ws.pad_h          = self._pad_h_spin.value()
+        ws.fill_visible   = self._fill_show_chk.isChecked()
+        ws.fill_opacity   = self._fill_opacity_slider.value() / 100.0
+        # (fill_color is written by _on_fill_color_clicked directly)
         # Face image list paths
         ws.face_image_paths = [
             self._face_list.item(i).data(Qt.ItemDataRole.UserRole)
@@ -2622,6 +2705,18 @@ class MainWindow(QMainWindow):
         ws.pad_guide.set_width(ws.pad_w)
         ws.pad_guide.set_height(ws.pad_h)
 
+        # ── Frame fill ──────────────────────────────────────────────────
+        self._fill_show_chk.blockSignals(True)
+        self._fill_show_chk.setChecked(ws.fill_visible)
+        self._fill_show_chk.blockSignals(False)
+        self._fill_opacity_slider.blockSignals(True)
+        self._fill_opacity_slider.setValue(round(ws.fill_opacity * 100))
+        self._fill_opacity_slider.blockSignals(False)
+        self._update_fill_swatch(ws.fill_color)
+        ws.scene.set_fill_color(QColor(ws.fill_color))
+        ws.scene.set_fill_opacity(ws.fill_opacity)
+        ws.scene.set_fill_visible(ws.fill_visible)
+
         # (Layer list/active layer are per-workspace; _refresh_layer_panel is
         # called by _on_workspace_changed right after this restore.)
 
@@ -2650,6 +2745,32 @@ class MainWindow(QMainWindow):
         self._rotation_spin.setEnabled(has_sel)
         self._canvas_lock_chk.setEnabled(has_sel)
 
+    # ── Frame fill controls ─────────────────────────────────────────────
+
+    def _update_fill_swatch(self, color_hex: str):
+        pm = QPixmap(16, 16)
+        pm.fill(QColor(color_hex))
+        self._fill_color_btn.setIcon(QIcon(pm))
+
+    def _on_fill_visible_toggled(self, on: bool):
+        ws = self._active_ws
+        ws.fill_visible = on
+        ws.scene.set_fill_visible(on)
+
+    def _on_fill_color_clicked(self):
+        ws = self._active_ws
+        c = QColorDialog.getColor(QColor(ws.fill_color), self, "Frame fill colour")
+        if not c.isValid():
+            return
+        ws.fill_color = c.name()
+        ws.scene.set_fill_color(c)
+        self._update_fill_swatch(ws.fill_color)
+
+    def _on_fill_opacity_changed(self, value: int):
+        ws = self._active_ws
+        ws.fill_opacity = value / 100.0
+        ws.scene.set_fill_opacity(ws.fill_opacity)
+
     def _show_guide_sections(self, ws_type: str):
         """Show/hide Guides-tab group boxes based on workspace type."""
         is_front  = (ws_type == "front")
@@ -2659,6 +2780,7 @@ class MainWindow(QMainWindow):
         self._boxing_guide_box.setVisible(is_front)
         self._stock_guide_box.setVisible(True)   # all workspaces have a stock rect
         self._pad_guide_box.setVisible(is_front) # pad block only meaningful for front
+        self._fill_box.setVisible(is_front or is_temple)  # fill needs an OUTLINE
         # Toolbar buttons: combined prefs + workspace rules in one place
         self._apply_toolbar_visibility(self._toolbar_prefs, ws_type)
         self._meas_front_box.setVisible(is_front)
@@ -2929,6 +3051,8 @@ class MainWindow(QMainWindow):
         "boxing":      ("front",),
         "pad":         ("front",),
         "copy_temple": ("temple_r", "temple_l"),
+        # ENGRAVING only exists in temple workspaces (WORKSPACE_LAYERS)
+        "text":        ("temple_r", "temple_l"),
     }
 
     def _apply_toolbar_visibility(self, toolbar_prefs: dict, ws_type: str | None = None):
@@ -3013,6 +3137,7 @@ class MainWindow(QMainWindow):
             (self._act_split_curve,  "tool-split-curve"),
             (self._act_offset,       "tool-offset"),
             (self._act_point_move,   "tool-point-move"),
+            (self._act_text,         "tool-text"),
             (self._act_panel,        "view-sidebar"),
         ]
         for act, name in pairs:
@@ -3061,6 +3186,9 @@ class MainWindow(QMainWindow):
         exp.addAction("Export SVG…", self._export_svg)
         exp.addAction("Export PNG…", self._export_png)
         exp.addAction("Export OMA Trace…", self._export_oma)
+        exp.addAction("Export PDF (1:1 scale)…", self._export_pdf_1to1)
+        file_menu.addSeparator()
+        file_menu.addAction("Print at 1:1 Scale…", self._print_1to1)
         file_menu.addSeparator()
         file_menu.addAction("Quit", self.close)
 
@@ -3131,6 +3259,7 @@ class MainWindow(QMainWindow):
         self._circle_tool.deactivate()
         self._dim_tool.deactivate()
         self.view.set_dim_tool(None)
+        self._text_tool.deactivate()
         self._deactivate_cursor_tools()
         self.view.measure_bar.hide_bar()
         if clear_selection:
@@ -3176,6 +3305,51 @@ class MainWindow(QMainWindow):
         self._dim_tool.activate(self.scene, self.view,
                                 snap=self._snap, all_curves=self._doc_curves)
         self.view.set_dim_tool(self._dim_tool)
+
+    def _set_tool_text(self):
+        # ENGRAVING is a temple-workspace layer (toolbar hides the button
+        # elsewhere, but the hotkey can still fire).
+        if Layer.ENGRAVING not in WORKSPACE_LAYERS[self._active_ws.workspace_type]:
+            self._status.showMessage(
+                "Text engraving is available in the Temple workspaces.")
+            self._act_select.setChecked(True)
+            self._set_tool_select()
+            return
+        self._teardown_tools(clear_selection=True)
+        self._text_tool.activate(Layer.ENGRAVING, self.scene, self.view)
+        self.view.set_draw_tool(self._text_tool)
+
+    def _on_text_added(self, text_obj):
+        self._push_undo_snapshot()
+        self._active_ws.add_text(text_obj)
+        self._act_select.setChecked(True)
+        self._set_tool_select()
+        self._status.showMessage(
+            f"Text placed on {text_obj.layer.value} — drag to move, "
+            "double-click to edit, Del to remove."
+        )
+
+    def _on_text_cancelled(self):
+        self._act_select.setChecked(True)
+        self._set_tool_select()
+
+    def _edit_text_object(self, text_obj):
+        """Double-click on a TextItem — re-open the dialog pre-filled."""
+        dlg = TextDialog(self, text_obj)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        v = dlg.values()
+        if not v["text"].strip():
+            return
+        self._push_undo_snapshot()
+        text_obj.text     = v["text"]
+        text_obj.family   = v["family"]
+        text_obj.size_mm  = v["size_mm"]
+        text_obj.rotation = v["rotation"]
+        text_obj.anchor_x = v["anchor_x"]
+        text_obj.anchor_y = v["anchor_y"]
+        self.scene.refresh_text(text_obj)
+        self._status.showMessage("Text updated.")
 
     def _set_tool_trim(self):
         self._teardown_tools(clear_selection=True)
@@ -3475,8 +3649,9 @@ class MainWindow(QMainWindow):
 
         selected_curves = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
         selected_dims   = [i for i in self.scene.selectedItems() if isinstance(i, DimItem)]
+        selected_texts  = [i for i in self.scene.selectedItems() if isinstance(i, TextItem)]
 
-        if not selected_curves and not selected_dims:
+        if not selected_curves and not selected_dims and not selected_texts:
             self._status.showMessage("Nothing selected to delete")
             return
 
@@ -3484,6 +3659,8 @@ class MainWindow(QMainWindow):
 
         for item in selected_dims:
             self._active_ws.remove_dim(item.dim)
+        for item in selected_texts:
+            self._active_ws.remove_text(item.text_obj)
 
         to_remove = [item.curve for item in selected_curves if item.curve in self._doc_curves]
         if to_remove:
@@ -3492,6 +3669,9 @@ class MainWindow(QMainWindow):
                 self._active_ws.remove_curve(curve)
             n = len(to_remove)
             self._status.showMessage(f"Deleted {n} curve{'s' if n > 1 else ''}")
+        elif selected_texts:
+            n = len(selected_texts)
+            self._status.showMessage(f"Deleted {n} text object{'s' if n > 1 else ''}")
         elif selected_dims:
             n = len(selected_dims)
             self._status.showMessage(f"Deleted {n} dimension{'s' if n > 1 else ''}")
@@ -4711,6 +4891,13 @@ class MainWindow(QMainWindow):
             ws.scene.clear_faces()
             ws.face_image_paths.clear()
             ws.selected_face_idx = -1
+            ws.fill_visible = False          # fill resets with the document
+            ws.fill_color   = "#2a6099"
+            ws.fill_opacity = 0.50
+            ws.scene.set_fill_color(QColor(ws.fill_color))
+            ws.scene.set_fill_opacity(ws.fill_opacity)
+            ws.scene.set_fill_visible(False)
+        self._restore_ws_sidebar_state(self._active_ws)
         # Refresh sidebar for the currently visible workspace
         self._face_list.clear()
         self._remove_img_btn.setEnabled(False)
@@ -4857,7 +5044,18 @@ class MainWindow(QMainWindow):
         for dim in data.get("dims", []):
             ws.add_dim(dim)
 
+        for tobj in data.get("texts", []):
+            ws.add_text(tobj)
+
         ws.bookmarks = list(data.get("bookmarks", []))
+
+        fill = data.get("fill") or {}
+        ws.fill_visible = bool(fill.get("visible", False))
+        ws.fill_color   = fill.get("color", "#2a6099")
+        ws.fill_opacity = float(fill.get("opacity", 0.50))
+        ws.scene.set_fill_color(QColor(ws.fill_color))
+        ws.scene.set_fill_opacity(ws.fill_opacity)
+        ws.scene.set_fill_visible(ws.fill_visible)
 
         # If this is the active workspace, sync sidebar widgets
         if ws is self._active_ws:
@@ -4951,6 +5149,12 @@ class MainWindow(QMainWindow):
                 for i in range(ws.scene.face_count())
             ],
             "bookmarks": ws.bookmarks,
+            "fill": {
+                "visible": ws.fill_visible,
+                "color":   ws.fill_color,
+                "opacity": ws.fill_opacity,
+            },
+            "texts": ws.doc_texts,
         }
 
     def _do_save_svg(self, path: str):
@@ -4971,6 +5175,8 @@ class MainWindow(QMainWindow):
             bookmarks       = d["bookmarks"],
             dims            = d["dims"],
             layers          = d["layers"],
+            fill            = d["fill"],
+            texts           = d["texts"],
         )
 
     def _do_save_gdraw(self, path: str):
@@ -5020,8 +5226,15 @@ class MainWindow(QMainWindow):
             return
         try:
             from .export.dxf import export_dxf
+            # TextObjects become outline splines on their layer at export
+            # time only — the document keeps the editable text.
+            curves = list(self._doc_curves)
+            if self._active_ws.doc_texts:
+                from .textpath import text_to_curves
+                for tobj in self._active_ws.doc_texts:
+                    curves.extend(text_to_curves(tobj))
             export_dxf(
-                curves     = self._doc_curves,
+                curves     = curves,
                 path       = path,
                 mirror_on  = self._act_mirror.isChecked(),
                 axis_x     = self.scene.mirror.x if self.scene.mirror else 0.0,
@@ -5192,6 +5405,112 @@ class MainWindow(QMainWindow):
             self._status.showMessage(f"OMA trace exported: {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.critical(self, "OMA export failed", str(e))
+
+    # ------------------------------------------------------------------
+    # Print / PDF at 1:1 scale (M8)
+    # ------------------------------------------------------------------
+
+    _PRINT_PAD_MM = 5.0
+
+    def _print_1to1(self):
+        from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+        content = self.scene.geometry_rect()
+        if content.isNull():
+            QMessageBox.information(
+                self, "Print at 1:1",
+                "Nothing to print — this workspace has no geometry.")
+            return
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        dlg = QPrintDialog(printer, self)
+        dlg.setWindowTitle("Print at 1:1 Scale")
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._render_1to1(printer, content)
+
+    def _export_pdf_1to1(self):
+        from PySide6.QtPrintSupport import QPrinter
+        content = self.scene.geometry_rect()
+        if content.isNull():
+            QMessageBox.information(
+                self, "Export PDF",
+                "Nothing to export — this workspace has no geometry.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export PDF (1:1 scale)", "", "PDF Files (*.pdf)")
+        if not path:
+            return
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(path)
+        try:
+            self._render_1to1(printer, content)
+            self._status.showMessage(f"PDF exported at 1:1: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.critical(self, "PDF export failed", str(e))
+
+    def _render_1to1(self, printer, content):
+        """Paint the workspace geometry at exactly 1 mm = 1 mm paper scale,
+        centred on the page, with a 50 mm verification ruler.
+
+        Scene units are mm, so scale = printer px/mm. If the geometry is
+        larger than the printable area it is cropped equally on all sides
+        (still 1:1) and a warning is shown.
+        """
+        from PySide6.QtCore import QRectF as _QRectF
+        from PySide6.QtPrintSupport import QPrinter
+
+        src = content.adjusted(-self._PRINT_PAD_MM, -self._PRINT_PAD_MM,
+                               self._PRINT_PAD_MM,  self._PRINT_PAD_MM)
+        px_mm_x = printer.logicalDpiX() / 25.4
+        px_mm_y = printer.logicalDpiY() / 25.4
+        page = printer.pageRect(QPrinter.Unit.DevicePixel)
+
+        target_w = src.width()  * px_mm_x
+        target_h = src.height() * px_mm_y
+        clipped = target_w > page.width() or target_h > page.height()
+        target = _QRectF((page.width()  - target_w) / 2,
+                         (page.height() - target_h) / 2,
+                         target_w, target_h)
+
+        self.scene.clearSelection()
+        self._edit_tool.clear()
+        painter = QPainter(printer)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            hidden = self.scene.begin_print()
+            try:
+                # IgnoreAspectRatio: target is already built from exact
+                # px/mm in each axis, so the scale stays true even when
+                # the device DPI differs horizontally vs vertically.
+                self.scene.render(painter, target, src,
+                                  Qt.AspectRatioMode.IgnoreAspectRatio)
+            finally:
+                self.scene.end_print(hidden)
+
+            # 50 mm verification ruler, bottom-left of the printable area
+            pen = QPen(QColor("#000000"))
+            pen.setWidthF(0.3 * px_mm_x)
+            painter.setPen(pen)
+            rx, ry = 5.0 * px_mm_x, page.height() - 6.0 * px_mm_y
+            painter.drawLine(QPointF(rx, ry), QPointF(rx + 50.0 * px_mm_x, ry))
+            for mm in (0.0, 50.0):
+                x = rx + mm * px_mm_x
+                painter.drawLine(QPointF(x, ry - 1.5 * px_mm_y),
+                                 QPointF(x, ry + 1.5 * px_mm_y))
+            font = painter.font()
+            font.setPixelSize(round(3.0 * px_mm_y))
+            painter.setFont(font)
+            painter.drawText(
+                QPointF(rx, ry - 2.5 * px_mm_y),
+                "50 mm — measure to verify 1:1 (print with scaling/'fit to page' OFF)")
+        finally:
+            painter.end()
+
+        if clipped:
+            self._status.showMessage(
+                "Printed at 1:1 — geometry larger than the page, edges cropped.")
+        else:
+            self._status.showMessage("Printed at 1:1 scale.")
 
     # ------------------------------------------------------------------
     # Persistent preferences

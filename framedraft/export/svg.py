@@ -23,6 +23,7 @@ from PySide6.QtGui import QPainterPath
 from ..document import (
     Curve, Layer, SplineNode, ControlPoint,
     FaceImage, Calibration, MirrorAxis, FormingMetadata, MachinedBridge, DimLine,
+    TextObject,
 )
 from ..canvas.items import build_path
 
@@ -129,6 +130,8 @@ def save_svg(
     bookmarks:        list | None = None,
     dims:             list | None = None,
     layers:           dict | None = None,   # {layer name: {"visible","locked"}}
+    fill:             dict | None = None,   # {"visible","color","opacity"}
+    texts:            list | None = None,   # list[TextObject]
 ) -> None:
     ET.register_namespace("", _NS)
     root = ET.Element(f"{{{_NS}}}svg")
@@ -181,6 +184,16 @@ def save_svg(
         ]
     if layers:
         state["layers"] = layers
+    if fill:
+        state["fill"] = fill
+    if texts:
+        state["texts"] = [
+            {"text": t.text, "family": t.family, "size_mm": t.size_mm,
+             "rotation": t.rotation, "anchor_x": t.anchor_x,
+             "anchor_y": t.anchor_y, "layer": t.layer.value,
+             "line_weight": t.line_weight}
+            for t in texts
+        ]
     meta_el.text = json.dumps(state, indent=2)
 
     for curve in non_mirrored:
@@ -304,4 +317,18 @@ def load_svg(path: str) -> dict:
         "face_images": _load_face_images(state),
         "bookmarks": bookmarks,
         "layers": state.get("layers", {}),
+        "fill": state.get("fill"),   # None when absent (pre-0.9.8 files)
+        "texts": [
+            TextObject(
+                text        = t["text"],
+                family      = t.get("family", "Arial"),
+                size_mm     = t.get("size_mm", 5.0),
+                rotation    = t.get("rotation", 0.0),
+                anchor_x    = t.get("anchor_x", 0.0),
+                anchor_y    = t.get("anchor_y", 0.0),
+                layer       = Layer(t.get("layer", "ENGRAVING")),
+                line_weight = t.get("line_weight", 1.0),
+            )
+            for t in state.get("texts", [])
+        ],
     }

@@ -92,6 +92,24 @@ class Curve:
 
 
 @dataclass
+class TextObject:
+    """Re-editable text insertion (ENGRAVING workflow, M8).
+
+    Rendered as font outline paths on canvas and converted to closed
+    spline Curves at DXF-export time — the TextObject itself is never
+    exported, so the string/font/size stay editable in the document.
+    """
+    text:        str
+    family:      str
+    size_mm:     float            # cap height in mm
+    rotation:    float = 0.0      # degrees; positive = CCW as displayed
+    anchor_x:    float = 0.0      # baseline-left origin, scene mm
+    anchor_y:    float = 0.0
+    layer:       Layer = Layer.ENGRAVING
+    line_weight: float = 1.0
+
+
+@dataclass
 class DimLine:
     x0: float
     y0: float

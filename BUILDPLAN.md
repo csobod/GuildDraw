@@ -12,7 +12,7 @@ and export clean DXF for GuildCAM — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-10, v0.9.7 — M1–M7 complete; next: M8 visualization)*
+## Status snapshot *(2026-06-10, v0.9.8 — M1–M8 complete; next: M9 GuildCAM validation + 1.0)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -22,10 +22,11 @@ Temple L, Hinge Pocket) with Mirror Copy, hinge library, construction/boxing/sto
 guides, dark mode, configurable toolbar + hotkeys, `.gdraw` ZIP format, SVG round-trip,
 DXF R2000 SPLINE export with validator, PNG render, PyInstaller Windows build,
 layers panel + groups, on-curve snap, clipboard + Transform dialog, OMA lens-trace
-import/export (TRCFMT format 1).
+import/export (TRCFMT format 1), frame fill overlay, ENGRAVING text objects,
+print/PDF at 1:1 scale.
 
-**Not yet built:** frame fill overlay, text/engraving, print/PDF at 1:1,
-GuildCAM hardware round-trip, batch DXF export, BRIDGE layer tooling.
+**Not yet built:** GuildCAM hardware round-trip, batch DXF export,
+BRIDGE layer tooling.
 
 **Code health:** ~10,900 lines; geometry core is solid. The M1 bug list is fixed
 (v0.9.1), the repo is under git, and data safety landed in v0.9.2 (dirty-flag
@@ -39,7 +40,10 @@ Point Move root-cause fixes) and the M6 workflow set (on-curve snapping,
 copy/paste/duplicate, Transform dialog, workspace-aware validation + DXF
 mirror orientation, select-all). v0.9.7 shipped M7: OMA/DCS lens-trace
 interchange (`export/oma.py`, Qt-free, 16 tests incl. the <0.05 mm round-trip
-criterion) with File > Import/Export wiring. Next: M8 visualization.
+criterion) with File > Import/Export wiring. v0.9.8 shipped M8: frame fill
+overlay, re-editable ENGRAVING `TextObject`s (`textpath.py`, Text tool,
+DXF-time outline conversion), and 1:1 print/PDF with a 50 mm verification
+ruler (suite: 88). Next: M9 GuildCAM validation + release.
 
 ---
 
@@ -328,15 +332,43 @@ Scope (all landed 2026-06-10):
 5. ⏭ **Stretch (slipped to 1.x as planned):** TRCFMT format 4 (packed) import,
    Z/curve records, direct serial tracer input.
 
-## M8 — Visualization & engraving (v0.9.8)
+## M8 — Visualization & engraving (v0.9.8) — ✅ DONE 2026-06-10
 
-1. **Frame fill / render overlay** — translucent fill of OUTLINE−LENS over the
-   face photo; display-only. *(full spec: archive §25)*
-2. **Text insertion (ENGRAVING)** — re-editable `TextObject` via
-   `QPainterPath.addText`; converted to splines at DXF export. *(full spec:
-   archive §26; stroke fonts stay deferred)*
-3. **Print / PDF at 1:1 scale** *(new — see Feature candidates)* — true-scale
-   paper test fit before cutting stock.
+1. ✅ **Frame fill / render overlay** *(archive §25)* — `FrameScene` owns one
+   `QGraphicsPathItem` (z = −500: above face photos, below geometry) built as
+   union of OUTLINE curves + their mirror ghosts minus LENS curves + ghosts;
+   hidden layers excluded; rebuilt from `add/remove/refresh_curve`,
+   `set_mirror_display`, and `set_layer_visible` (no-op while hidden so
+   boolean path ops never run during normal editing). "Frame Fill" group in
+   the Guides panel (front + temple): show checkbox, colour swatch button,
+   opacity slider. Per-workspace state persists in SVG/.gdraw under `"fill"`;
+   resets on File > New. Display-only — never exported.
+2. ✅ **Text insertion (ENGRAVING)** *(archive §26)* — `TextObject` dataclass
+   (re-editable: string/font/size/rotation/anchor); new Qt-GUI-only
+   `framedraft/textpath.py` builds outline paths with **true mm cap height**
+   (path measured against the font's capHeight, not point-size guessing) and
+   converts to closed spline Curves at DXF-export time only. `TextItem` on
+   canvas: selectable, threshold-drag to move (undo-safe via the dim-drag
+   callback), double-click re-opens the dialog (incl. anchor X/Y for precise
+   placement), follows layer show/lock + dark mode. Text tool (`I`, toolbar
+   `tool-text.svg`) is temple-only (ENGRAVING isn't a front layer — toolbar
+   rule + hotkey guard). Persisted under `"texts"` in SVG/.gdraw; included in
+   undo snapshots (`take_snapshot` gained a `texts` key; old bookmark
+   snapshots load via `.get`). Stroke/Hershey fonts stay deferred (1.x).
+3. ✅ **Print / PDF at 1:1 scale** — File > Print at 1:1 Scale… (QPrintDialog;
+   "Microsoft Print to PDF" works) and File > Export > PDF (1:1 scale)….
+   Renders `scene.geometry_rect()` (curves + ghosts + texts; guides stay if
+   toggled on, face photos and origin cross auto-hidden) centred on the page
+   at exactly printer-px-per-mm, cropped 1:1 with a warning if larger than
+   the printable area, plus a printed **50 mm verification ruler** so the
+   maker can catch a driver's silent fit-to-page.
+
+Tests: 8 in `tests/test_m8.py` (textpath cap-height/rotation/anchoring/
+counter-shapes + SVG round-trip of `"texts"`/`"fill"` incl. pre-M8 files;
+suite 88). End-to-end smoke verified fill persistence, text
+place/undo/delete/edit + DXF ENGRAVING splines, and the 1:1 PDF.
+*Known gaps (accepted):* texts don't appear in the Layers-panel object tree
+and aren't copied by Ctrl+C/V — revisit on demand.
 
 ## M9 — GuildCAM validation + release engineering (v0.9.9 → 1.0)
 
