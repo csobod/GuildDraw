@@ -1,5 +1,6 @@
 import copy
 import datetime
+import json
 import math
 import os
 import sys
@@ -1149,6 +1150,10 @@ class MainWindow(QMainWindow):
         self._updating_weight_spin = False
         self._default_line_weight: float = self._prefs["default_line_weight"]
         self._current_path: str | None = None   # .gdraw file path (or single SVG)
+        self._dirty = False                     # unsaved changes (any workspace)
+        self._recent_files: list[str] = [
+            p for p in self._prefs.get("recent_files", []) if isinstance(p, str)
+        ]
 
         # Status bar must exist before WorkspaceState creates CanvasView instances
         self._status = QStatusBar()
@@ -1384,6 +1389,15 @@ class MainWindow(QMainWindow):
             self._fit_view()
             self._workspaces[0].fitted = True
         QTimer.singleShot(0, _initial_fit)
+
+        # ── Autosave + crash recovery ─────────────────────────────────────
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(self._AUTOSAVE_MS)
+        self._autosave_timer.timeout.connect(self._do_autosave)
+        self._autosave_timer.start()
+        QTimer.singleShot(400, self._offer_recovery)
+
+        self._update_title()
 
     # ------------------------------------------------------------------
     # Toolbar
@@ -1725,6 +1739,9 @@ class MainWindow(QMainWindow):
         # lambdas so each call dispatches to the CURRENT active workspace's guides
         self._bridge_angle_spin.valueChanged.connect(
             lambda v: self._guides.set_bridge_angle(v))
+        # bridge angle + apical radius persist in the file (forming metadata)
+        self._bridge_angle_spin.valueChanged.connect(
+            lambda _: self._mark_dirty())
         guide_lay.addRow("Frontal angle:", self._bridge_angle_spin)
 
         self._apical_spin = QDoubleSpinBox()
@@ -1734,6 +1751,8 @@ class MainWindow(QMainWindow):
         self._apical_spin.setValue(_CG.DEFAULT_APICAL_RADIUS_MM)
         self._apical_spin.valueChanged.connect(
             lambda v: self._guides.set_apical_radius(v))
+        self._apical_spin.valueChanged.connect(
+            lambda _: self._mark_dirty())
         guide_lay.addRow("Apical radius:", self._apical_spin)
 
         self._guide_crest_height_spin = QDoubleSpinBox()
@@ -2629,6 +2648,9 @@ class MainWindow(QMainWindow):
         file_menu = mb.addMenu("File")
         file_menu.addAction("New",              self._new)
         file_menu.addAction("Open…",            self._open)
+        self._recent_menu = file_menu.addMenu("Open Recent")
+        self._recent_menu.setToolTipsVisible(True)
+        self._rebuild_recent_menu()
         file_menu.addSeparator()
         file_menu.addAction("Save",             self._save)
         file_menu.addAction("Save As…",         self._save_as)
@@ -3019,6 +3041,7 @@ class MainWindow(QMainWindow):
         if len(self._undo_stack) > self._MAX_UNDO:
             self._undo_stack.pop(0)
         self._update_undo_actions()
+        self._mark_dirty()   # every snapshot precedes a document mutation
 
     def _pre_edit_snapshot(self):
         """Called by EditTool just before any node or handle drag begins."""
@@ -3048,6 +3071,7 @@ class MainWindow(QMainWindow):
         self._redo_stack.append(self._take_snapshot())
         self._restore_snapshot(self._undo_stack.pop())
         self._update_undo_actions()
+        self._mark_dirty()
         n = len(self._undo_stack)
         self._status.showMessage(
             f"Undo — {n} step{'s' if n != 1 else ''} remaining")
@@ -3059,6 +3083,7 @@ class MainWindow(QMainWindow):
         self._undo_stack.append(self._take_snapshot())
         self._restore_snapshot(self._redo_stack.pop())
         self._update_undo_actions()
+        self._mark_dirty()
         n = len(self._redo_stack)
         self._status.showMessage(
             f"Redo — {n} step{'s' if n != 1 else ''} remaining")
@@ -3422,6 +3447,7 @@ class MainWindow(QMainWindow):
 
         # Switch to target tab
         self._ws_tab_widget.setCurrentIndex(tab_names.index(target_type))
+        self._mark_dirty()
         label = "Temple L" if target_type == "temple_l" else "Temple R"
         nc = len(tgt_ws.doc_curves)
         self._status.showMessage(
@@ -3798,6 +3824,7 @@ class MainWindow(QMainWindow):
         })
         self._refresh_timeline_list()
         self._timeline_list.setCurrentRow(len(self._bookmarks) - 1)
+        self._mark_dirty()   # bookmarks are persisted in the file
         self._status.showMessage(f"Bookmarked: {name.strip()}")
 
     def _restore_bookmark(self):
@@ -3825,6 +3852,7 @@ class MainWindow(QMainWindow):
             bm["name"] = name.strip()
             self._refresh_timeline_list()
             self._timeline_list.setCurrentRow(idx)
+            self._mark_dirty()
 
     def _delete_bookmark(self):
         items = self._timeline_list.selectedItems()
@@ -3840,6 +3868,7 @@ class MainWindow(QMainWindow):
         if r == QMessageBox.StandardButton.Yes:
             self._bookmarks.pop(idx)
             self._refresh_timeline_list()
+            self._mark_dirty()
 
     # ------------------------------------------------------------------
     # Hinge Library
@@ -3978,6 +4007,7 @@ class MainWindow(QMainWindow):
         """Scale the face image so px_per_mm image pixels = 1 scene mm."""
         self._image_px_per_mm = px_per_mm
         self.scene.set_face_calibration(px_per_mm)
+        self._mark_dirty()   # calibration is persisted in the file
         self._pxmm_spin.blockSignals(True)
         self._pxmm_spin.setValue(px_per_mm)
         self._pxmm_spin.blockSignals(False)
@@ -3990,6 +4020,174 @@ class MainWindow(QMainWindow):
         v = self._pxmm_spin.value()
         if v > 0:
             self._apply_calibration(v)
+
+    # ------------------------------------------------------------------
+    # Dirty flag / window title
+    # ------------------------------------------------------------------
+
+    def _update_title(self):
+        name = (os.path.basename(self._current_path)
+                if self._current_path else "Untitled")
+        star = "*" if self._dirty else ""
+        self.setWindowTitle(f"GuildDraw {__version__} — {name}{star}")
+
+    def _mark_dirty(self):
+        if not self._dirty:
+            self._dirty = True
+            self._update_title()
+
+    def _clear_dirty(self):
+        if self._dirty:
+            self._dirty = False
+        self._update_title()
+
+    def _confirm_discard(self) -> bool:
+        """If there are unsaved changes, offer Save / Discard / Cancel.
+
+        Returns True when it is safe to proceed (saved, discarded, or clean).
+        """
+        if not self._dirty:
+            return True
+        r = QMessageBox.warning(
+            self, "Unsaved changes",
+            "This document has unsaved changes.",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if r == QMessageBox.StandardButton.Cancel:
+            return False
+        if r == QMessageBox.StandardButton.Save:
+            self._save()
+            return not self._dirty   # False if the save dialog was cancelled
+        return True   # Discard
+
+    def closeEvent(self, event):
+        if not self._confirm_discard():
+            event.ignore()
+            return
+        self._clear_autosave()
+        super().closeEvent(event)
+
+    # ------------------------------------------------------------------
+    # Autosave + crash recovery
+    # ------------------------------------------------------------------
+
+    _AUTOSAVE_MS  = 180_000   # 3 minutes
+    _AUTOSAVE_DIR = Path.home() / ".guilddraw" / "autosave"
+
+    def _autosave_paths(self) -> tuple[Path, Path]:
+        return (self._AUTOSAVE_DIR / "recovery.gdraw",
+                self._AUTOSAVE_DIR / "recovery.json")
+
+    def _do_autosave(self):
+        """Timer tick: snapshot dirty work to the recovery slot.
+
+        Must never interrupt the user — failures are silent; success shows a
+        brief status note.
+        """
+        if not self._dirty:
+            return
+        rec, meta = self._autosave_paths()
+        try:
+            self._AUTOSAVE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = str(rec) + ".tmp"
+            self._do_save_gdraw(tmp)
+            os.replace(tmp, rec)
+            meta.write_text(json.dumps({
+                "source_path": self._current_path,
+                "saved_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            }), encoding="utf-8")
+            self._status.showMessage("Autosaved", 2000)
+        except Exception:
+            pass
+
+    def _clear_autosave(self):
+        for p in self._autosave_paths():
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _offer_recovery(self):
+        """On startup: if a recovery autosave exists, offer to restore it."""
+        rec, meta = self._autosave_paths()
+        if not rec.exists():
+            return
+        source = None
+        when   = "an unknown time"
+        try:
+            info   = json.loads(meta.read_text(encoding="utf-8"))
+            source = info.get("source_path")
+            when   = info.get("saved_at", when)
+        except Exception:
+            pass
+        name = os.path.basename(source) if source else "an unsaved document"
+        r = QMessageBox.question(
+            self, "Recover unsaved work?",
+            f"GuildDraw found autosaved work from {when}\n({name}).\n\n"
+            "Restore it?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if r != QMessageBox.StandardButton.Yes:
+            self._clear_autosave()
+            return
+        self._open_gdraw(str(rec), remember=False)
+        # The recovered content belongs to the original document, not the
+        # recovery file: restore the real path and mark it unsaved.
+        self._current_path = (source if source and os.path.isfile(source)
+                              else None)
+        self._mark_dirty()
+        self._update_title()
+
+    # ------------------------------------------------------------------
+    # Recent files
+    # ------------------------------------------------------------------
+
+    _MAX_RECENT = 8
+
+    def _add_recent(self, path: str):
+        path = os.path.abspath(path)
+        self._recent_files = ([path]
+                              + [p for p in self._recent_files if p != path])
+        del self._recent_files[self._MAX_RECENT:]
+        self._prefs["recent_files"] = list(self._recent_files)
+        _prefs_mod.save(self._prefs)
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self):
+        m = self._recent_menu
+        m.clear()
+        if not self._recent_files:
+            empty = m.addAction("(empty)")
+            empty.setEnabled(False)
+            return
+        for p in self._recent_files:
+            act = m.addAction(os.path.basename(p),
+                              lambda checked=False, p=p: self._open_recent(p))
+            act.setToolTip(p)
+        m.addSeparator()
+        m.addAction("Clear Recent", self._clear_recent)
+
+    def _clear_recent(self):
+        self._recent_files = []
+        self._prefs["recent_files"] = []
+        _prefs_mod.save(self._prefs)
+        self._rebuild_recent_menu()
+
+    def _open_recent(self, path: str):
+        if not os.path.isfile(path):
+            QMessageBox.warning(self, "File not found",
+                                f"{path}\n\nno longer exists.")
+            self._recent_files = [p for p in self._recent_files if p != path]
+            self._prefs["recent_files"] = list(self._recent_files)
+            _prefs_mod.save(self._prefs)
+            self._rebuild_recent_menu()
+            return
+        if not self._confirm_discard():
+            return
+        self._open_path(path)
 
     # ------------------------------------------------------------------
     # File operations
@@ -4011,6 +4209,7 @@ class MainWindow(QMainWindow):
             if idx == 0:
                 self.view.fitInView(self.scene.sceneRect(),
                                     Qt.AspectRatioMode.KeepAspectRatio)
+            self._mark_dirty()
             self._status.showMessage(f"Loaded: {os.path.basename(path)}")
         else:
             self._status.showMessage(f"Failed to load image: {path}")
@@ -4021,6 +4220,7 @@ class MainWindow(QMainWindow):
             return
         self.scene.remove_face(idx)
         self._face_list.takeItem(idx)
+        self._mark_dirty()
         count = self._face_list.count()
         if count > 0:
             self._face_list.setCurrentRow(min(idx, count - 1))
@@ -4052,10 +4252,12 @@ class MainWindow(QMainWindow):
     def _on_face_opacity_changed(self, v: int):
         if self._selected_face_idx >= 0:
             self.scene.set_face_opacity(self._selected_face_idx, v / 100)
+            self._mark_dirty()
 
     def _on_face_rotation_changed(self, v: float):
         if self._selected_face_idx >= 0:
             self.scene.set_face_rotation(self._selected_face_idx, v)
+            self._mark_dirty()
 
     def _on_canvas_lock_toggled(self, locked: bool):
         if self._selected_face_idx >= 0:
@@ -4066,15 +4268,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _new(self):
-        any_content = any(ws.doc_curves for ws in self._workspaces)
-        if any_content:
-            r = QMessageBox.question(
-                self, "New Document",
-                "Discard all workspaces and start over?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if r != QMessageBox.StandardButton.Yes:
-                return
+        if not self._confirm_discard():
+            return
         for ws in self._workspaces:
             ws.edit_tool.clear()
             for c in list(ws.doc_curves):
@@ -4098,17 +4293,23 @@ class MainWindow(QMainWindow):
         self._refresh_timeline_list()
         self._update_undo_actions()
         self._current_path = None
-        self.setWindowTitle(f"GuildDraw {__version__}")
+        self._clear_autosave()
+        self._clear_dirty()
         self._status.showMessage("New document")
 
     def _open(self):
+        if not self._confirm_discard():
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, "Open GuildDraw File", "",
             "GuildDraw Files (*.gdraw *.svg);;GuildDraw Project (*.gdraw);;SVG Files (*.svg)"
         )
         if not path:
             return
+        self._open_path(path)
 
+    def _open_path(self, path: str):
+        """Dispatch an open by extension. Caller handles the discard prompt."""
         if path.lower().endswith(".gdraw"):
             self._open_gdraw(path)
         else:
@@ -4126,6 +4327,8 @@ class MainWindow(QMainWindow):
         # Switch to Front tab
         self._ws_tab_widget.setCurrentIndex(0)
         self._current_path = path
+        self._clear_dirty()
+        self._add_recent(path)
         self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         bm = self._workspaces[0].bookmarks
         self._status.showMessage(
@@ -4133,8 +4336,8 @@ class MainWindow(QMainWindow):
             + (f"  ·  {len(bm)} bookmark(s)" if bm else "")
         )
 
-    def _open_gdraw(self, path: str):
-        """Load a .gdraw ZIP into all three workspaces."""
+    def _open_gdraw(self, path: str, remember: bool = True):
+        """Load a .gdraw ZIP into all four workspaces."""
         try:
             from .export.gdraw import load_gdraw
             all_data = load_gdraw(path)
@@ -4148,8 +4351,30 @@ class MainWindow(QMainWindow):
         active = all_data.get("active_tab", "front")
         target_idx = tab_names.index(active) if active in tab_names else 0
         self._ws_tab_widget.setCurrentIndex(target_idx)
-        self._current_path = path
         self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+        errors = all_data.get("errors") or []
+        if errors:
+            # A corrupt tab loaded empty: do NOT keep the path — Save would
+            # overwrite the original file with that empty content. Force
+            # Save As and flag the document as unsaved.
+            QMessageBox.warning(
+                self, "Some workspaces failed to load",
+                "These workspaces could not be read and were loaded empty:\n\n"
+                + "\n".join(f"• {e}" for e in errors)
+                + "\n\nThe original file will not be touched — saving will "
+                  "ask for a new file name (Save As).")
+            self._current_path = None
+            self._dirty = True
+            self._update_title()
+            self._status.showMessage(
+                f"Opened with errors: {os.path.basename(path)}")
+            return
+
+        self._current_path = path
+        self._clear_dirty()
+        if remember:
+            self._add_recent(path)
         self._status.showMessage(f"Opened: {os.path.basename(path)}")
 
     def _load_ws_data(self, ws: "WorkspaceState", data: dict):
@@ -4241,15 +4466,32 @@ class MainWindow(QMainWindow):
             self._do_save(path)
 
     def _do_save(self, path: str):
+        """Atomic save: write a temp file, keep the previous version as .bak,
+        then replace. A failure mid-write can never destroy the existing file."""
+        tmp = path + ".tmp"
         try:
             if path.lower().endswith(".gdraw"):
-                self._do_save_gdraw(path)
+                self._do_save_gdraw(tmp)
             else:
-                self._do_save_svg(path)
-            self.setWindowTitle(f"GuildDraw — {os.path.basename(path)}")
-            self._status.showMessage(f"Saved: {os.path.basename(path)}")
+                self._do_save_svg(tmp)
+            if os.path.exists(path):
+                try:
+                    os.replace(path, path + ".bak")
+                except OSError:
+                    pass   # backup is best-effort; the save still proceeds
+            os.replace(tmp, path)
         except Exception as e:
+            try:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+            except OSError:
+                pass
             QMessageBox.critical(self, "Save failed", str(e))
+            return
+        self._clear_dirty()
+        self._add_recent(path)
+        self._clear_autosave()
+        self._status.showMessage(f"Saved: {os.path.basename(path)}")
 
     def _ws_to_data_dict(self, ws: "WorkspaceState") -> dict:
         """Build the data dict for save_svg from a WorkspaceState."""

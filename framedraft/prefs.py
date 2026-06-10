@@ -14,6 +14,8 @@ _FILE = _DIR / "prefs.json"
 DEFAULTS: dict = {
     # Appearance
     "dark_mode":            False,
+    # Recently opened files (most recent first)
+    "recent_files":         [],
     # Drawing
     "default_line_weight":  1.5,
     # Startup toggle states for toolbar buttons

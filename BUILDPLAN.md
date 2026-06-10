@@ -12,7 +12,7 @@ and export clean DXF for GuildCAM — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-09, v0.9.1 — M1 complete)*
+## Status snapshot *(2026-06-09, v0.9.2 — M1 + M2 complete)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -25,9 +25,10 @@ DXF R2000 SPLINE export with validator, PNG render, PyInstaller Windows build.
 **Not yet built:** snap-along-curve, copy/paste/transform, frame fill overlay,
 text/engraving, GuildCAM hardware round-trip, BRIDGE layer tooling.
 
-**Code health:** ~10,700 lines; geometry core is solid. The M1 bug list from the
-2026-06-09 review is fixed (v0.9.1) and the repo is under git. Remaining gaps:
-no unsaved-changes protection (M2), no tests (M3), and `app.py` is a 4,400-line
+**Code health:** ~10,900 lines; geometry core is solid. The M1 bug list is fixed
+(v0.9.1), the repo is under git, and data safety landed in v0.9.2 (dirty-flag
+guards, atomic saves with .bak, autosave/crash recovery, surfaced load errors,
+Recent Files). Remaining gaps: no tests (M3), and `app.py` is a 4,500-line
 god-object whose proxy-property pattern breeds bugs (M4).
 
 ---
@@ -99,24 +100,37 @@ DimItem drags gained a 4 px threshold and an undo hook
 **Also in M1:** make Shapely a hard import (it's in requirements; the silent
 no-Shapely fallback makes Trim/Split mysteriously dead instead of failing loudly).
 
-## M2 — Data safety (v0.9.2) · *never lose a maker's work again*
+## M2 — Data safety (v0.9.2) · *never lose a maker's work again* — ✅ DONE 2026-06-09
 
-This is the highest-value milestone in the plan.
+1. ✅ **`git init`** + initial commit + `.gitignore` — done at the start of M1;
+   tags `v0.9.1`, `v0.9.2`.
+2. ✅ **Dirty flag + unsaved-changes guard** — single document-wide flag set by
+   `_push_undo_snapshot` (plus calibration, face images, bookmarks, Mirror
+   Copy, forming spins, undo/redo); cleared on save/open/new. `closeEvent`,
+   File → New, File → Open, and Open Recent all run `_confirm_discard()`
+   (Save / Discard / Cancel). Title shows `GuildDraw <ver> — <name>*`.
+3. ✅ **Surface load errors** — `load_gdraw` returns an `errors` list; on a
+   partial load the app warns, sets `_current_path = None` (forcing Save As so
+   the original is never overwritten with empty tabs), and marks dirty.
+4. ✅ **Backup-on-save** — `_do_save` writes `<file>.tmp`, moves the previous
+   version to `<file>.bak`, then atomic-replaces. A mid-write failure can
+   never destroy the existing file.
+5. ✅ **Autosave / crash recovery** — 3-minute timer writes
+   `~/.guilddraw/autosave/recovery.gdraw` (+ JSON sidecar with source path and
+   timestamp) whenever dirty; cleared on save / clean close / New. On launch,
+   an existing recovery file triggers a restore prompt; restored content keeps
+   the original document path and is marked unsaved.
+6. ✅ **Recent Files** — File → Open Recent (8 entries, persisted in prefs,
+   full-path tooltips, Clear Recent, missing files pruned on click).
 
-1. **`git init`** + initial commit + `.gitignore` (`.venv/`, `dist/`, `build/`,
-   `__pycache__/`, `.pytest_cache/`). Commit at every milestone from here on.
-2. **Dirty flag + unsaved-changes guard** — track modification per workspace
-   (set on every `_push_undo_snapshot`, cleared on save). Override `closeEvent`;
-   prompt on File → New *and* File → Open. Show `*` in the title bar.
-3. **Surface load errors** — `load_gdraw` currently swallows per-tab parse errors
-   (`except Exception: pass`), so a corrupt tab loads *empty* and the next save
-   destroys it. Collect errors, show them, and refuse to mark the document clean.
-4. **Backup-on-save** — write to a temp file, then atomic-replace; keep one
-   `.gdraw.bak` of the previous version.
-5. **Autosave / crash recovery** — timer-based autosave to
-   `~/.guilddraw/autosave/<name>.gdraw` every N minutes when dirty; offer recovery
-   on next launch if an autosave is newer than its source.
-6. **Recent Files** menu (persisted in prefs).
+*Also fixed en route (user-reported):* toolbar visibility is now the AND of
+Settings prefs and per-workspace rules — the Settings dialog no longer
+resurrects workspace-hidden buttons (e.g. Mirror Copy on Front), and tab
+switches no longer resurrect pref-hidden ones.
+
+*Known gap (accepted):* dragging an unlocked reference image doesn't mark the
+document dirty (image position is saved but the drag bypasses all hooks);
+revisit in M4 when document state is centralized.
 
 ## M3 — Engineering foundation (v0.9.3) · *tests + tooling*
 

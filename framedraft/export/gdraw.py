@@ -81,8 +81,13 @@ def load_gdraw(path: str) -> dict:
 
     Backward compat: if the file contains temple.svg but not temple_r.svg,
     temple.svg is loaded into temple_r and temple_l is left empty.
+
+    Per-tab parse failures do not abort the load; they are reported in
+    result["errors"] (list of "tab: message" strings) and the affected tab
+    is left empty.  Callers MUST surface these — silently treating a corrupt
+    tab as empty lets the next save destroy it.
     """
-    result: dict = {"active_tab": "front"}
+    result: dict = {"active_tab": "front", "errors": []}
     for tab in _TAB_NAMES:
         result[tab] = _empty_ws_data()
 
@@ -116,8 +121,8 @@ def load_gdraw(path: str) -> dict:
                 with open(tmp_path, "wb") as f:
                     f.write(zf.read(svg_name))
                 result[tab] = _svg_mod.load_svg(tmp_path)
-            except Exception:
-                pass   # leave as empty default
+            except Exception as exc:
+                result["errors"].append(f"{tab}: {exc}")   # tab stays empty
             finally:
                 os.unlink(tmp_path)
 
