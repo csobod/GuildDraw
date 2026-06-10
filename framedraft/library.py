@@ -103,7 +103,6 @@ class HingeLibrary:
     def thumbnail_pixmap(self, curves: list, size: int = 64):
         """Render a *size*×*size* QPixmap preview of *curves*."""
         from PySide6.QtGui import QImage, QPainter, QPen, QColor, QPixmap
-        from PySide6.QtCore import Qt
         from .canvas.items import build_path
 
         # Bounding box over all curve nodes

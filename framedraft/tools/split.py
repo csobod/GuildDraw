@@ -130,7 +130,7 @@ class SplitTool(QObject):
             self.split_applied.emit(orig, parts)
 
         n_extra = len(extra_pairs)
-        msg = f"Split → 2 curves"
+        msg = "Split → 2 curves"
         if n_extra:
             msg += f"  (+{n_extra} intersecting curve{'s' if n_extra>1 else ''} also split)"
         msg += "  |  click to split more  |  Esc to exit"

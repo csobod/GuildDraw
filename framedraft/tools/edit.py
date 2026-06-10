@@ -102,7 +102,6 @@ class EditTool(QObject):
         if curve.kind in ("circle", "arc"):
             return False   # circles/arcs don't support node insertion
         mx, my = scene_pos.x(), scene_pos.y()
-        nodes  = curve.nodes
 
         if curve.kind == "line":
             return self._insert_line_node(curve, mx, my)

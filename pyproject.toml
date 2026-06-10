@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".venv", "dist", "build"]
+
+[tool.ruff.lint]
+# F = pyflakes (real bugs: undefined/unused names), E9 = syntax errors,
+# B = bugbear (likely bugs). Style rules (E1xx/E2xx) are deliberately off:
+# the codebase uses aligned assignments.
+select = ["F", "E9", "B"]

@@ -628,8 +628,7 @@ class CanvasView(QGraphicsView):
             super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
-        key  = event.key()
-        mods = event.modifiers()
+        key = event.key()
 
         # Delete / Backspace: remove selected curves (select mode only)
         if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
@@ -686,17 +685,6 @@ class WorkspaceState:
     }
 
     def __init__(self, workspace_type: str, status_bar, parent_win):
-        from .canvas.scene import FrameScene
-        from .canvas.snapping import SnapEngine
-        from .calibration import CalibTool
-        from .construction import ConstructionGuides, BoxingGuide, RectGuide
-        from .tools.draw import DrawTool
-        from .tools.edit import EditTool
-        from .tools.dim import DimTool
-        from .tools.circle import CircleTool
-        from .tools.trim import TrimTool
-        from .tools.split import SplitTool
-
         self.workspace_type = workspace_type
 
         # ── Document state ────────────────────────────────────────────────
@@ -738,7 +726,7 @@ class WorkspaceState:
         self.drag_moving_dims:  list = []
 
         # ── Sidebar state saved/restored on tab switch ────────────────────
-        from .construction import ConstructionGuides as _CG
+        _CG = ConstructionGuides
         self.mirror_enabled: bool  = True
         self.snap_enabled:   bool  = True
         self.smooth_handles: bool  = True
@@ -3159,7 +3147,6 @@ class MainWindow(QMainWindow):
 
     def _insert_node(self, curve: Curve, scene_pos):
         """Insert a node at the nearest point on *curve* to *scene_pos*."""
-        from PySide6.QtCore import QPointF
         self._push_undo_snapshot()
         if self._edit_tool.insert_node_at(curve, scene_pos):
             self.scene.refresh_curve(curve)
@@ -4349,7 +4336,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Open failed", str(e))
             return
         tab_names = ["front", "temple_r", "temple_l", "hinge"]
-        for ws, tab in zip(self._workspaces, tab_names):
+        for ws, tab in zip(self._workspaces, tab_names, strict=True):
             self._load_ws_data(ws, all_data[tab])
         # Switch to the active tab stored in the file
         active = all_data.get("active_tab", "front")
@@ -4548,7 +4535,7 @@ class MainWindow(QMainWindow):
         tab_names = ["front", "temple_r", "temple_l", "hinge"]
         from .export.gdraw import save_gdraw
         ws_data = {}
-        for ws, tab in zip(self._workspaces, tab_names):
+        for ws, tab in zip(self._workspaces, tab_names, strict=True):
             ws_data[tab] = self._ws_to_data_dict(ws)
         active_tab = tab_names[self._ws_tab_widget.currentIndex()]
         save_gdraw(ws_data, path, active_tab=active_tab)

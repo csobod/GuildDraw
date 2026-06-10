@@ -1,10 +1,9 @@
 """DimTool — two-click snap-aware dimension placement."""
 
-import math
 from PySide6.QtCore import QObject, Signal, QPointF, Qt
 from PySide6.QtGui import QPen, QColor
 
-from ..document import DimLine, SplineNode
+from ..document import DimLine
 
 
 class DimTool(QObject):

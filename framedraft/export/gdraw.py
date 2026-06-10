@@ -17,7 +17,7 @@ import tempfile
 import zipfile
 
 from . import svg as _svg_mod
-from ..document import Calibration, FaceImage, FormingMetadata, MachinedBridge, MirrorAxis
+from ..document import Calibration, FormingMetadata, MachinedBridge, MirrorAxis
 
 _MANIFEST_VERSION = 1
 _TAB_NAMES = ["front", "temple_r", "temple_l", "hinge"]

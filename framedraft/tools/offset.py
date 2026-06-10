@@ -15,7 +15,6 @@ Negative d = inward.
 
 from __future__ import annotations
 
-import math
 
 from PySide6.QtCore import QObject, Signal, QPointF, Qt, QRect
 from PySide6.QtGui  import QPen, QColor, QFont

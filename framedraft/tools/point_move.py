@@ -249,7 +249,6 @@ class PointMoveTool(QObject):
         self.cancelled.emit()
 
     def _add_grab_dot(self, pos: QPointF) -> None:
-        from PySide6.QtWidgets import QGraphicsEllipseItem
         R   = 5
         col = QColor(_AMBER)
         pen = QPen(col, 1.5)

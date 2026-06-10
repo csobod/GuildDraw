@@ -12,7 +12,7 @@ and export clean DXF for GuildCAM — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-09, v0.9.2 — M1 + M2 complete)*
+## Status snapshot *(2026-06-09, v0.9.3 — M1–M3 complete)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -28,8 +28,9 @@ text/engraving, GuildCAM hardware round-trip, BRIDGE layer tooling.
 **Code health:** ~10,900 lines; geometry core is solid. The M1 bug list is fixed
 (v0.9.1), the repo is under git, and data safety landed in v0.9.2 (dirty-flag
 guards, atomic saves with .bak, autosave/crash recovery, surfaced load errors,
-Recent Files). Remaining gaps: no tests (M3), and `app.py` is a 4,500-line
-god-object whose proxy-property pattern breeds bugs (M4).
+Recent Files). v0.9.3 added the test suite (45 tests: geometry, SVG round-trip,
+validator, gdraw, DXF) and a ruff-clean codebase. Remaining gap: `app.py` is a
+4,500-line god-object whose proxy-property pattern breeds bugs (M4).
 
 ---
 
@@ -137,20 +138,26 @@ switches no longer resurrect pref-hidden ones.
 document dirty (image position is saved but the drag bypasses all hooks);
 revisit in M4 when document state is centralized.
 
-## M3 — Engineering foundation (v0.9.3) · *tests + tooling*
+## M3 — Engineering foundation (v0.9.3) · *tests + tooling* — ✅ DONE 2026-06-09
 
-1. Add `pytest` + `ruff` to `requirements-dev.txt`; add minimal `pyproject.toml`.
-2. **Geometry tests** (pure Python, no Qt — highest ROI):
-   `extract_open_segment` / `extract_wrapping_segment` invariants,
-   `split_curve_at_t`, `offset_curve` (line miter, closed spline, circle/arc),
-   `dedup_ts`, arc angle conventions.
-3. **SVG round-trip test** — `save_svg → load_svg` equality for every curve kind,
-   dims, bookmarks, face-image metadata.
-4. **Validator tests** — OUTLINE/LENS counts with mirror on/off, closure tolerance.
-5. **DXF smoke test** — export a known document; reload with ezdxf; assert entity
-   types, layers, and closure flags.
-6. Mirror-math tests (vertical + horizontal reflection of line/spline/circle/arc —
-   this math is duplicated in four places today; tests first, then dedupe in M4).
+1. ✅ `pytest` + `ruff` in `requirements-dev.txt`; `pyproject.toml` configures
+   pytest (`tests/`) and ruff (F/E9/B — bug rules only, style rules off to
+   respect the aligned-assignment house style).
+2. ✅ **45 tests, all green, <1 s**: `tests/test_geometry.py` (point_at_t,
+   arc_bbox, mm-space dedup incl. the old 0.04-t regression, intersections +
+   endpoint filtering, split continuity, segment extraction incl. wrapping,
+   offset invariants), `tests/test_svg_roundtrip.py` (every curve kind, handles,
+   weights, dims, bookmarks, metadata, mirrored-curve exclusion),
+   `tests/test_validate.py` (counts, mirror doubling, closure tolerance),
+   `tests/test_gdraw.py` (4-workspace round-trip, corrupt-tab error reporting,
+   legacy temple.svg mapping), `tests/test_dxf.py` (entity types/layers, closed
+   flag, Y-negation, arc angle swap+negate, mirror-layer duplication).
+3. ✅ **Ruff clean** — fixed ~39 findings: dead module/local imports (incl. the
+   shadowing re-import block in `WorkspaceState.__init__`), unused locals, a
+   latent undefined-name in scene.py's MirrorAxis annotation, `zip(strict=True)`
+   on the workspace/tab pairings.
+4. ⏭ Mirror-math reflection tests deferred to M4 (written alongside the
+   dedupe of the four duplicated implementations they'll be guarding).
 
 ## M4 — Architecture cleanup (v0.9.4) · *make the next ten features cheap*
 

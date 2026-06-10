@@ -19,7 +19,7 @@ Curve parameterisation: t in [0.0, 1.0].
 
 from __future__ import annotations
 import math
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 
 from .document import Curve, SplineNode, ControlPoint
 
@@ -325,8 +325,7 @@ def _extract_spline_segment(curve: Curve,
     Extract [t_start, t_end] from an open or closed spline as a new open spline.
     Assumes t_start < t_end and both are in [0, 1].
     """
-    nodes = curve.nodes
-    ns    = _n_segs(curve)
+    ns = _n_segs(curve)
 
     def _seg_local(t):
         scaled = t * ns

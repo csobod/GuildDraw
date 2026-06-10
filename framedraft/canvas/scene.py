@@ -1,9 +1,10 @@
-from PySide6.QtWidgets import QGraphicsScene, QGraphicsPixmapItem, QGraphicsPathItem
+from PySide6.QtWidgets import QGraphicsScene, QGraphicsPixmapItem
 from PySide6.QtCore import QRectF, Qt, QPointF
 from PySide6.QtGui import QColor, QPen, QPixmap, QPainterPath
 
 from ..document import Curve, Layer, SplineNode, ControlPoint
 from . import items as _items
+from .mirror import MirrorAxis
 
 _DEFAULT_RECT = QRectF(-150, -100, 300, 200)   # mm
 
@@ -87,10 +88,9 @@ class FrameScene(QGraphicsScene):
         self._cross_hw: float = 150.0
         self._cross_hh: float = 100.0
         self._draw_cross(0.0, 0.0, self._cross_hw, self._cross_hh)
-        self.mirror: "MirrorAxis | None" = None
+        self.mirror: MirrorAxis | None = None
 
     def init_mirror(self, horizontal: bool = False):
-        from .mirror import MirrorAxis
         self.mirror = MirrorAxis(self, horizontal=horizontal)
 
     # ------------------------------------------------------------------
@@ -372,7 +372,7 @@ class FrameScene(QGraphicsScene):
 
     def dim_for_item(self, scene_item):
         """Return the DimLine whose DimItem is *scene_item*, or None."""
-        for dim_id, it in self._dim_items.items():
+        for it in self._dim_items.values():
             if it is scene_item:
                 # find the DimLine by id — caller passes dim list; we just
                 # return the item's .dim attribute
