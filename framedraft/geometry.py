@@ -148,6 +148,58 @@ def arc_bbox(cx: float, cy: float, r: float,
     return (min(xs), min(ys), max(xs), max(ys))
 
 
+_KAPPA = 0.5522847498307936   # 4/3·tan(π/8): cubic Bézier quarter-circle constant
+
+
+def circle_to_spline(curve: Curve) -> Curve:
+    """4-segment closed cubic-Bézier approximation of a circle (≤0.028% error).
+
+    Used when a non-uniform scale would turn the circle into an ellipse,
+    which the circle primitive cannot represent.
+    """
+    cx, cy = curve.nodes[0].x, curve.nodes[0].y
+    r = curve.radius or 0.0
+    k = _KAPPA * r
+    nodes = []
+    for ang in (0.0, 90.0, 180.0, 270.0):
+        a = math.radians(ang)
+        x, y = cx + r * math.cos(a), cy + r * math.sin(a)
+        tx, ty = -math.sin(a), math.cos(a)   # unit tangent, increasing angle
+        n = SplineNode(x=x, y=y)
+        n.cp_out = ControlPoint(x + tx * k, y + ty * k)
+        n.cp_in  = ControlPoint(x - tx * k, y - ty * k)
+        nodes.append(n)
+    return Curve(kind="spline", layer=curve.layer, nodes=nodes, closed=True,
+                 line_weight=curve.line_weight, group_id=curve.group_id)
+
+
+def arc_to_spline(curve: Curve) -> Curve:
+    """Open cubic-Bézier approximation of an arc (≤90° per segment)."""
+    cx, cy = curve.nodes[0].x, curve.nodes[0].y
+    r  = curve.radius or 0.0
+    sa = curve.start_angle or 0.0
+    sweep = ((curve.end_angle or 0.0) - sa) % 360
+    if sweep < 1e-9:
+        sweep = 360.0
+    nseg = max(1, int(math.ceil(sweep / 90.0)))
+    step = math.radians(sweep / nseg)
+    k = (4.0 / 3.0) * math.tan(step / 4.0) * r
+    nodes = []
+    a0 = math.radians(sa)
+    for i in range(nseg + 1):
+        a = a0 + step * i
+        x, y = cx + r * math.cos(a), cy + r * math.sin(a)
+        tx, ty = -math.sin(a), math.cos(a)
+        n = SplineNode(x=x, y=y)
+        n.cp_out = ControlPoint(x + tx * k, y + ty * k)
+        n.cp_in  = ControlPoint(x - tx * k, y - ty * k)
+        nodes.append(n)
+    nodes[0].cp_in   = None
+    nodes[-1].cp_out = None
+    return Curve(kind="spline", layer=curve.layer, nodes=nodes, closed=False,
+                 line_weight=curve.line_weight, group_id=curve.group_id)
+
+
 def mirror_curve(curve: Curve, axis_x: float = 0.0,
                  horizontal: bool = False) -> Curve:
     """Reflect *curve* across the mirror axis, returning a new independent Curve.

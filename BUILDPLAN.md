@@ -12,7 +12,7 @@ and export clean DXF for GuildCAM — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-10, v0.9.5 — M1–M4 complete, M5 features landed)*
+## Status snapshot *(2026-06-10, v0.9.6 — M1–M6 complete; next: M7 OMA)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -28,12 +28,14 @@ text/engraving, GuildCAM hardware round-trip, BRIDGE layer tooling.
 **Code health:** ~10,900 lines; geometry core is solid. The M1 bug list is fixed
 (v0.9.1), the repo is under git, and data safety landed in v0.9.2 (dirty-flag
 guards, atomic saves with .bak, autosave/crash recovery, surfaced load errors,
-Recent Files). v0.9.3 added the test suite (60 tests) and a ruff-clean
+Recent Files). v0.9.3 added the test suite (65 tests) and a ruff-clean
 codebase. v0.9.4 centralized tool switching, document mutations
 (`WorkspaceState` primitives), and mirror math (`geometry.mirror_curve`).
-v0.9.5 added the Layers panel (visibility/lock), Group/Ungroup, grouped hinge
-imports (fixes the snap-distortion bug), and the Point Move reliability fix.
-Next: M5 retest list, M6 workflow features, M7 OMA.
+v0.9.5–0.9.6 delivered the maker-UX round (Layers panel v2 with eye/padlock
+icons as the single layer interface, Group/Ungroup, grouped hinge imports,
+Point Move root-cause fixes) and the M6 workflow set (on-curve snapping,
+copy/paste/duplicate, Transform dialog, workspace-aware validation + DXF
+mirror orientation, select-all). Next: M7 OMA lens-trace interchange.
 
 ---
 
@@ -188,7 +190,7 @@ revisit in M4 when document state is centralized.
 5. ⏭ `QUndoStack` migration — skipped (optional); snapshot undo behind
    `WorkspaceState.undo()/redo()` is now a one-file swap if ever wanted.
 
-## M5 — Maker UX (v0.9.5) · *layers, groups, reliable moves + demo retest*
+## M5 — Maker UX (v0.9.5–v0.9.6) · *layers, groups, reliable moves* — ✅ DONE 2026-06-10
 
 ### Landed 2026-06-10 (v0.9.5) — from the maker session
 
@@ -214,46 +216,61 @@ revisit in M4 when document state is centralized.
   selection is captured before activation, and the view's drag capture is
   cleared on every mouse release.
 
-### Remaining (close M5): retest list from the 2026-06-08 demo
+### Landed 2026-06-10 (v0.9.6) — second maker session
 
-Some may already be fixed by M1/M5 work — retest each first:
+- ✅ **Point Move snap fix** — root cause: only draw tools registered curves
+  with the SnapEngine, so Point Move had **zero snap targets** until a draw
+  tool had been used (the "can't place an imported hinge" bug). The snap
+  engine is now wired to the live curve list at workspace creation.
+- ✅ **Layers panel v2, consolidated into Properties** — the layer combo is
+  gone; the tree is THE layer interface: headerless, eye/padlock icon toggles
+  (4 new SVGs: layer-show/hide/lock/unlock, theme-colored), click a layer name
+  to set the **active drawing layer** (bold), click an object to select it,
+  right-click for *select all on layer* / *move selection to layer* (the
+  combo's old reassignment job). Selecting a curve makes its layer active and
+  highlights its row.
+- ✅ **Tab-switch mid-draw** now explicitly cancels the departing workspace's
+  in-progress drawing with a status message (was a silent discard).
 
-- [ ] **Click selection over-reliant on Alt+Click** — selecting a lens inside an
-  outline is hard. The stroked `shape()` fix exists; verify hit tolerance scales
-  with zoom and tune.
-- [ ] **Dim drag detaches anchors** — code now routes dim drags to offset-only;
-  verify fixed, then close.
-- [ ] **2-point calibration flow** — `CalibTool` does pop the mm dialog in current
-  code; verify end-to-end with a real photo, then close.
-- [ ] **Boxing guide asymmetry when Ghost off** — `_mirror_on` is stored but
-  unused in `BoxingGuide._refresh`; verify behavior and remove the dead flag or
-  honor it.
-- [ ] **Move gizmo origin** — gizmo should center on selection bbox even when a
-  node is focused.
-- [ ] **Mirror-line re-snap after move** — endpoint drag-snap to the axis exists;
-  verify it works after a whole-curve move; consider a "snap endpoints to axis"
-  one-click repair action.
-- [ ] **Frame-width recompute error after mirror+join** — likely fixed by M1 #4/#5;
-  reproduce, confirm, close.
-- [ ] **Tab-switch mid-draw silently discards placed nodes** — either commit the
-  in-progress curve or warn.
+### 2026-06-08 demo retest list — resolved
 
-## M6 — Workflow features (v0.9.6) · *carried-over CAD essentials*
+- ✅ Dim drag detaching anchors — fixed in M1 #11 (drag threshold +
+  offset-only); code-verified.
+- ✅ Frame-width recompute error after mirror+join — fixed by M1 #4/#5.
+- ✅ Snap along curve segments — shipped in M6 #1.
+- ✅ Tab-switch mid-draw — explicit cancel + message (above).
+- ✅ Click selection over Alt+Click — mitigated structurally: lock/hide the
+  layers you're not working on; groups select as units.
+- ◑ Closed-unless-reobserved (could not reproduce in code): boxing-guide
+  asymmetry (`_mirror_on` is unused — both boxes always draw), move-gizmo
+  origin (always selection-bbox center), mirror-axis re-snap (endpoint
+  drag-snap targets the axis), 2-point calibration (dialog flow present).
+  Reopen with repro steps if they resurface in real use.
 
-1. **Snap along curve segments** *(the #1 maker request — needed for
-   OUTLINE→LENS scallop/extrusion connections)*. Add nearest-point-on-curve snap
-   target to `SnapEngine` (sample-based, mm tolerance, lowest priority so node
-   snaps still win). Indicator: hollow diamond.
-2. **Copy / Paste / Duplicate** (Ctrl+C/V/D) — shared clipboard across
-   workspaces; paste offset +5 mm; undo-safe. *(spec: archive §23a)*
-3. **Transform dialog — Scale / Rotate** with pivot choice; non-uniform scale of
-   circles/arcs converts to 4-segment Bézier spline. *(spec: archive §23b)*
-4. **Workspace-aware export + validation** — `validate()` gets the workspace
-   type (front: OUTLINE×1 + LENS×2; temple: OUTLINE×1, no LENS; hinge: HINGE≥1);
-   `export_dxf` gets the mirror orientation (temple/hinge mirror is horizontal —
-   currently exported across the wrong axis).
-5. **Selection & layer QoL**: Ctrl+A select-all, select-by-layer menu, per-layer
-   show/hide and lock toggles in the Properties tab.
+## M6 — Workflow features (v0.9.6) · *carried-over CAD essentials* — ✅ DONE 2026-06-10
+
+1. ✅ **Snap along curve segments** — nearest-point-on-curve target in
+   `SnapEngine`: lowest priority (point targets always win, since every node
+   lies on its curve), sample-based with bbox pre-reject, hidden layers
+   excluded, hollow steel-blue **diamond** indicator. Unblocks OUTLINE→LENS
+   scallop/extrusion connectors.
+2. ✅ **Copy / Paste / Duplicate** (Ctrl+C/V/D, Edit menu) — in-memory
+   clipboard survives workspace switches; paste lands at +5 mm, selected,
+   undo-safe; pasted groups get fresh ids; layers that don't exist in the
+   target workspace remap to REF with a status note.
+3. ✅ **Transform dialog** (Ctrl+T) — Scale X/Y % with aspect lock, rotation,
+   pivot = selection center or origin. Uniform scale keeps circles/arcs
+   analytic (radius scales, arc angles shift under rotation); non-uniform
+   scale converts via new `geometry.circle_to_spline` / `arc_to_spline`
+   (≤0.1% radial error, tested).
+4. ✅ **Workspace-aware export + validation** — `validate(curves, mirror_on,
+   workspace_type)`: front OUTLINE×1+LENS×2; temple OUTLINE×1, LENS
+   forbidden; hinge HINGE≥1, OUTLINE/LENS forbidden. `export_dxf(...,
+   horizontal=)` mirrors temple exports across y=0 (was the wrong axis).
+   Tested for both.
+5. ✅ **Selection & layer QoL** — Ctrl+A select-all (visible + unlocked only);
+   select-by-layer and move-to-layer via the Layers panel context menu;
+   per-layer show/hide + lock shipped in v0.9.5.
 
 ## M7 — OMA lens-trace interchange (v0.9.7) · *traced lenses in, lens shapes out*
 

@@ -46,6 +46,26 @@ def test_open_contour_within_tolerance_is_warning():
     assert any("auto-close" in w for w in warnings)
 
 
+def test_temple_workspace_rules():
+    temple_arm = closed_diamond(60, 0, 50, layer=Layer.OUTLINE)
+    errors, _ = validate([temple_arm], mirror_on=False, workspace_type="temple_r")
+    assert errors == []
+    errors, _ = validate([temple_arm, circle(0, 0, 10)],   # stray LENS
+                         mirror_on=False, workspace_type="temple_r")
+    assert any("LENS" in e for e in errors)
+
+
+def test_hinge_workspace_rules():
+    pocket = circle(0, 0, 2, layer=Layer.HINGE)
+    errors, _ = validate([pocket], mirror_on=False, workspace_type="hinge")
+    assert errors == []
+    errors, _ = validate([], mirror_on=False, workspace_type="hinge")
+    assert any("HINGE" in e for e in errors)
+    errors, _ = validate([pocket, outline()], mirror_on=False,
+                         workspace_type="hinge")
+    assert any("OUTLINE" in e for e in errors)
+
+
 def test_mirrored_flag_curves_are_ignored():
     ghost = circle(15, 0, 10)
     ghost.mirrored = True

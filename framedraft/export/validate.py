@@ -23,8 +23,15 @@ def _endpoint_gap_mm(curve: Curve) -> float:
 def validate(
     curves:    list,   # original (non-mirrored) Curve objects
     mirror_on: bool,
+    workspace_type: str = "front",
 ) -> tuple[list[str], list[str]]:
-    """Return (errors, warnings).  Export is blocked if errors is non-empty."""
+    """Return (errors, warnings).  Export is blocked if errors is non-empty.
+
+    Layer-count rules depend on the workspace:
+      front    — OUTLINE ×1, LENS ×2 (mirror doubling counts)
+      temple_* — OUTLINE ×1, no LENS allowed
+      hinge    — HINGE ≥1, no OUTLINE/LENS allowed
+    """
     errors:   list[str] = []
     warnings: list[str] = []
 
@@ -37,14 +44,34 @@ def validate(
     for c in export:
         by_layer[c.layer] += 1
 
-    if by_layer[Layer.OUTLINE] != 1:
-        errors.append(
-            f"Need exactly 1 OUTLINE contour, found {by_layer[Layer.OUTLINE]}."
-        )
-    if by_layer[Layer.LENS] != 2:
-        errors.append(
-            f"Need exactly 2 LENS contours, found {by_layer[Layer.LENS]}."
-        )
+    if workspace_type == "front":
+        if by_layer[Layer.OUTLINE] != 1:
+            errors.append(
+                f"Need exactly 1 OUTLINE contour, found {by_layer[Layer.OUTLINE]}."
+            )
+        if by_layer[Layer.LENS] != 2:
+            errors.append(
+                f"Need exactly 2 LENS contours, found {by_layer[Layer.LENS]}."
+            )
+    elif workspace_type in ("temple_r", "temple_l"):
+        if by_layer[Layer.OUTLINE] != 1:
+            errors.append(
+                f"Temple needs exactly 1 OUTLINE contour, found {by_layer[Layer.OUTLINE]}."
+            )
+        if by_layer[Layer.LENS]:
+            errors.append(
+                f"LENS does not belong in a temple workspace "
+                f"(found {by_layer[Layer.LENS]})."
+            )
+    elif workspace_type == "hinge":
+        if by_layer[Layer.HINGE] < 1:
+            errors.append("Hinge pocket needs at least 1 HINGE contour.")
+        for bad in (Layer.OUTLINE, Layer.LENS):
+            if by_layer[bad]:
+                errors.append(
+                    f"{bad.value} does not belong in the hinge workspace "
+                    f"(found {by_layer[bad]})."
+                )
 
     for c in export:
         if c.layer not in MACHINED_LAYERS:

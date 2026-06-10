@@ -6,7 +6,7 @@ import pytest
 from framedraft.geometry import (
     point_at_t, arc_bbox, dedup_ts_mm, intersect_curve_params,
     split_curve_at_t, extract_open_segment, extract_wrapping_segment,
-    t_nearest, offset_curve,
+    t_nearest, offset_curve, sample_curve, circle_to_spline, arc_to_spline,
 )
 from helpers import line, spline, circle, arc
 
@@ -161,6 +161,27 @@ def test_offset_preserves_structure():
     off = offset_curve(s, 3.0)
     assert off.kind == "spline" and off.closed is True
     assert len(off.nodes) == len(s.nodes)
+
+
+# ------------------------------------------------------- conic → spline
+
+def test_circle_to_spline_radial_accuracy():
+    c = circle(5, -3, 20)
+    s = circle_to_spline(c)
+    assert s.kind == "spline" and s.closed and len(s.nodes) == 4
+    for x, y, _t in sample_curve(s, 32):
+        r = math.hypot(x - 5, y + 3)
+        assert abs(r - 20) < 20 * 0.001, r   # ≤0.1% radial deviation
+
+
+def test_arc_to_spline_endpoints_and_accuracy():
+    a = arc(0, 0, 15, 30, 200)               # 170° sweep → 2 segments
+    s = arc_to_spline(a)
+    assert s.kind == "spline" and not s.closed
+    assert pt_close((s.nodes[0].x, s.nodes[0].y), point_at_t(a, 0.0), tol=1e-9)
+    assert pt_close((s.nodes[-1].x, s.nodes[-1].y), point_at_t(a, 1.0), tol=1e-9)
+    for x, y, _t in sample_curve(s, 32):
+        assert abs(math.hypot(x, y) - 15) < 15 * 0.001
 
 
 @pytest.mark.parametrize("d", [2.0, -2.0])

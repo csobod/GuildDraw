@@ -1,6 +1,8 @@
 import math
 from PySide6.QtCore import QPointF
-from PySide6.QtGui import QPen, QColor
+from PySide6.QtGui import QPen, QColor, QPainterPath
+
+from ..geometry import sample_curve
 
 _SNAP_RADIUS_PX = 10   # screen-pixel snap radius (view space)
 _INDICATOR_R    = 6    # screen-pixel indicator radius (view space)
@@ -130,6 +132,15 @@ class SnapEngine:
             else:
                 candidate(QPointF(self._mirror_x, scene_pos.y()), "mirror")
 
+        # On-curve snap (nearest point anywhere along a curve) — LOWEST
+        # priority: only when no point target was found, because every node
+        # lies on its curve and would otherwise be shadowed. Needed for
+        # drawing OUTLINE→LENS connectors (scallop / extrusion work).
+        if best_type is None:
+            on_curve = self._nearest_on_curve(scene_pos, view, is_visible)
+            if on_curve is not None:
+                best, best_type = on_curve, "curve"
+
         # Origin snap — single point (0, 0).
         # Checked after all other candidates so it can override them: the mirror
         # snap projects the cursor onto x=0 with zero distance, which would always
@@ -146,6 +157,33 @@ class SnapEngine:
 
         return best
 
+    def _nearest_on_curve(self, scene_pos: QPointF, view,
+                          is_visible) -> QPointF | None:
+        """Nearest sampled point on any visible curve within the snap radius."""
+        scale = max(abs(view.transform().m11()), 1e-6)
+        r_mm  = _SNAP_RADIUS_PX / scale
+        px, py = scene_pos.x(), scene_pos.y()
+        best = None
+        best_d = r_mm
+        for curve in self._doc_curves:
+            if not curve.nodes:
+                continue
+            if is_visible is not None and not is_visible(curve.layer):
+                continue
+            # Cheap bbox reject before sampling (pad covers radius + handles)
+            xs = [n.x for n in curve.nodes]
+            ys = [n.y for n in curve.nodes]
+            pad = (curve.radius or 0.0) + best_d + 5.0
+            if not (min(xs) - pad <= px <= max(xs) + pad
+                    and min(ys) - pad <= py <= max(ys) + pad):
+                continue
+            for x, y, _t in sample_curve(curve, 24):
+                d = math.hypot(x - px, y - py)
+                if d < best_d:
+                    best_d = d
+                    best = (x, y)
+        return QPointF(*best) if best is not None else None
+
     def hide(self):
         self._hide()
 
@@ -159,6 +197,7 @@ class SnapEngine:
         "mirror":   "#c0392b",  # red
         "axis":     "#7b5ea7",  # purple — scene origin (0, 0)
         "midpoint": "#e67e22",  # orange — segment midpoint
+        "curve":    "#5d8aa8",  # steel blue — nearest point on curve (diamond)
     }
 
     def _show(self, pos: QPointF, snap_type: str):
@@ -166,7 +205,18 @@ class SnapEngine:
         R   = _INDICATOR_R
         pen = QPen(QColor(self._COLORS.get(snap_type, "#2e8b57")), 1.5)
         pen.setCosmetic(True)
-        item = self._scene.addEllipse(-R, -R, 2 * R, 2 * R, pen)
+        if snap_type == "curve":
+            # Hollow diamond distinguishes "somewhere on the curve" from
+            # exact point targets (circles).
+            path = QPainterPath()
+            path.moveTo(0, -R)
+            path.lineTo(R, 0)
+            path.lineTo(0, R)
+            path.lineTo(-R, 0)
+            path.closeSubpath()
+            item = self._scene.addPath(path, pen)
+        else:
+            item = self._scene.addEllipse(-R, -R, 2 * R, 2 * R, pen)
         item.setPos(pos)
         item.setFlag(item.GraphicsItemFlag.ItemIgnoresTransformations, True)
         item.setZValue(200)

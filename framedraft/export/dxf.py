@@ -103,10 +103,11 @@ _MIRROR_LAYERS = {Layer.LENS, Layer.HINGE, Layer.SCULPT}
 
 
 def export_dxf(
-    curves:    list,       # Curve objects, coordinates in mm
-    path:      str,
-    mirror_on: bool,
-    axis_x:    float = 0.0,  # mirror axis in mm
+    curves:     list,        # Curve objects, coordinates in mm
+    path:       str,
+    mirror_on:  bool,
+    axis_x:     float = 0.0,   # mirror axis in mm (vertical mirror)
+    horizontal: bool = False,  # temple workspaces mirror across y=0
 ) -> None:
     doc = ezdxf.new("R2000")
     doc.units = ezdxf.units.MM   # $INSUNITS = 4 (signal only)
@@ -117,6 +118,6 @@ def export_dxf(
             continue
         _add_curve(msp, curve)
         if mirror_on and curve.layer in _MIRROR_LAYERS:
-            _add_curve(msp, mirror_curve(curve, axis_x))
+            _add_curve(msp, mirror_curve(curve, axis_x, horizontal=horizontal))
 
     doc.saveas(path)

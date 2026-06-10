@@ -6,9 +6,11 @@ from framedraft.export.dxf import export_dxf
 from helpers import line, circle, arc, closed_diamond
 
 
-def export_and_read(tmp_path, curves, mirror_on=False, axis_x=0.0):
+def export_and_read(tmp_path, curves, mirror_on=False, axis_x=0.0,
+                    horizontal=False):
     path = tmp_path / "out.dxf"
-    export_dxf(curves=curves, path=str(path), mirror_on=mirror_on, axis_x=axis_x)
+    export_dxf(curves=curves, path=str(path), mirror_on=mirror_on,
+               axis_x=axis_x, horizontal=horizontal)
     return ezdxf.readfile(str(path)).modelspace()
 
 
@@ -58,6 +60,16 @@ def test_mirror_on_duplicates_mirror_layers_only(tmp_path):
     assert len(circles) == 2 and len(splines) == 1
     xs = sorted(c.dxf.center.x for c in circles)
     assert xs == [-15, 15]
+
+
+def test_horizontal_mirror_for_temple_workspaces(tmp_path):
+    # Temple mirror axis is horizontal (y=0): the duplicate must flip Y,
+    # not X. Scene (15, 10) → mirror (15, -10) → DXF Y-negation → ±10.
+    curves = [circle(15, 10, 4, layer=Layer.HINGE)]
+    msp = export_and_read(tmp_path, curves, mirror_on=True, horizontal=True)
+    centers = sorted((c.dxf.center.x, c.dxf.center.y)
+                     for c in msp if c.dxftype() == "CIRCLE")
+    assert centers == [(15, -10), (15, 10)], centers
 
 
 def test_mirrored_flag_curves_are_skipped(tmp_path):

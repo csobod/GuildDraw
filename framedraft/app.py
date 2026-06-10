@@ -28,9 +28,9 @@ from .construction import ConstructionGuides, BoxingGuide, RectGuide
 from . import prefs as _prefs_mod
 from .document import (
     Layer, Calibration, MirrorAxis, FormingMetadata, MachinedBridge, FaceImage,
-    Curve, SplineNode, ControlPoint, DimLine,
+    Curve, SplineNode, ControlPoint, DimLine, WORKSPACE_LAYERS,
 )
-from .geometry import mirror_curve
+from .geometry import mirror_curve, circle_to_spline, arc_to_spline
 from .tools.draw import DrawTool
 from .tools.edit import EditTool
 from .tools.dim import DimTool
@@ -301,7 +301,6 @@ _CANVAS_BG_LIGHT = "#faf6ee"
 _CANVAS_BG_DARK  = "#1e1e1e"
 
 _DOCK_WIDTH = 270
-_LAYERS = [l.value for l in Layer]
 
 # Ordered toolbar action definitions used by SettingsDialog and _toolbar_actions.
 # Tuple: (prefs_key, display_label, user_hideable)
@@ -699,6 +698,9 @@ class WorkspaceState:
 
     def __init__(self, workspace_type: str, status_bar, parent_win):
         self.workspace_type = workspace_type
+        # Active drawing layer (what new curves are created on); driven by
+        # the Layers panel in the Properties tab.
+        self.active_layer: Layer = WORKSPACE_LAYERS[workspace_type][0]
 
         # ── Document state ────────────────────────────────────────────────
         self.doc_curves: list = []
@@ -712,6 +714,12 @@ class WorkspaceState:
         self.scene = FrameScene()
         self.scene.init_mirror(horizontal=(workspace_type in ("temple_r", "temple_l")))
         self.snap  = SnapEngine(self.scene)
+        # Register the LIVE curve list once — in-place mutation keeps it
+        # current forever. Previously only draw tools called set_doc_curves
+        # on activation, so Point Move had zero snap targets until a draw
+        # tool had been used in the workspace (the "can't place an imported
+        # hinge point-to-point" bug).
+        self.snap.set_doc_curves(self.doc_curves)
         self.view  = CanvasView(self.scene, status_bar)
 
         # ── Tools ─────────────────────────────────────────────────────────
@@ -1132,6 +1140,73 @@ class SettingsDialog(QDialog):
         }
 
 
+class TransformDialog(QDialog):
+    """Exact numeric Scale / Rotate for the current selection."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Transform Selection")
+        form = QFormLayout(self)
+
+        def _pct():
+            s = QDoubleSpinBox()
+            s.setRange(1.0, 10000.0)
+            s.setDecimals(2)
+            s.setSingleStep(5.0)
+            s.setSuffix(" %")
+            s.setValue(100.0)
+            return s
+
+        self._sx = _pct()
+        self._sy = _pct()
+        self._lock = QCheckBox("Lock aspect ratio")
+        self._lock.setChecked(True)
+        self._sy.setEnabled(False)
+        self._lock.toggled.connect(
+            lambda on: (self._sy.setEnabled(not on),
+                        self._sy.setValue(self._sx.value()) if on else None))
+        self._sx.valueChanged.connect(
+            lambda v: self._sy.setValue(v) if self._lock.isChecked() else None)
+
+        self._rot = QDoubleSpinBox()
+        self._rot.setRange(-360.0, 360.0)
+        self._rot.setDecimals(2)
+        self._rot.setSingleStep(5.0)
+        self._rot.setSuffix("°")
+        self._rot.setValue(0.0)
+
+        self._pivot = QComboBox()
+        self._pivot.addItems(["Selection center", "Scene origin (0, 0)"])
+
+        form.addRow("Scale X:", self._sx)
+        form.addRow("Scale Y:", self._sy)
+        form.addRow(self._lock)
+        form.addRow("Rotation:", self._rot)
+        form.addRow("Pivot:", self._pivot)
+
+        note = QLabel("Non-uniform scale converts circles/arcs to splines.")
+        note.setStyleSheet("color: #888; font-size: 11px;")
+        form.addRow(note)
+
+        btns = QHBoxLayout()
+        ok = QPushButton("Apply")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        btns.addStretch()
+        btns.addWidget(ok)
+        btns.addWidget(cancel)
+        form.addRow(btns)
+
+    def values(self):
+        """(sx, sy, rotation_deg, pivot_is_origin)"""
+        return (self._sx.value() / 100.0,
+                self._sy.value() / 100.0,
+                self._rot.value(),
+                self._pivot.currentIndex() == 1)
+
+
 class MainWindow(QMainWindow):
     # ── Phase 14: proxy properties — all delegate to the active WorkspaceState ──
 
@@ -1246,7 +1321,6 @@ class MainWindow(QMainWindow):
         self._prefs = _prefs_mod.load()
 
         # ── Global (non-workspace) state ──────────────────────────────────
-        self._updating_layer_combo = False
         self._dark_mode            = self._prefs["dark_mode"]
         self._updating_weight_spin = False
         self._default_line_weight: float = self._prefs["default_line_weight"]
@@ -1465,9 +1539,6 @@ class MainWindow(QMainWindow):
         # saved/restored on tab switch). They deliberately do NOT write prefs:
         # startup defaults are only changed via Settings > Preferences.
 
-        # Layer combo
-        self._layer_combo.currentTextChanged.connect(self._on_layer_combo_changed)
-
         # Undo/redo keyboard shortcuts (window-scope)
         from PySide6.QtGui import QShortcut, QKeySequence
         QShortcut(QKeySequence("Ctrl+Z"), self).activated.connect(self._handle_undo)
@@ -1475,6 +1546,16 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self).activated.connect(self._redo)
         QShortcut(QKeySequence("Ctrl+G"), self).activated.connect(self._group_selected)
         QShortcut(QKeySequence("Ctrl+Shift+G"), self).activated.connect(self._ungroup_selected)
+        # Clipboard/select/transform shortcuts go through the focus guard so
+        # they stay inert while a HUD text field has focus.
+        for seq, target in [("Ctrl+C", self._copy_selected),
+                            ("Ctrl+V", self._paste),
+                            ("Ctrl+D", self._duplicate_selected),
+                            ("Ctrl+A", self._select_all),
+                            ("Ctrl+T", self._transform_selected)]:
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.activated.connect(
+                lambda t=target: self._hotkey_dispatch(t))
 
         # Wire workspace tab-change now that all actions exist
         self._last_ws_idx = 0
@@ -1760,10 +1841,6 @@ class MainWindow(QMainWindow):
         draw_lay = QFormLayout(draw_box)
         draw_lay.setSpacing(6)
 
-        self._layer_combo = QComboBox()
-        self._layer_combo.addItems(_LAYERS)
-        draw_lay.addRow("Layer:", self._layer_combo)
-
         self._weight_spin = QDoubleSpinBox()
         self._weight_spin.setRange(0.25, 10.0)
         self._weight_spin.setDecimals(2)
@@ -1777,6 +1854,40 @@ class MainWindow(QMainWindow):
         draw_lay.addRow("Line weight:", self._weight_spin)
 
         curve_lay.addWidget(draw_box)
+
+        # ── Layers (the single home for everything layer-related) ─────────
+        from PySide6.QtWidgets import QHeaderView
+        layers_box = QGroupBox("Layers")
+        layers_lay = QVBoxLayout(layers_box)
+        layers_lay.setContentsMargins(4, 4, 4, 4)
+
+        self._layer_tree = QTreeWidget()
+        self._layer_tree.setHeaderHidden(True)
+        self._layer_tree.setColumnCount(3)
+        hdr = self._layer_tree.header()
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self._layer_tree.setColumnWidth(1, 28)
+        self._layer_tree.setColumnWidth(2, 28)
+        self._layer_tree.setMinimumHeight(170)
+        self._layer_tree.setToolTip(
+            "Layers and the objects on them.\n"
+            "Click a layer name to make it the active drawing layer (bold).\n"
+            "Click the eye to show/hide; hidden layers offer no snap targets.\n"
+            "Click the padlock to lock/unlock; locked layers stay visible and\n"
+            "snappable but cannot be selected or modified.\n"
+            "Click an object to select it on the canvas.\n"
+            "Right-click for: select all on layer, move selection to layer."
+        )
+        self._layer_tree.itemClicked.connect(self._on_layer_tree_clicked)
+        self._layer_tree.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self._layer_tree.customContextMenuRequested.connect(
+            self._on_layer_tree_menu)
+        layers_lay.addWidget(self._layer_tree)
+        curve_lay.addWidget(layers_box)
 
         # ── Measurements: Frame Front ──────────────────────────────────────
         meas_front_box = QGroupBox("Measurements")
@@ -1829,31 +1940,6 @@ class MainWindow(QMainWindow):
 
         curve_lay.addStretch()
         tabs.addTab(curve_w, "Properties")
-
-        # ── Tab 1: Layers ─────────────────────────────────────────────────
-        layers_w   = QWidget()
-        layers_lay = QVBoxLayout(layers_w)
-        layers_lay.setContentsMargins(8, 8, 8, 8)
-        layers_lay.setSpacing(6)
-
-        self._layer_tree = QTreeWidget()
-        self._layer_tree.setColumnCount(3)
-        self._layer_tree.setHeaderLabels(["Layer / Object", "Show", "Lock"])
-        self._layer_tree.setColumnWidth(0, 140)
-        self._layer_tree.setColumnWidth(1, 44)
-        self._layer_tree.setColumnWidth(2, 44)
-        self._layer_tree.setToolTip(
-            "Layers in this workspace and the objects on them.\n"
-            "Show: hidden layers vanish from the canvas and offer no snap targets.\n"
-            "Lock: locked layers stay visible (and snappable) but cannot be\n"
-            "selected or modified.\n"
-            "Click an object row to select it on the canvas."
-        )
-        self._layer_tree.itemChanged.connect(self._on_layer_tree_changed)
-        self._layer_tree.itemClicked.connect(self._on_layer_tree_clicked)
-        layers_lay.addWidget(self._layer_tree)
-
-        tabs.addTab(layers_w, "Layers")
 
         # ── Tab 1: Guides (scrollable) ────────────────────────────────────
         guides_inner = QWidget()
@@ -2248,48 +2334,87 @@ class MainWindow(QMainWindow):
             label = f"[grp {c.group_id[:4]}]  " + label
         return label
 
+    def _layer_icon(self, name: str) -> QIcon:
+        """Theme-aware cached icon for the eye/padlock tree cells."""
+        color = "#d4cfc0" if self._dark_mode else "#1f1f1f"
+        cache = getattr(self, "_layer_icon_cache", None)
+        if cache is None:
+            cache = self._layer_icon_cache = {}
+        key = (name, color)
+        if key not in cache:
+            cache[key] = _make_icon(name, color, color)
+        return cache[key]
+
     def _refresh_layer_panel(self):
-        from .document import WORKSPACE_LAYERS
+        """Full rebuild of the layer tree (document change / tab switch)."""
         ws   = self._active_ws
         tree = self._layer_tree
         tree.blockSignals(True)
         tree.clear()
+        self._layer_tree_rows: dict = {}        # id(curve) -> row item
+        self._layer_tree_layer_rows: dict = {}  # Layer -> top-level row
         for layer in WORKSPACE_LAYERS[ws.workspace_type]:
             curves = [c for c in ws.doc_curves if c.layer == layer]
             top = QTreeWidgetItem([f"{layer.value}  ({len(curves)})", "", ""])
-            top.setFlags(top.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            top.setCheckState(1, Qt.CheckState.Checked
-                              if ws.scene.is_layer_visible(layer)
-                              else Qt.CheckState.Unchecked)
-            top.setCheckState(2, Qt.CheckState.Checked
-                              if ws.scene.is_layer_locked(layer)
-                              else Qt.CheckState.Unchecked)
+            top.setIcon(1, self._layer_icon(
+                "layer-show" if ws.scene.is_layer_visible(layer) else "layer-hide"))
+            top.setIcon(2, self._layer_icon(
+                "layer-lock" if ws.scene.is_layer_locked(layer) else "layer-unlock"))
             top.setData(0, Qt.ItemDataRole.UserRole, ("layer", layer))
             tree.addTopLevelItem(top)
+            self._layer_tree_layer_rows[layer] = top
             for c in curves:
                 child = QTreeWidgetItem([self._curve_label(c), "", ""])
                 child.setData(0, Qt.ItemDataRole.UserRole, ("curve", id(c)))
                 top.addChild(child)
+                self._layer_tree_rows[id(c)] = child
             top.setExpanded(bool(curves) and len(curves) <= 12)
         tree.blockSignals(False)
+        self._sync_layer_panel_active()
 
-    def _on_layer_tree_changed(self, item, column: int):
-        data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not data or data[0] != "layer" or column not in (1, 2):
-            return
-        layer   = data[1]
-        checked = item.checkState(column) == Qt.CheckState.Checked
-        if column == 1:
-            self.scene.set_layer_visible(layer, checked)
-        else:
-            self.scene.set_layer_locked(layer, checked)
-        self._mark_dirty()   # layer states persist in the file
+    def _sync_layer_panel_active(self):
+        """Bold the active layer row. No tree rebuild — safe inside handlers."""
+        ws = self._active_ws
+        for layer, top in getattr(self, "_layer_tree_layer_rows", {}).items():
+            f = top.font(0)
+            f.setBold(layer is ws.active_layer)
+            top.setFont(0, f)
+
+    def _set_active_layer(self, layer: Layer):
+        """Make *layer* the drawing layer; live-update any active draw tool."""
+        self._active_ws.active_layer = layer
+        if self._draw_tool.active:
+            self._draw_tool.set_layer(layer)
+        if self._circle_tool.active:
+            self._circle_tool.set_layer(layer)
+        self._sync_layer_panel_active()
+        self._update_info_label()
+        self._status.showMessage(f"Active layer → {layer.value}")
 
     def _on_layer_tree_clicked(self, item, column: int):
         data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not data or data[0] != "curve" or column != 0:
+        if not data:
             return
-        ci = self.scene._curve_items.get(data[1])
+        kind, payload = data
+        if kind == "layer":
+            layer = payload
+            if column == 1:
+                vis = not self.scene.is_layer_visible(layer)
+                self.scene.set_layer_visible(layer, vis)
+                item.setIcon(1, self._layer_icon(
+                    "layer-show" if vis else "layer-hide"))
+                self._mark_dirty()
+            elif column == 2:
+                locked = not self.scene.is_layer_locked(layer)
+                self.scene.set_layer_locked(layer, locked)
+                item.setIcon(2, self._layer_icon(
+                    "layer-lock" if locked else "layer-unlock"))
+                self._mark_dirty()
+            else:
+                self._set_active_layer(layer)
+            return
+        # Object row: select the curve on canvas
+        ci = self.scene._curve_items.get(payload)
         if ci is None:
             return
         layer = ci.curve.layer
@@ -2300,12 +2425,66 @@ class MainWindow(QMainWindow):
         self.scene.clearSelection()
         ci.setSelected(True)
 
+    def _on_layer_tree_menu(self, pos):
+        from PySide6.QtWidgets import QMenu
+        item = self._layer_tree.itemAt(pos)
+        if item is None:
+            return
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        kind, payload = data
+        has_sel = any(isinstance(i, CurveItem)
+                      for i in self.scene.selectedItems())
+        menu = QMenu(self)
+        if kind == "layer":
+            layer = payload
+            menu.addAction(f"Set {layer.value} as active layer",
+                           lambda: self._set_active_layer(layer))
+            menu.addAction(f"Select all on {layer.value}",
+                           lambda: self._select_all_on_layer(layer))
+            act = menu.addAction(f"Move selection to {layer.value}",
+                                 lambda: self._move_selection_to_layer(layer))
+            act.setEnabled(has_sel)
+        else:
+            menu.addAction("Select on canvas",
+                           lambda: self._on_layer_tree_clicked(item, 0))
+        menu.exec(self._layer_tree.viewport().mapToGlobal(pos))
+
+    def _select_all_on_layer(self, layer: Layer):
+        if not self.scene.is_layer_visible(layer) or self.scene.is_layer_locked(layer):
+            self._status.showMessage(
+                f"{layer.value} is hidden or locked — nothing selected")
+            return
+        self.scene.clearSelection()
+        n = 0
+        for it in self.scene._curve_items.values():
+            if it.curve.layer == layer:
+                it.setSelected(True)
+                n += 1
+        self._status.showMessage(f"Selected {n} curve(s) on {layer.value}")
+
+    def _move_selection_to_layer(self, layer: Layer):
+        """Reassign the selected curves to *layer* (was the layer combo's job)."""
+        targets = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
+        if not targets:
+            self._status.showMessage("Move to layer: nothing selected")
+            return
+        self._push_undo_snapshot()
+        for it in targets:
+            it.curve.layer = layer
+            it.refresh()
+            self.scene._update_ghost_for(it.curve)
+            self.scene._apply_layer_state_to_item(it)
+        self._refresh_layer_panel()
+        self._status.showMessage(f"Moved {len(targets)} curve(s) → {layer.value}")
+
     # ------------------------------------------------------------------
     # Status bar info label (layer + zoom)
     # ------------------------------------------------------------------
 
     def _update_info_label(self):
-        layer = self._layer_combo.currentText()
+        layer = self._active_ws.active_layer.value
         zoom  = round(self.view.transform().m11() * 100)
         self._info_label.setText(f"{layer}  |  {zoom}%")
 
@@ -2318,9 +2497,18 @@ class MainWindow(QMainWindow):
         state into the old WorkspaceState; restores arriving workspace state."""
         ws = self._workspaces[idx]
 
-        # Save sidebar state into the workspace we're leaving
+        # Save sidebar state into the workspace we're leaving; explicitly
+        # cancel any in-progress drawing there (it cannot be carried across,
+        # and silently discarding it confused makers).
         if hasattr(self, "_last_ws_idx") and self._last_ws_idx != idx:
-            self._save_ws_sidebar_state(self._workspaces[self._last_ws_idx])
+            old_ws = self._workspaces[self._last_ws_idx]
+            if old_ws.draw_tool.active or old_ws.circle_tool.active:
+                old_ws.draw_tool.deactivate()
+                old_ws.circle_tool.deactivate()
+                old_ws.view.set_draw_tool(None)
+                self._status.showMessage(
+                    "Workspace switched — in-progress drawing was discarded")
+            self._save_ws_sidebar_state(old_ws)
         self._last_ws_idx = idx
 
         # Return to Select mode
@@ -2434,16 +2622,8 @@ class MainWindow(QMainWindow):
         ws.pad_guide.set_width(ws.pad_w)
         ws.pad_guide.set_height(ws.pad_h)
 
-        # ── Layer combo ─────────────────────────────────────────────────
-        from .document import WORKSPACE_LAYERS
-        self._updating_layer_combo = True
-        self._layer_combo.blockSignals(True)
-        self._layer_combo.clear()
-        self._layer_combo.addItems(
-            [l.value for l in WORKSPACE_LAYERS[ws.workspace_type]]
-        )
-        self._layer_combo.blockSignals(False)
-        self._updating_layer_combo = False
+        # (Layer list/active layer are per-workspace; _refresh_layer_panel is
+        # called by _on_workspace_changed right after this restore.)
 
         # ── Calibration display ─────────────────────────────────────────
         if ws.image_px_per_mm:
@@ -2887,6 +3067,12 @@ class MainWindow(QMainWindow):
         self._act_redo = edit_menu.addAction("Redo\tCtrl+Y", self._redo)
         self._act_redo.setEnabled(False)
         edit_menu.addSeparator()
+        edit_menu.addAction("Copy\tCtrl+C",        self._copy_selected)
+        edit_menu.addAction("Paste\tCtrl+V",       self._paste)
+        edit_menu.addAction("Duplicate\tCtrl+D",   self._duplicate_selected)
+        edit_menu.addAction("Select All\tCtrl+A",  self._select_all)
+        edit_menu.addAction("Transform…\tCtrl+T",  self._transform_selected)
+        edit_menu.addSeparator()
         edit_menu.addAction("Group\tCtrl+G", self._group_selected)
         edit_menu.addAction("Ungroup\tCtrl+Shift+G", self._ungroup_selected)
 
@@ -2900,7 +3086,7 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction(
             "Revision History",
-            lambda: (self._prop_dock.show(), self._side_tabs.setCurrentIndex(4)),
+            lambda: (self._prop_dock.show(), self._side_tabs.setCurrentIndex(3)),
         )
         view_menu.addSeparator()
         view_menu.addAction(self._prop_dock.toggleViewAction())
@@ -2917,7 +3103,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _current_layer(self) -> Layer:
-        return Layer(self._layer_combo.currentText())
+        return self._active_ws.active_layer
 
     def _deactivate_cursor_tools(self):
         """Deactivate trim/split/offset/point-move tools and clear their state."""
@@ -3168,9 +3354,15 @@ class MainWindow(QMainWindow):
         self._expand_selection_to_groups()
         selected = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
         if len(selected) == 1:
-            self._updating_layer_combo = True
-            self._layer_combo.setCurrentText(selected[0].curve.layer.value)
-            self._updating_layer_combo = False
+            # Selecting a curve makes its layer the active drawing layer
+            # (preserves the old combo behavior) and highlights its row.
+            sel_layer = selected[0].curve.layer
+            if sel_layer is not self._active_ws.active_layer:
+                self._active_ws.active_layer = sel_layer
+                self._sync_layer_panel_active()
+            row = getattr(self, "_layer_tree_rows", {}).get(id(selected[0].curve))
+            if row is not None:
+                self._layer_tree.setCurrentItem(row)
             self._updating_weight_spin = True
             self._weight_spin.setValue(selected[0].curve.line_weight)
             self._updating_weight_spin = False
@@ -3182,28 +3374,6 @@ class MainWindow(QMainWindow):
                 self._move_gizmo.set_center(center)
             else:
                 self._hide_move_gizmo()
-        self._update_info_label()
-
-    def _on_layer_combo_changed(self, text: str):
-        """Apply layer combo changes to selected curves (Select mode) or draw tool (draw mode)."""
-        new_layer = Layer(text)
-        if self._draw_tool.active:
-            self._draw_tool.set_layer(new_layer)
-            return
-        if self._circle_tool.active:
-            self._circle_tool.set_layer(new_layer)
-            return
-        if self._updating_layer_combo:
-            return
-        targets = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
-        if not targets:
-            return
-        self._push_undo_snapshot()
-        for item in targets:
-            item.curve.layer = new_layer
-            item.refresh()
-        self.scene._update_ghosts()
-        self._status.showMessage(f"Layer → {new_layer.value}")
         self._update_info_label()
 
     def _on_weight_spin_changed(self, value: float):
@@ -3342,6 +3512,173 @@ class MainWindow(QMainWindow):
         else:
             self._undo_stack.pop()   # nothing changed, discard snapshot
             self._update_undo_actions()
+
+    # ------------------------------------------------------------------
+    # Copy / Paste / Duplicate / Select All
+    # ------------------------------------------------------------------
+
+    _PASTE_OFFSET_MM = 5.0
+
+    def _selection_payload(self):
+        curves = [it.curve for it in self.scene.selectedItems()
+                  if isinstance(it, CurveItem)]
+        dims   = [it.dim for it in self.scene.selectedItems()
+                  if isinstance(it, DimItem)]
+        return curves, dims
+
+    def _copy_selected(self):
+        curves, dims = self._selection_payload()
+        if not curves and not dims:
+            self._status.showMessage("Copy: nothing selected")
+            return
+        # In-memory clipboard — survives workspace switches, so curves can be
+        # copied between tabs.
+        self._clipboard = {"curves": copy.deepcopy(curves),
+                           "dims":   copy.deepcopy(dims)}
+        self._status.showMessage(
+            f"Copied {len(curves)} curve(s), {len(dims)} dim(s)")
+
+    def _paste(self):
+        clip = getattr(self, "_clipboard", None)
+        if not clip or (not clip["curves"] and not clip["dims"]):
+            self._status.showMessage("Paste: clipboard is empty")
+            return
+        self._paste_payload(copy.deepcopy(clip["curves"]),
+                            copy.deepcopy(clip["dims"]))
+
+    def _duplicate_selected(self):
+        curves, dims = self._selection_payload()
+        if not curves and not dims:
+            self._status.showMessage("Duplicate: nothing selected")
+            return
+        self._paste_payload(copy.deepcopy(curves), copy.deepcopy(dims))
+
+    def _paste_payload(self, curves: list, dims: list):
+        """Insert deep-copied curves/dims at +5 mm offset and select them."""
+        self._push_undo_snapshot()
+        allowed = set(WORKSPACE_LAYERS[self._active_ws.workspace_type])
+        gid_map: dict = {}
+        remapped = 0
+        new_items = []
+        for c in curves:
+            self._translate_curve(c, self._PASTE_OFFSET_MM, self._PASTE_OFFSET_MM)
+            if c.layer not in allowed:
+                # Layer doesn't exist in this workspace (cross-tab paste) —
+                # land on REF so the curve stays visible and non-machined.
+                c.layer = Layer.REF
+                remapped += 1
+            if c.group_id:
+                # Fresh group ids: the paste must not merge with the original
+                c.group_id = gid_map.setdefault(c.group_id, uuid.uuid4().hex[:8])
+            new_items.append(self._active_ws.add_curve(c))
+        for d in dims:
+            d.x0 += self._PASTE_OFFSET_MM; d.y0 += self._PASTE_OFFSET_MM
+            d.x1 += self._PASTE_OFFSET_MM; d.y1 += self._PASTE_OFFSET_MM
+            self._active_ws.add_dim(d)
+        self.scene.clearSelection()
+        for it in new_items:
+            it.setSelected(True)
+        msg = f"Pasted {len(curves)} curve(s), {len(dims)} dim(s)"
+        if remapped:
+            msg += f"  ({remapped} moved to REF — layer not in this workspace)"
+        self._status.showMessage(msg)
+
+    def _select_all(self):
+        """Select every visible, unlocked curve and dim (Ctrl+A)."""
+        if self.view._draw_tool is not None or self._dim_tool.active:
+            self._act_select.setChecked(True)
+            self._set_tool_select()
+        self.scene.clearSelection()
+        n = 0
+        for it in self.scene._curve_items.values():
+            if it.isVisible() and bool(
+                    it.flags() & it.GraphicsItemFlag.ItemIsSelectable):
+                it.setSelected(True)
+                n += 1
+        for it in self.scene._dim_items.values():
+            if it.isVisible():
+                it.setSelected(True)
+                n += 1
+        self._status.showMessage(f"Selected {n} object(s)")
+
+    # ------------------------------------------------------------------
+    # Transform (scale / rotate)
+    # ------------------------------------------------------------------
+
+    def _transform_selected(self):
+        items = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
+        if not items:
+            self._status.showMessage("Transform: select curves first")
+            return
+        dlg = TransformDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        sx, sy, rot, pivot_origin = dlg.values()
+        if sx == 1.0 and sy == 1.0 and rot == 0.0:
+            return
+
+        curves = [i.curve for i in items]
+        if pivot_origin:
+            px = py = 0.0
+        else:
+            bb = _curves_bbox(curves)
+            px, py = (bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2
+
+        cos_t = math.cos(math.radians(rot))
+        sin_t = math.sin(math.radians(rot))
+
+        def xf(x: float, y: float):
+            dx, dy = (x - px) * sx, (y - py) * sy
+            return (px + dx * cos_t - dy * sin_t,
+                    py + dx * sin_t + dy * cos_t)
+
+        self._push_undo_snapshot()
+        self._edit_tool.clear()
+        uniform = abs(sx - sy) < 1e-9
+        final_curves = []
+        for curve in curves:
+            if curve.kind in ("circle", "arc") and not uniform:
+                # Ellipse result — not representable; convert to spline first
+                repl = (circle_to_spline(curve) if curve.kind == "circle"
+                        else arc_to_spline(curve))
+                self._active_ws.remove_curve(curve)
+                for n in repl.nodes:
+                    n.x, n.y = xf(n.x, n.y)
+                    if n.cp_in:
+                        n.cp_in = ControlPoint(*xf(n.cp_in.x, n.cp_in.y))
+                    if n.cp_out:
+                        n.cp_out = ControlPoint(*xf(n.cp_out.x, n.cp_out.y))
+                self._active_ws.add_curve(repl)
+                final_curves.append(repl)
+            elif curve.kind in ("circle", "arc"):
+                c0 = curve.nodes[0]
+                c0.x, c0.y = xf(c0.x, c0.y)
+                curve.radius = (curve.radius or 0.0) * abs(sx)
+                if curve.kind == "arc" and rot:
+                    # Rotation shifts both angles equally (same atan2 space)
+                    curve.start_angle = (curve.start_angle + rot) % 360
+                    curve.end_angle   = (curve.end_angle + rot) % 360
+                self.scene.refresh_curve(curve)
+                final_curves.append(curve)
+            else:
+                for n in curve.nodes:
+                    n.x, n.y = xf(n.x, n.y)
+                    if n.cp_in:
+                        n.cp_in = ControlPoint(*xf(n.cp_in.x, n.cp_in.y))
+                    if n.cp_out:
+                        n.cp_out = ControlPoint(*xf(n.cp_out.x, n.cp_out.y))
+                self.scene.refresh_curve(curve)
+                final_curves.append(curve)
+
+        self.scene.clearSelection()
+        for c in final_curves:
+            it = self.scene._curve_items.get(id(c))
+            if it is not None:
+                it.setSelected(True)
+        self._refresh_measurements()
+        self._status.showMessage(
+            f"Transformed {len(final_curves)} curve(s)  "
+            f"(scale {sx * 100:.0f}% × {sy * 100:.0f}%, rotate {rot:+.1f}°)")
 
     # ------------------------------------------------------------------
     # Group / Ungroup
@@ -3897,7 +4234,7 @@ class MainWindow(QMainWindow):
         self._timeline_list.blockSignals(False)
         self._on_timeline_selection()
         n = len(self._bookmarks)
-        self._side_tabs.setTabText(4, f"History ({n})" if n else "History")
+        self._side_tabs.setTabText(3, f"History ({n})" if n else "History")
 
     def _add_bookmark(self):
         name, ok = QInputDialog.getText(
@@ -4653,7 +4990,8 @@ class MainWindow(QMainWindow):
         """Show validation errors/warnings. Return True if export may proceed."""
         from .export.validate import validate
         mirror_on = self._act_mirror.isChecked()
-        errors, warnings = validate(self._doc_curves, mirror_on)
+        errors, warnings = validate(self._doc_curves, mirror_on,
+                                    self._active_ws.workspace_type)
         if errors:
             msg = "Export blocked — fix the following:\n\n" + "\n".join(f"• {e}" for e in errors)
             if warnings:
@@ -4680,10 +5018,12 @@ class MainWindow(QMainWindow):
         try:
             from .export.dxf import export_dxf
             export_dxf(
-                curves    = self._doc_curves,
-                path      = path,
-                mirror_on = self._act_mirror.isChecked(),
-                axis_x    = self.scene.mirror.x if self.scene.mirror else 0.0,
+                curves     = self._doc_curves,
+                path       = path,
+                mirror_on  = self._act_mirror.isChecked(),
+                axis_x     = self.scene.mirror.x if self.scene.mirror else 0.0,
+                horizontal = (self._active_ws.workspace_type
+                              in ("temple_r", "temple_l")),
             )
             self._status.showMessage(f"DXF exported: {os.path.basename(path)}")
         except Exception as e:
@@ -4751,6 +5091,7 @@ class MainWindow(QMainWindow):
             ws.pad_guide.set_dark_mode(dark)
             ws.edit_tool.refresh_theme()
         self._apply_toolbar_icons(dark)
+        self._refresh_layer_panel()   # eye/padlock icons are theme-colored
         self._save_prefs()
 
     # ------------------------------------------------------------------
