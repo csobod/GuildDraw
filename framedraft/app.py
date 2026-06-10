@@ -29,6 +29,7 @@ from .document import (
     Layer, Calibration, MirrorAxis, FormingMetadata, MachinedBridge, FaceImage,
     Curve, SplineNode, ControlPoint, DimLine,
 )
+from .geometry import mirror_curve
 from .tools.draw import DrawTool
 from .tools.edit import EditTool
 from .tools.dim import DimTool
@@ -753,6 +754,88 @@ class WorkspaceState:
         # Wire endpoint drag-snap using the workspace's own mutable list and view.
         # snap_enabled_fn is set by MainWindow after the toolbar is built.
         self.edit_tool.set_endpoint_snap_context(self.doc_curves, self.view)
+
+    # ------------------------------------------------------------------
+    # Document mutation primitives
+    #
+    # Single source of truth for the snapshot shape and for keeping
+    # doc_curves/doc_dims in sync with the scene. MainWindow and any
+    # cross-workspace operation (Temple Copy, file load) must go through
+    # these — hand-rolled list+scene updates are how the Mirror Copy
+    # undo-corruption bug happened.
+    # ------------------------------------------------------------------
+
+    MAX_UNDO = 100
+
+    def take_snapshot(self) -> dict:
+        return {
+            "curves": copy.deepcopy(self.doc_curves),
+            "dims":   copy.deepcopy(self.doc_dims),
+        }
+
+    def push_undo_snapshot(self):
+        """Push current state; wipes the redo future. Call BEFORE mutating."""
+        self.undo_stack.append(self.take_snapshot())
+        self.redo_stack.clear()
+        if len(self.undo_stack) > self.MAX_UNDO:
+            self.undo_stack.pop(0)
+
+    def add_curve(self, curve):
+        """Append to the document and the scene; returns the CurveItem."""
+        self.doc_curves.append(curve)
+        return self.scene.add_curve(curve)
+
+    def remove_curve(self, curve):
+        if curve in self.doc_curves:
+            self.doc_curves.remove(curve)
+        self.scene.remove_curve(curve)
+
+    def add_dim(self, dim):
+        self.doc_dims.append(dim)
+        return self.scene.add_dim(dim)
+
+    def remove_dim(self, dim):
+        if dim in self.doc_dims:
+            self.doc_dims.remove(dim)
+        self.scene.remove_dim(dim)
+
+    def clear_geometry(self):
+        """Remove every curve and dim. Undo stacks are left untouched."""
+        self.edit_tool.clear()
+        self.scene.clearSelection()
+        for c in list(self.doc_curves):
+            self.scene.remove_curve(c)
+        self.doc_curves.clear()
+        for d in list(self.doc_dims):
+            self.scene.remove_dim(d)
+        self.doc_dims.clear()
+
+    def clear_document(self):
+        """Clear geometry AND history — File > New / file load."""
+        self.clear_geometry()
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+
+    def restore_snapshot(self, snapshot: dict):
+        self.clear_geometry()
+        for c in snapshot["curves"]:
+            self.add_curve(c)
+        for d in snapshot["dims"]:
+            self.add_dim(d)
+
+    def undo(self) -> bool:
+        if not self.undo_stack:
+            return False
+        self.redo_stack.append(self.take_snapshot())
+        self.restore_snapshot(self.undo_stack.pop())
+        return True
+
+    def redo(self) -> bool:
+        if not self.redo_stack:
+            return False
+        self.undo_stack.append(self.take_snapshot())
+        self.restore_snapshot(self.redo_stack.pop())
+        return True
 
 
 class KeyCaptureEdit(QLineEdit):
@@ -2696,7 +2779,17 @@ class MainWindow(QMainWindow):
         self._offset_tool.deactivate()
         self._point_move_tool.deactivate()
 
-    def _set_tool_select(self):
+    def _teardown_tools(self, clear_selection: bool):
+        """Single teardown path for ALL tool switches.
+
+        Every _set_tool_* must call this first. The per-setter teardown
+        dances drifted apart repeatedly (stale Offset HUD, undeactivated
+        tools) — never deactivate tools individually in a setter again.
+
+        clear_selection=False for tools that operate on the current
+        selection (Select keeps it for inspection; Offset/Point Move
+        consume it).
+        """
         self._draw_tool.deactivate()
         self.view.set_draw_tool(None)
         self._circle_tool.deactivate()
@@ -2704,95 +2797,57 @@ class MainWindow(QMainWindow):
         self.view.set_dim_tool(None)
         self._deactivate_cursor_tools()
         self.view.measure_bar.hide_bar()
+        if clear_selection:
+            self._edit_tool.clear()
+            self.scene.clearSelection()
+
+    def _set_tool_select(self):
+        self._teardown_tools(clear_selection=False)
         self._status.showMessage("Select: click a curve to select and show nodes")
 
     def _set_tool_line(self):
-        self._dim_tool.deactivate()
-        self.view.set_dim_tool(None)
-        self._circle_tool.deactivate()
-        self._deactivate_cursor_tools()
-        self._edit_tool.clear()
-        self.scene.clearSelection()
-        layer = self._current_layer()
-        self._draw_tool.activate("line", layer, self.scene, self.view,
-                                 snap=self._snap, all_curves=self._doc_curves)
+        self._teardown_tools(clear_selection=True)
+        self._draw_tool.activate("line", self._current_layer(), self.scene,
+                                 self.view, snap=self._snap,
+                                 all_curves=self._doc_curves)
         self.view.set_draw_tool(self._draw_tool)
 
     def _set_tool_spline(self):
-        self._dim_tool.deactivate()
-        self.view.set_dim_tool(None)
-        self._circle_tool.deactivate()
-        self._deactivate_cursor_tools()
-        self._edit_tool.clear()
-        self.scene.clearSelection()
-        layer = self._current_layer()
-        self._draw_tool.activate("spline", layer, self.scene, self.view,
-                                 snap=self._snap, all_curves=self._doc_curves)
+        self._teardown_tools(clear_selection=True)
+        self._draw_tool.activate("spline", self._current_layer(), self.scene,
+                                 self.view, snap=self._snap,
+                                 all_curves=self._doc_curves)
         self.view.set_draw_tool(self._draw_tool)
 
     def _set_tool_circle(self):
-        self._draw_tool.deactivate()
-        self.view.set_draw_tool(None)
-        self._dim_tool.deactivate()
-        self.view.set_dim_tool(None)
-        self._deactivate_cursor_tools()
-        self._edit_tool.clear()
-        self.scene.clearSelection()
-        layer = self._current_layer()
-        self._circle_tool.activate("circle", layer, self.scene, self.view,
-                                   snap=self._snap, all_curves=self._doc_curves,
+        self._teardown_tools(clear_selection=True)
+        self._circle_tool.activate("circle", self._current_layer(), self.scene,
+                                   self.view, snap=self._snap,
+                                   all_curves=self._doc_curves,
                                    measure_bar=self.view.measure_bar)
         self.view.set_draw_tool(self._circle_tool)
 
     def _set_tool_arc(self):
-        self._draw_tool.deactivate()
-        self.view.set_draw_tool(None)
-        self._dim_tool.deactivate()
-        self.view.set_dim_tool(None)
-        self._deactivate_cursor_tools()
-        self._edit_tool.clear()
-        self.scene.clearSelection()
-        layer = self._current_layer()
-        self._circle_tool.activate("arc", layer, self.scene, self.view,
-                                   snap=self._snap, all_curves=self._doc_curves,
+        self._teardown_tools(clear_selection=True)
+        self._circle_tool.activate("arc", self._current_layer(), self.scene,
+                                   self.view, snap=self._snap,
+                                   all_curves=self._doc_curves,
                                    measure_bar=self.view.measure_bar)
         self.view.set_draw_tool(self._circle_tool)
 
     def _set_tool_dim(self):
-        self._draw_tool.deactivate()
-        self.view.set_draw_tool(None)
-        self._circle_tool.deactivate()
-        self._deactivate_cursor_tools()
-        self._edit_tool.clear()
-        self.scene.clearSelection()
-        self.view.measure_bar.hide_bar()
+        self._teardown_tools(clear_selection=True)
         self._dim_tool.activate(self.scene, self.view,
                                 snap=self._snap, all_curves=self._doc_curves)
         self.view.set_dim_tool(self._dim_tool)
 
     def _set_tool_trim(self):
-        self._draw_tool.deactivate()
-        self.view.set_draw_tool(None)
-        self._circle_tool.deactivate()
-        self._dim_tool.deactivate()
-        self.view.set_dim_tool(None)
-        self._deactivate_cursor_tools()
-        self._edit_tool.clear()
-        self.scene.clearSelection()
-        self.view.measure_bar.hide_bar()
+        self._teardown_tools(clear_selection=True)
         self._trim_tool.activate(self.scene, self.view, lambda: self._doc_curves)
         self.view.set_draw_tool(self._trim_tool)
 
     def _set_tool_split_curve(self):
-        self._draw_tool.deactivate()
-        self.view.set_draw_tool(None)
-        self._circle_tool.deactivate()
-        self._dim_tool.deactivate()
-        self.view.set_dim_tool(None)
-        self._deactivate_cursor_tools()
-        self._edit_tool.clear()
-        self.scene.clearSelection()
-        self.view.measure_bar.hide_bar()
+        self._teardown_tools(clear_selection=True)
         self._split_tool.activate(self.scene, self.view, lambda: self._doc_curves)
         self.view.set_draw_tool(self._split_tool)
 
@@ -2800,22 +2855,17 @@ class MainWindow(QMainWindow):
         self._push_undo_snapshot()
         self._edit_tool.clear()
         self.scene.clearSelection()
-        self.scene.remove_curve(original)
-        self._doc_curves.remove(original)
+        self._active_ws.remove_curve(original)
         for c in remaining:
-            self._doc_curves.append(c)
-            self.scene.add_curve(c)
+            self._active_ws.add_curve(c)
 
     def _on_split_applied(self, original, parts: list):
         self._push_undo_snapshot()
         self._edit_tool.clear()
         self.scene.clearSelection()
-        if original in self._doc_curves:
-            self.scene.remove_curve(original)
-            self._doc_curves.remove(original)
+        self._active_ws.remove_curve(original)
         for c in parts:
-            self._doc_curves.append(c)
-            self.scene.add_curve(c)
+            self._active_ws.add_curve(c)
 
     def _on_trim_cancelled(self):
         self._act_select.setChecked(True)
@@ -2830,29 +2880,20 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _set_tool_offset(self):
-        from .canvas.items import CurveItem as _CI
-        # Capture selection before deactivating tools (which may clear it)
+        # Capture selection before teardown (deactivation may clear it)
         selected_curves = [
             item.curve for item in self.scene.selectedItems()
-            if isinstance(item, _CI) and not item.curve.mirrored
+            if isinstance(item, CurveItem) and not item.curve.mirrored
         ]
         source = selected_curves[0] if len(selected_curves) == 1 else None
 
-        self._draw_tool.deactivate()
-        self.view.set_draw_tool(None)
-        self._circle_tool.deactivate()
-        self._dim_tool.deactivate()
-        self.view.set_dim_tool(None)
-        self._deactivate_cursor_tools()
-        self.view.measure_bar.hide_bar()
-
+        self._teardown_tools(clear_selection=False)
         self._offset_tool.activate(self.scene, self.view, source)
         self.view.set_draw_tool(self._offset_tool)
 
     def _on_offset_applied(self, source_curve, offset_curve):
         self._push_undo_snapshot()
-        self._doc_curves.append(offset_curve)
-        self.scene.add_curve(offset_curve)
+        self._active_ws.add_curve(offset_curve)
         # Return to Select mode first (re-enables ItemIsSelectable on all items)
         self._act_select.setChecked(True)
         self._set_tool_select()
@@ -2876,19 +2917,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _set_tool_point_move(self):
-        from .canvas.items import CurveItem as _CI
-        selected = [it for it in self.scene.selectedItems() if isinstance(it, _CI)]
+        selected = [it for it in self.scene.selectedItems()
+                    if isinstance(it, CurveItem)]
         if not selected:
             self._status.showMessage("Point Move: select curves first")
             self._act_select.setChecked(True)
             return
-        self._draw_tool.deactivate()
-        self.view.set_draw_tool(None)
-        self._circle_tool.deactivate()
-        self._dim_tool.deactivate()
-        self.view.set_dim_tool(None)
-        self._deactivate_cursor_tools()
-        self.view.measure_bar.hide_bar()
+        self._teardown_tools(clear_selection=False)
         self._point_move_tool.activate(self.scene, self.view,
                                         self._active_ws.snap)
         self.view.set_draw_tool(self._point_move_tool)
@@ -2911,8 +2946,7 @@ class MainWindow(QMainWindow):
 
     def _on_dim_added(self, dim: DimLine):
         self._push_undo_snapshot()
-        self._doc_dims.append(dim)
-        self.scene.add_dim(dim)
+        self._active_ws.add_dim(dim)
         self._act_select.setChecked(True)
         self._set_tool_select()
         import math as _math
@@ -2941,8 +2975,7 @@ class MainWindow(QMainWindow):
     def _on_curve_added(self, curve):
         curve.line_weight = self._default_line_weight
         self._push_undo_snapshot()        # snapshot BEFORE the curve is added
-        self._doc_curves.append(curve)
-        self.scene.add_curve(curve)
+        self._active_ws.add_curve(curve)
         self._refresh_measurements()
         # Return to select mode so the user can immediately inspect the new curve
         self._act_select.setChecked(True)
@@ -3015,21 +3048,13 @@ class MainWindow(QMainWindow):
     # Undo / redo  (snapshot-based: full deep-copy of curves + dims)
     # ------------------------------------------------------------------
 
-    _MAX_UNDO = 100
-
     def _take_snapshot(self) -> dict:
-        """Return a deep copy of the current curves and dims."""
-        return {
-            "curves": copy.deepcopy(self._doc_curves),
-            "dims":   copy.deepcopy(self._doc_dims),
-        }
+        """Deep copy of the active workspace's curves and dims."""
+        return self._active_ws.take_snapshot()
 
     def _push_undo_snapshot(self):
-        """Push the current state onto the undo stack and wipe the redo future."""
-        self._undo_stack.append(self._take_snapshot())
-        self._redo_stack.clear()
-        if len(self._undo_stack) > self._MAX_UNDO:
-            self._undo_stack.pop(0)
+        """Snapshot the active workspace, then sync UI + dirty state."""
+        self._active_ws.push_undo_snapshot()
         self._update_undo_actions()
         self._mark_dirty()   # every snapshot precedes a document mutation
 
@@ -3038,28 +3063,13 @@ class MainWindow(QMainWindow):
         self._push_undo_snapshot()
 
     def _restore_snapshot(self, snapshot: dict):
-        """Rebuild the canvas from a snapshot, clearing any active edit handles."""
-        self._edit_tool.clear()
-        self.scene.clearSelection()
-        for c in list(self._doc_curves):
-            self.scene.remove_curve(c)
-        self._doc_curves.clear()
-        for d in list(self._doc_dims):
-            self.scene.remove_dim(d)
-        self._doc_dims.clear()
-        for c in snapshot["curves"]:
-            self._doc_curves.append(c)
-            self.scene.add_curve(c)
-        for d in snapshot["dims"]:
-            self._doc_dims.append(d)
-            self.scene.add_dim(d)
+        """Rebuild the active workspace's canvas from a snapshot."""
+        self._active_ws.restore_snapshot(snapshot)
 
     def _undo(self):
-        if not self._undo_stack:
+        if not self._active_ws.undo():
             self._status.showMessage("Nothing to undo")
             return
-        self._redo_stack.append(self._take_snapshot())
-        self._restore_snapshot(self._undo_stack.pop())
         self._update_undo_actions()
         self._mark_dirty()
         n = len(self._undo_stack)
@@ -3067,11 +3077,9 @@ class MainWindow(QMainWindow):
             f"Undo — {n} step{'s' if n != 1 else ''} remaining")
 
     def _redo(self):
-        if not self._redo_stack:
+        if not self._active_ws.redo():
             self._status.showMessage("Nothing to redo")
             return
-        self._undo_stack.append(self._take_snapshot())
-        self._restore_snapshot(self._redo_stack.pop())
         self._update_undo_actions()
         self._mark_dirty()
         n = len(self._redo_stack)
@@ -3102,10 +3110,7 @@ class MainWindow(QMainWindow):
                 # Curve would have <2 nodes — delete the whole curve instead
                 selected = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
                 for item in selected:
-                    c = item.curve
-                    if c in self._doc_curves:
-                        self._doc_curves.remove(c)
-                        self.scene.remove_curve(c)
+                    self._active_ws.remove_curve(item.curve)
                 self._status.showMessage("Node delete: curve too short, removed curve")
             else:
                 self.scene.refresh_curve(curve)
@@ -3128,17 +3133,13 @@ class MainWindow(QMainWindow):
         self._push_undo_snapshot()
 
         for item in selected_dims:
-            dim = item.dim
-            if dim in self._doc_dims:
-                self._doc_dims.remove(dim)
-            self.scene.remove_dim(dim)
+            self._active_ws.remove_dim(item.dim)
 
         to_remove = [item.curve for item in selected_curves if item.curve in self._doc_curves]
         if to_remove:
             self.scene.clearSelection()
             for curve in to_remove:
-                self._doc_curves.remove(curve)
-                self.scene.remove_curve(curve)
+                self._active_ws.remove_curve(curve)
             n = len(to_remove)
             self._status.showMessage(f"Deleted {n} curve{'s' if n > 1 else ''}")
         elif selected_dims:
@@ -3231,11 +3232,8 @@ class MainWindow(QMainWindow):
 
         # Replace the open half with the new closed shape
         self.scene.clearSelection()
-        self.scene.remove_curve(curve)
-        self._doc_curves.remove(curve)
-
-        self._doc_curves.append(new_curve)
-        self.scene.add_curve(new_curve)
+        self._active_ws.remove_curve(curve)
+        self._active_ws.add_curve(new_curve)
         self._status.showMessage(
             f"Mirror-closed → {len(new_nodes)}-node closed {new_curve.layer.value}"
         )
@@ -3259,72 +3257,15 @@ class MainWindow(QMainWindow):
             return
 
         is_horiz = bool(self.scene.mirror and getattr(self.scene.mirror, '_horizontal', False))
-
-        if is_horiz:
-            # Temple workspace: horizontal axis at y=0 — reflect y
-            def _dup(curve: Curve) -> Curve:
-                if curve.kind == "circle":
-                    return Curve(
-                        kind="circle", layer=curve.layer, closed=curve.closed,
-                        nodes=[SplineNode(x=curve.nodes[0].x, y=-curve.nodes[0].y)],
-                        radius=curve.radius, line_weight=curve.line_weight,
-                    )
-                if curve.kind == "arc":
-                    new_start = (-curve.end_angle)   % 360 if curve.end_angle   is not None else None
-                    new_end   = (-curve.start_angle) % 360 if curve.start_angle is not None else None
-                    return Curve(
-                        kind="arc", layer=curve.layer, closed=curve.closed,
-                        nodes=[SplineNode(x=curve.nodes[0].x, y=-curve.nodes[0].y)],
-                        radius=curve.radius, start_angle=new_start, end_angle=new_end,
-                        line_weight=curve.line_weight,
-                    )
-                new_nodes = []
-                for n in curve.nodes:
-                    mn = SplineNode(x=n.x, y=-n.y)
-                    if n.cp_in:  mn.cp_in  = ControlPoint(n.cp_in.x,  -n.cp_in.y)
-                    if n.cp_out: mn.cp_out = ControlPoint(n.cp_out.x, -n.cp_out.y)
-                    new_nodes.append(mn)
-                return Curve(kind=curve.kind, layer=curve.layer, nodes=new_nodes,
-                             closed=curve.closed, line_weight=curve.line_weight)
-        else:
-            # Front/hinge workspace: vertical axis at x=axis_x — reflect x
-            axis_x = self.scene.mirror.x if self.scene.mirror else 0.0
-
-            def mx(x: float) -> float:
-                return 2.0 * axis_x - x
-
-            def _dup(curve: Curve) -> Curve:
-                if curve.kind == "circle":
-                    return Curve(
-                        kind="circle", layer=curve.layer, closed=curve.closed,
-                        nodes=[SplineNode(x=mx(curve.nodes[0].x), y=curve.nodes[0].y)],
-                        radius=curve.radius, line_weight=curve.line_weight,
-                    )
-                if curve.kind == "arc":
-                    new_start = (180.0 - curve.end_angle)   if curve.end_angle   is not None else None
-                    new_end   = (180.0 - curve.start_angle) if curve.start_angle is not None else None
-                    return Curve(
-                        kind="arc", layer=curve.layer, closed=curve.closed,
-                        nodes=[SplineNode(x=mx(curve.nodes[0].x), y=curve.nodes[0].y)],
-                        radius=curve.radius, start_angle=new_start, end_angle=new_end,
-                        line_weight=curve.line_weight,
-                    )
-                new_nodes = []
-                for n in curve.nodes:
-                    mn = SplineNode(x=mx(n.x), y=n.y)
-                    if n.cp_in:  mn.cp_in  = ControlPoint(mx(n.cp_in.x),  n.cp_in.y)
-                    if n.cp_out: mn.cp_out = ControlPoint(mx(n.cp_out.x), n.cp_out.y)
-                    new_nodes.append(mn)
-                return Curve(kind=curve.kind, layer=curve.layer, nodes=new_nodes,
-                             closed=curve.closed, line_weight=curve.line_weight)
+        axis_x   = self.scene.mirror.x if self.scene.mirror else 0.0
 
         self._push_undo_snapshot()
         self.scene.clearSelection()
 
-        copies = [_dup(item.curve) for item in selected]
+        copies = [mirror_curve(item.curve, axis_x, horizontal=is_horiz)
+                  for item in selected]
         for c in copies:
-            self._doc_curves.append(c)
-            self.scene.add_curve(c)
+            self._active_ws.add_curve(c)
 
         # Turn off live mirror so the originals no longer generate a ghost
         # and the export does not auto-mirror these curves a second time.
@@ -3347,9 +3288,6 @@ class MainWindow(QMainWindow):
         temple_l → temple_r: same flip — both sides mirror through the Y axis.
         Confirms before overwriting non-empty target; pushes undo snapshot in target.
         """
-        import copy as _copy
-        from .document import SplineNode as _SN, ControlPoint as _CP, Curve as _Curve, DimLine
-
         ws_type = self._active_ws.workspace_type
         if ws_type not in ("temple_r", "temple_l"):
             return
@@ -3374,68 +3312,18 @@ class MainWindow(QMainWindow):
         if r != QMessageBox.StandardButton.Yes:
             return
 
-        def flip_y(y: float) -> float:
-            return -y
-
-        def flip_curve(c: _Curve) -> _Curve:
-            if c.kind == "circle":
-                return _Curve(
-                    kind="circle", layer=c.layer, closed=c.closed,
-                    nodes=[_SN(x=c.nodes[0].x, y=flip_y(c.nodes[0].y))],
-                    radius=c.radius, line_weight=c.line_weight,
-                )
-            if c.kind == "arc":
-                # Reflect across X axis: θ → -θ, sweep direction reverses so swap start/end
-                new_start = (-c.end_angle)   % 360 if c.end_angle   is not None else None
-                new_end   = (-c.start_angle) % 360 if c.start_angle is not None else None
-                return _Curve(
-                    kind="arc", layer=c.layer, closed=c.closed,
-                    nodes=[_SN(x=c.nodes[0].x, y=flip_y(c.nodes[0].y))],
-                    radius=c.radius, start_angle=new_start, end_angle=new_end,
-                    line_weight=c.line_weight,
-                )
-            new_nodes = []
-            for n in c.nodes:
-                mn = _SN(x=n.x, y=flip_y(n.y))
-                if n.cp_in:  mn.cp_in  = _CP(n.cp_in.x,  flip_y(n.cp_in.y))
-                if n.cp_out: mn.cp_out = _CP(n.cp_out.x, flip_y(n.cp_out.y))
-                new_nodes.append(mn)
-            return _Curve(kind=c.kind, layer=c.layer, nodes=new_nodes,
-                          closed=c.closed, line_weight=c.line_weight)
-
         def flip_dim(d: DimLine) -> DimLine:
-            return DimLine(x0=d.x0, y0=flip_y(d.y0),
-                           x1=d.x1, y1=flip_y(d.y1),
+            return DimLine(x0=d.x0, y0=-d.y0,
+                           x1=d.x1, y1=-d.y1,
                            offset=d.offset)
 
-        # Push undo snapshot in target workspace before clearing.
-        # Must match the {"curves", "dims"} shape _restore_snapshot expects.
-        tgt_ws.undo_stack.append({
-            "curves": _copy.deepcopy(tgt_ws.doc_curves),
-            "dims":   _copy.deepcopy(tgt_ws.doc_dims),
-        })
-        if len(tgt_ws.undo_stack) > self._MAX_UNDO:
-            tgt_ws.undo_stack.pop(0)
-        tgt_ws.redo_stack.clear()
-
-        # Clear target
-        tgt_ws.edit_tool.clear()
-        for c in list(tgt_ws.doc_curves):
-            tgt_ws.scene.remove_curve(c)
-        tgt_ws.doc_curves.clear()
-        for d in list(tgt_ws.doc_dims):
-            tgt_ws.scene.remove_dim(d)
-        tgt_ws.doc_dims.clear()
-
-        # Copy + flip curves and dims from source into target
+        # Snapshot target for undo, replace its geometry with the flipped copy.
+        tgt_ws.push_undo_snapshot()
+        tgt_ws.clear_geometry()
         for c in src_ws.doc_curves:
-            flipped = flip_curve(c)
-            tgt_ws.doc_curves.append(flipped)
-            tgt_ws.scene.add_curve(flipped)
+            tgt_ws.add_curve(mirror_curve(c, 0.0, horizontal=True))
         for d in src_ws.doc_dims:
-            flipped_d = flip_dim(d)
-            tgt_ws.doc_dims.append(flipped_d)
-            tgt_ws.scene.add_dim(flipped_d)
+            tgt_ws.add_dim(flip_dim(d))
 
         # Switch to target tab
         self._ws_tab_widget.setCurrentIndex(tab_names.index(target_type))
@@ -3555,12 +3443,9 @@ class MainWindow(QMainWindow):
 
         self.scene.clearSelection()
         for c in curves:
-            self.scene.remove_curve(c)
-            if c in self._doc_curves:
-                self._doc_curves.remove(c)
+            self._active_ws.remove_curve(c)
 
-        self._doc_curves.append(new_curve)
-        item = self.scene.add_curve(new_curve)
+        item = self._active_ws.add_curve(new_curve)
         item.setSelected(True)
         self._status.showMessage(
             f"Joined {len(curves)} curves → "
@@ -3670,11 +3555,9 @@ class MainWindow(QMainWindow):
                       nodes=right_nodes, closed=False, line_weight=curve.line_weight),
             ]
 
-        self.scene.remove_curve(curve)
-        self._doc_curves.remove(curve)
+        self._active_ws.remove_curve(curve)
         for c in results:
-            self._doc_curves.append(c)
-            self.scene.add_curve(c).setSelected(True)
+            self._active_ws.add_curve(c).setSelected(True)
 
         n = len(results)
         self._status.showMessage(f"Split → {n} curve{'s' if n > 1 else ''}")
@@ -3705,11 +3588,9 @@ class MainWindow(QMainWindow):
                             nodes=[a, b], closed=False, line_weight=curve.line_weight)
                 segments.append(seg)
 
-            self.scene.remove_curve(curve)
-            self._doc_curves.remove(curve)
+            self._active_ws.remove_curve(curve)
             for seg in segments:
-                self._doc_curves.append(seg)
-                self.scene.add_curve(seg).setSelected(True)
+                self._active_ws.add_curve(seg).setSelected(True)
             total_segs += len(segments)
 
         n_orig = len(selected_items)
@@ -3920,11 +3801,9 @@ class MainWindow(QMainWindow):
         self._push_undo_snapshot()
         for c in curves:
             c.mirrored = False
-            self._doc_curves.append(c)
-            self.scene.add_curve(c)
+            self._active_ws.add_curve(c)
         for d in dims:
-            self._doc_dims.append(d)
-            self.scene.add_dim(d)
+            self._active_ws.add_dim(d)
 
         name = item.text().split("  ·")[0]
         self._status.showMessage(
@@ -4262,15 +4141,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             return
         for ws in self._workspaces:
-            ws.edit_tool.clear()
-            for c in list(ws.doc_curves):
-                ws.scene.remove_curve(c)
-            ws.doc_curves.clear()
-            for d in list(ws.doc_dims):
-                ws.scene.remove_dim(d)
-            ws.doc_dims.clear()
-            ws.undo_stack.clear()
-            ws.redo_stack.clear()
+            ws.clear_document()
             ws.bookmarks.clear()
             ws.scene.clear_faces()
             ws.face_image_paths.clear()
@@ -4370,19 +4241,10 @@ class MainWindow(QMainWindow):
 
     def _load_ws_data(self, ws: "WorkspaceState", data: dict):
         """Populate a WorkspaceState from a load_svg result dict.  Clears first."""
-        ws.edit_tool.clear()
-        for c in list(ws.doc_curves):
-            ws.scene.remove_curve(c)
-        ws.doc_curves.clear()
-        for d in list(ws.doc_dims):
-            ws.scene.remove_dim(d)
-        ws.doc_dims.clear()
-        ws.undo_stack.clear()
-        ws.redo_stack.clear()
+        ws.clear_document()
 
         for curve in data.get("curves", []):
-            ws.doc_curves.append(curve)
-            ws.scene.add_curve(curve)
+            ws.add_curve(curve)
 
         frm = data.get("forming", FormingMetadata())
         ws.bridge_angle  = frm.bridge_angle_deg
@@ -4418,8 +4280,7 @@ class MainWindow(QMainWindow):
                 visible_idx += 1
 
         for dim in data.get("dims", []):
-            ws.doc_dims.append(dim)
-            ws.scene.add_dim(dim)
+            ws.add_dim(dim)
 
         ws.bookmarks = list(data.get("bookmarks", []))
 

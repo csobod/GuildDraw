@@ -12,7 +12,7 @@ and export clean DXF for GuildCAM — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-09, v0.9.3 — M1–M3 complete)*
+## Status snapshot *(2026-06-10, v0.9.4 — M1–M4 complete)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -28,9 +28,11 @@ text/engraving, GuildCAM hardware round-trip, BRIDGE layer tooling.
 **Code health:** ~10,900 lines; geometry core is solid. The M1 bug list is fixed
 (v0.9.1), the repo is under git, and data safety landed in v0.9.2 (dirty-flag
 guards, atomic saves with .bak, autosave/crash recovery, surfaced load errors,
-Recent Files). v0.9.3 added the test suite (45 tests: geometry, SVG round-trip,
-validator, gdraw, DXF) and a ruff-clean codebase. Remaining gap: `app.py` is a
-4,500-line god-object whose proxy-property pattern breeds bugs (M4).
+Recent Files). v0.9.3 added the test suite (58 tests incl. mirror-math) and a
+ruff-clean codebase. v0.9.4 centralized tool switching (`_teardown_tools`),
+document mutations (`WorkspaceState` primitives), and mirror math
+(`geometry.mirror_curve`), and deleted the dead model classes. Next: M5 UX
+retest, M6 workflow features, M7 OMA.
 
 ---
 
@@ -159,29 +161,31 @@ revisit in M4 when document state is centralized.
 4. ⏭ Mirror-math reflection tests deferred to M4 (written alongside the
    dedupe of the four duplicated implementations they'll be guarding).
 
-## M4 — Architecture cleanup (v0.9.4) · *make the next ten features cheap*
+## M4 — Architecture cleanup (v0.9.4) · *make the next ten features cheap* — ✅ DONE 2026-06-10
 
-No big-bang rewrite — three incremental moves:
-
-1. **Tool registry.** One `_activate_tool(name)` on MainWindow that deactivates
-   every registered tool, clears HUDs/selection consistently, then activates the
-   target. Deletes the ten hand-rolled `_set_tool_*` dances (source of M1 #6).
-2. **Workspace controller.** Move document mutations (`add_curve`,
-   `delete_selected`, `push_undo`/`restore`, `join`, `split`, `explode`,
-   `mirror_close`, `duplicate_mirror`) from MainWindow into `WorkspaceState`
-   methods that take explicit state — no proxy properties. MainWindow keeps
-   wiring + widgets only. Proxies are then deleted incrementally as call sites
-   migrate. (The Mirror Copy bug happened precisely because cross-workspace code
-   can't use the proxies.)
-3. **One mirror-transform function.** `mirror_curve(curve, axis, horizontal)` in
-   `geometry.py`; used by scene ghosts, DXF export, Mirror bake, and Mirror Copy
-   (currently four near-identical implementations).
-4. **Adopt or delete the dead model classes** — `Document` / `WorkspaceDocument`
-   in `document.py` are defined but unused. Either make `WorkspaceDocument` the
-   single source of truth that the sidebar reads/writes (preferred; kills the
-   fragile `_save/_restore_ws_sidebar_state` dance), or delete them.
-5. *(Optional, if appetite remains)* migrate snapshot undo to `QUndoStack` per
-   workspace — gets command merging and enable/disable state for free.
+1. ✅ **Single tool-switch path.** `_teardown_tools(clear_selection)` is the one
+   place every tool gets deactivated (draw, circle, dim, cursor tools, measure
+   bar, optional selection clear); the ten `_set_tool_*` setters are now
+   2–4-line activate calls. The per-setter drift bug class (M1 #6) is gone.
+2. ✅ **Workspace document primitives.** `WorkspaceState` owns
+   `take_snapshot / push_undo_snapshot / add_curve / remove_curve / add_dim /
+   remove_dim / clear_geometry / clear_document / restore_snapshot / undo /
+   redo` — the single source of truth for snapshot shape and doc↔scene
+   consistency. MainWindow's undo/redo, New, file load, Temple Copy, and all
+   14 hand-rolled list+scene mutation pairs now go through them; cross-workspace
+   code uses the same methods as active-workspace code (the M1 #2 bug class is
+   structurally gone). The read-accessor proxy properties remain (deleting them
+   is mechanical churn deferred until a milestone needs to touch those lines).
+3. ✅ **One mirror transform.** `geometry.mirror_curve(curve, axis_x,
+   horizontal)` replaces the four near-identical implementations (scene ghosts,
+   DXF export, Mirror bake, Temple Copy) plus a fifth point-mapper in the
+   draw-tool preview ghost. Guarded by `tests/test_mirror.py` (13 tests:
+   reflection invariants per curve kind/axis, metadata preservation,
+   double-mirror identity) — written before the implementation.
+4. ✅ **Dead model classes deleted** — `Document` / `WorkspaceDocument` removed
+   from `document.py`; `WorkspaceState` + its primitives are the live model.
+5. ⏭ `QUndoStack` migration — skipped (optional); snapshot undo behind
+   `WorkspaceState.undo()/redo()` is now a one-file swap if ever wanted.
 
 ## M5 — Maker-demo UX fixes (v0.9.5) · *retest, then fix what's still broken*
 

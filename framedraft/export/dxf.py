@@ -26,41 +26,8 @@ Arc angles:
 import ezdxf
 from ezdxf.math import Bezier4P, bezier_to_bspline, Vec3
 
-from ..document import Curve, Layer, SplineNode, ControlPoint
-
-
-def _mirror_curve(curve: Curve, axis_x_mm: float) -> Curve:
-    """Return a new Curve mirrored about x = axis_x_mm (scene coordinates)."""
-    def mx(x: float) -> float:
-        return 2.0 * axis_x_mm - x
-
-    if curve.kind == "circle":
-        return Curve(kind="circle", layer=curve.layer,
-                     nodes=[SplineNode(x=mx(curve.nodes[0].x), y=curve.nodes[0].y)],
-                     closed=curve.closed, radius=curve.radius,
-                     line_weight=curve.line_weight)
-
-    if curve.kind == "arc":
-        new_cx = mx(curve.nodes[0].x)
-        # Horizontal mirror: angle θ → 180 − θ; swap start/end to preserve CCW.
-        new_start = (180.0 - curve.end_angle)   if curve.end_angle   is not None else None
-        new_end   = (180.0 - curve.start_angle) if curve.start_angle is not None else None
-        return Curve(kind="arc", layer=curve.layer,
-                     nodes=[SplineNode(x=new_cx, y=curve.nodes[0].y)],
-                     closed=curve.closed, radius=curve.radius,
-                     start_angle=new_start, end_angle=new_end,
-                     line_weight=curve.line_weight)
-
-    mirrored: list[SplineNode] = []
-    for n in curve.nodes:
-        mn = SplineNode(x=mx(n.x), y=n.y)
-        if n.cp_in:
-            mn.cp_in  = ControlPoint(mx(n.cp_in.x),  n.cp_in.y)
-        if n.cp_out:
-            mn.cp_out = ControlPoint(mx(n.cp_out.x), n.cp_out.y)
-        mirrored.append(mn)
-    return Curve(kind=curve.kind, layer=curve.layer, nodes=mirrored,
-                 closed=curve.closed, line_weight=curve.line_weight)
+from ..document import Curve, Layer, ControlPoint
+from ..geometry import mirror_curve
 
 
 def _spline_segments(nodes: list, closed: bool) -> list:
@@ -150,6 +117,6 @@ def export_dxf(
             continue
         _add_curve(msp, curve)
         if mirror_on and curve.layer in _MIRROR_LAYERS:
-            _add_curve(msp, _mirror_curve(curve, axis_x))
+            _add_curve(msp, mirror_curve(curve, axis_x))
 
     doc.saveas(path)

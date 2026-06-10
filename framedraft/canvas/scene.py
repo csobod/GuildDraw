@@ -2,7 +2,7 @@ from PySide6.QtWidgets import QGraphicsScene, QGraphicsPixmapItem
 from PySide6.QtCore import QRectF, Qt, QPointF
 from PySide6.QtGui import QColor, QPen, QPixmap, QPainterPath
 
-from ..document import Curve, Layer, SplineNode, ControlPoint
+from ..document import Curve, Layer
 from . import items as _items
 from .mirror import MirrorAxis
 
@@ -24,51 +24,9 @@ def _cross_color() -> QColor:
 def _mirror_path(curve: Curve, mirror) -> QPainterPath:
     """Build a QPainterPath reflecting curve through *mirror* (a MirrorAxis)."""
     from .items import build_path
-
-    horizontal = getattr(mirror, '_horizontal', False)
-
-    def mp(x: float, y: float) -> tuple:
-        if horizontal:
-            return x, -y
-        return 2.0 * mirror.x - x, y
-
-    if curve.kind == "circle":
-        new_cx, new_cy = mp(curve.nodes[0].x, curve.nodes[0].y)
-        tmp = Curve(kind="circle", layer=curve.layer,
-                    nodes=[SplineNode(x=new_cx, y=new_cy)],
-                    closed=curve.closed, radius=curve.radius)
-        return build_path(tmp)
-
-    if curve.kind == "arc":
-        new_cx, new_cy = mp(curve.nodes[0].x, curve.nodes[0].y)
-        if horizontal:
-            # y-flip: angle θ → −θ, swap start/end
-            new_start = (-curve.end_angle)   % 360 if curve.end_angle   is not None else None
-            new_end   = (-curve.start_angle) % 360 if curve.start_angle is not None else None
-        else:
-            # x-flip: angle θ → 180−θ, swap start/end
-            new_start = 180.0 - curve.end_angle   if curve.end_angle   is not None else None
-            new_end   = 180.0 - curve.start_angle if curve.start_angle is not None else None
-        tmp = Curve(kind="arc", layer=curve.layer,
-                    nodes=[SplineNode(x=new_cx, y=new_cy)],
-                    closed=curve.closed, radius=curve.radius,
-                    start_angle=new_start, end_angle=new_end)
-        return build_path(tmp)
-
-    mirrored = []
-    for n in curve.nodes:
-        nx, ny = mp(n.x, n.y)
-        mn = SplineNode(x=nx, y=ny)
-        if n.cp_in:
-            cpx, cpy = mp(n.cp_in.x, n.cp_in.y)
-            mn.cp_in  = ControlPoint(cpx, cpy)
-        if n.cp_out:
-            cpx, cpy = mp(n.cp_out.x, n.cp_out.y)
-            mn.cp_out = ControlPoint(cpx, cpy)
-        mirrored.append(mn)
-
-    tmp = Curve(kind=curve.kind, layer=curve.layer, nodes=mirrored, closed=curve.closed)
-    return build_path(tmp)
+    from ..geometry import mirror_curve
+    return build_path(mirror_curve(curve, mirror.x,
+                                   horizontal=getattr(mirror, "_horizontal", False)))
 
 
 class FrameScene(QGraphicsScene):

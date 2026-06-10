@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QLabel
 
 from ..document import Curve, Layer, SplineNode, ControlPoint
 from ..canvas.items import build_path
+from ..geometry import mirror_curve
 
 # Layers that show a live mirror ghost while drawing
 _MIRROR_GHOST_LAYERS = {Layer.LENS, Layer.HINGE, Layer.OUTLINE}
@@ -416,34 +417,11 @@ class DrawTool(QObject):
         # Mirror ghost (LENS / HINGE / OUTLINE layers, open curves only)
         mirror = getattr(self._scene, "mirror", None)
         if mirror and mirror.enabled and self._layer in _MIRROR_GHOST_LAYERS:
-            horizontal = getattr(mirror, '_horizontal', False)
-
-            def _mp(x: float, y: float):
-                if horizontal:
-                    return x, -y
-                return 2.0 * mirror.x - x, y
-
-            mirrored = []
-            for pt in all_pts:
-                mx_, my_ = _mp(pt.x, pt.y)
-                mn = SplineNode(x=mx_, y=my_)
-                if pt.cp_in:
-                    cpx, cpy = _mp(pt.cp_in.x, pt.cp_in.y)
-                    mn.cp_in  = ControlPoint(cpx, cpy)
-                if pt.cp_out:
-                    cpx, cpy = _mp(pt.cp_out.x, pt.cp_out.y)
-                    mn.cp_out = ControlPoint(cpx, cpy)
-                mirrored.append(mn)
-
-            if self._kind == "line":
-                mpath = QPainterPath()
-                mpath.moveTo(mirrored[0].x, mirrored[0].y)
-                for pt in mirrored[1:]:
-                    mpath.lineTo(pt.x, pt.y)
-            else:
-                tmp_m = Curve(kind="spline", layer=self._layer,
-                              nodes=mirrored, closed=False)
-                mpath = build_path(tmp_m)
+            tmp_src = Curve(kind=self._kind, layer=self._layer,
+                            nodes=all_pts, closed=False)
+            mpath = build_path(mirror_curve(
+                tmp_src, mirror.x,
+                horizontal=getattr(mirror, "_horizontal", False)))
 
             ghost_pen = QPen(QColor("#888888"), 0, Qt.PenStyle.DotLine)
             ghost     = self._scene.addPath(mpath, ghost_pen)

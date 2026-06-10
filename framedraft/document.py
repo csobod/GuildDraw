@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, List
 from enum import Enum
 
@@ -98,25 +98,7 @@ class DimLine:
     offset: float = 0.0   # perpendicular displacement of the dim line (mm)
 
 
-@dataclass
-class Document:
-    face_image: FaceImage = field(default_factory=FaceImage)
-    calibration: Calibration = field(default_factory=Calibration)
-    units: str = "mm"
-    mirror_axis: MirrorAxis = field(default_factory=MirrorAxis)
-    forming_metadata: FormingMetadata = field(default_factory=FormingMetadata)
-    machined_bridge: MachinedBridge = field(default_factory=MachinedBridge)
-    curves: List[Curve] = field(default_factory=list)
-
-
-@dataclass
-class WorkspaceDocument:
-    """All serialisable state for one workspace tab (front / temple / hinge)."""
-    workspace_type: str                                # "front" | "temple" | "hinge"
-    curves:         List[Curve]        = field(default_factory=list)
-    dims:           List[DimLine]      = field(default_factory=list)
-    calibration:    Calibration        = field(default_factory=Calibration)
-    mirror:         MirrorAxis         = field(default_factory=MirrorAxis)
-    forming:        FormingMetadata    = field(default_factory=FormingMetadata)
-    face_images:    List[FaceImage]    = field(default_factory=list)
-    bookmarks:      list               = field(default_factory=list)
+# NOTE: the old aggregate `Document` / `WorkspaceDocument` dataclasses were
+# never adopted and were removed in M4 (v0.9.4). The live per-workspace state
+# is `framedraft.app.WorkspaceState`, whose document-mutation primitives are
+# the single source of truth for the curves/dims lists and undo snapshots.

@@ -148,6 +148,59 @@ def arc_bbox(cx: float, cy: float, r: float,
     return (min(xs), min(ys), max(xs), max(ys))
 
 
+def mirror_curve(curve: Curve, axis_x: float = 0.0,
+                 horizontal: bool = False) -> Curve:
+    """Reflect *curve* across the mirror axis, returning a new independent Curve.
+
+    horizontal=False: vertical axis at x = axis_x (front / hinge workspaces).
+    horizontal=True : horizontal axis at y = 0 (temple workspaces); axis_x unused.
+
+    Single source of truth for mirror math — used by scene ghosts, DXF export,
+    Mirror (bake), Temple Copy, and draw-tool preview ghosts. The result is
+    plain geometry (mirrored=False); callers decide its role.
+    """
+    def mp(x: float, y: float) -> Tuple[float, float]:
+        if horizontal:
+            return x, -y
+        return 2.0 * axis_x - x, y
+
+    if curve.kind == "circle":
+        cx, cy = mp(curve.nodes[0].x, curve.nodes[0].y)
+        return Curve(kind="circle", layer=curve.layer,
+                     nodes=[SplineNode(x=cx, y=cy)], closed=curve.closed,
+                     radius=curve.radius, line_weight=curve.line_weight)
+
+    if curve.kind == "arc":
+        cx, cy = mp(curve.nodes[0].x, curve.nodes[0].y)
+        # Reflection reverses the sweep direction, so start/end swap.
+        sa, ea = curve.start_angle, curve.end_angle
+        if horizontal:   # y-flip: angle θ → −θ
+            new_start = (-ea) % 360 if ea is not None else None
+            new_end   = (-sa) % 360 if sa is not None else None
+        else:            # x-flip: angle θ → 180 − θ
+            new_start = (180.0 - ea) % 360 if ea is not None else None
+            new_end   = (180.0 - sa) % 360 if sa is not None else None
+        return Curve(kind="arc", layer=curve.layer,
+                     nodes=[SplineNode(x=cx, y=cy)], closed=curve.closed,
+                     radius=curve.radius,
+                     start_angle=new_start, end_angle=new_end,
+                     line_weight=curve.line_weight)
+
+    mirrored: List[SplineNode] = []
+    for n in curve.nodes:
+        x, y = mp(n.x, n.y)
+        mn = SplineNode(x=x, y=y)
+        if n.cp_in:
+            ix, iy = mp(n.cp_in.x, n.cp_in.y)
+            mn.cp_in = ControlPoint(ix, iy)
+        if n.cp_out:
+            ox, oy = mp(n.cp_out.x, n.cp_out.y)
+            mn.cp_out = ControlPoint(ox, oy)
+        mirrored.append(mn)
+    return Curve(kind=curve.kind, layer=curve.layer, nodes=mirrored,
+                 closed=curve.closed, line_weight=curve.line_weight)
+
+
 # ---------------------------------------------------------------------------
 # Sampling
 # ---------------------------------------------------------------------------
