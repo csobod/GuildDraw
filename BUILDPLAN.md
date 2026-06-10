@@ -12,7 +12,7 @@ and export clean DXF for GuildCAM — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-10, v0.9.6 — M1–M6 complete; next: M7 OMA)*
+## Status snapshot *(2026-06-10, v0.9.7 — M1–M7 complete; next: M8 visualization)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -20,10 +20,12 @@ join/explode/split-at-node, mirror system (ghost, bake, mirror-close), move gizm
 point move, dimension lines, four tabbed workspaces (Frame Front, Temple R,
 Temple L, Hinge Pocket) with Mirror Copy, hinge library, construction/boxing/stock/pad
 guides, dark mode, configurable toolbar + hotkeys, `.gdraw` ZIP format, SVG round-trip,
-DXF R2000 SPLINE export with validator, PNG render, PyInstaller Windows build.
+DXF R2000 SPLINE export with validator, PNG render, PyInstaller Windows build,
+layers panel + groups, on-curve snap, clipboard + Transform dialog, OMA lens-trace
+import/export (TRCFMT format 1).
 
-**Not yet built:** snap-along-curve, copy/paste/transform, frame fill overlay,
-text/engraving, GuildCAM hardware round-trip, BRIDGE layer tooling.
+**Not yet built:** frame fill overlay, text/engraving, print/PDF at 1:1,
+GuildCAM hardware round-trip, batch DXF export, BRIDGE layer tooling.
 
 **Code health:** ~10,900 lines; geometry core is solid. The M1 bug list is fixed
 (v0.9.1), the repo is under git, and data safety landed in v0.9.2 (dirty-flag
@@ -35,7 +37,9 @@ v0.9.5–0.9.6 delivered the maker-UX round (Layers panel v2 with eye/padlock
 icons as the single layer interface, Group/Ungroup, grouped hinge imports,
 Point Move root-cause fixes) and the M6 workflow set (on-curve snapping,
 copy/paste/duplicate, Transform dialog, workspace-aware validation + DXF
-mirror orientation, select-all). Next: M7 OMA lens-trace interchange.
+mirror orientation, select-all). v0.9.7 shipped M7: OMA/DCS lens-trace
+interchange (`export/oma.py`, Qt-free, 16 tests incl. the <0.05 mm round-trip
+criterion) with File > Import/Export wiring. Next: M8 visualization.
 
 ---
 
@@ -272,7 +276,7 @@ revisit in M4 when document state is centralized.
    select-by-layer and move-to-layer via the Layers panel context menu;
    per-layer show/hide + lock shipped in v0.9.5.
 
-## M7 — OMA lens-trace interchange (v0.9.7) · *traced lenses in, lens shapes out*
+## M7 — OMA lens-trace interchange (v0.9.7) · *traced lenses in, lens shapes out* — ✅ DONE 2026-06-10
 
 **Why pre-1.0:** opticians with a frame tracer can capture a customer's
 existing lens shape as OMA data; importing that trace as editable LENS
@@ -290,29 +294,39 @@ record parser/builder structure, TRCFMT two-dataset (R then L) handling,
 R-records emitted in 10-value chunks; it implements format 1 only, which
 confirms format 1 as the safe baseline.
 
-Scope:
+Scope (all landed 2026-06-10):
 
-1. **`framedraft/export/oma.py`** — standalone, Qt-free module (testable):
-   - `parse_oma(text) -> OmaJob` — generic record parser (labels, multi-values,
-     repeated records), TRCFMT/R dataset extraction per side, format 1; tolerate
-     and preserve unknown records.
-   - `trace_to_curve(radii, spacing, …) -> Curve` — polar (1/100 mm, equal
-     angles, CCW) → Cartesian → closed Catmull-Rom spline, decimated to a
-     sensible node count (~24–36) so the result is hand-editable.
-   - `curve_to_trace(curve, n=400) -> radii` — sample a closed LENS contour at
-     equal angles about its boxing centre; fail clearly on non-star-shaped
-     contours (radial sampling can't represent them).
-   - `build_oma(job) -> text` — JOB, TRCFMT=1 + R records (both sides),
-     HBOX/VBOX/DBL/FED computed from the document.
-2. **Import UI** — File → Import → OMA Trace…: places OD/OS LENS curves into
-   Frame Front at DBL spacing (from the file, else boxing-guide DBL), undo-safe,
-   marks dirty; single-side files get the mirrored side via the existing ghost.
-3. **Export UI** — File → Export → OMA…: validates exactly 2 closed LENS
-   contours (workspace validator), writes format-1 file.
-4. **Round-trip test** in the M3 suite: import → export → reimport, max radius
-   deviation < 0.05 mm; plus golden-file parse tests with hand-written samples.
-5. **Stretch (may slip to 1.x):** TRCFMT format 4 (packed) import, Z/curve
-   records, direct serial tracer input.
+1. ✅ **`framedraft/export/oma.py`** — standalone, Qt-free module:
+   - `parse_oma(text) -> OmaJob` — generic record parser, TRCFMT/R dataset
+     extraction per side (format 1, E spacing), 1/100 mm → mm; unknown records
+     preserved verbatim through a parse → build round trip; specific
+     ValueErrors for format 4 / U spacing / count mismatches / malformed lines.
+   - `trace_to_curve(radii_mm) -> Curve` — polar (equal angles, CCW, y-up OMA
+     frame) → scene y-down Cartesian → closed Catmull-Rom spline decimated to
+     ~32 nodes; non-positive (invalid tracer) radii skipped angle-correctly.
+     `compute_catmull_handles` moved from tools/draw.py into geometry.py so
+     Qt-free modules can build splines (draw.py re-exports it).
+   - `curve_to_trace(curve, n=400) -> radii` + `boxing_center(curve)` —
+     θ-unwrap + winding/monotonicity checks reject non-star-shaped contours
+     with a clear message; equal-angle resample about the bbox centre.
+   - `build_oma(job) -> text` — CRLF, R records in 10-value chunks, preserved
+     records first.
+2. ✅ **Import UI** — File → Import → OMA Lens Trace…: lenses land in Frame
+   Front (auto tab-switch) on the LENS layer, boxing centres on y=0, nasal
+   edges at DBL from the file (else boxing-guide DBL), side R/OD at negative x;
+   undo-safe + dirty; single-side files note that the mirror ghost previews
+   the other side.
+3. ✅ **Export UI** — File → Export → OMA Trace… (Frame Front only): exactly
+   2 LENS contours after mirror doubling, 0.1 mm closure rule, OD/OS assigned
+   by boxing-centre x; emits HBOX/VBOX/DBL/FED computed from the geometry.
+4. ✅ **Tests** — 16 in `tests/test_oma.py` (suite: 81): golden-file parse,
+   tolerance cases, error cases, build chunking, circle fidelity both ways,
+   invalid-point skipping, non-star rejection, and the release criterion
+   import → export → reimport round-trip (< 0.05 mm; measured ~0.02 mm worst
+   on a lens-like shape incl. 1/100 mm quantization). Offscreen GUI smoke test
+   verified import placement (nasal gap exactly = DBL), undo/redo, and export.
+5. ⏭ **Stretch (slipped to 1.x as planned):** TRCFMT format 4 (packed) import,
+   Z/curve records, direct serial tracer input.
 
 ## M8 — Visualization & engraving (v0.9.8)
 

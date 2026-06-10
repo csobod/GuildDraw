@@ -3,9 +3,9 @@ from PySide6.QtCore import QObject, Signal, QPointF, Qt
 from PySide6.QtGui import QPen, QBrush, QColor, QPainterPath, QFont
 from PySide6.QtWidgets import QLabel
 
-from ..document import Curve, Layer, SplineNode, ControlPoint
+from ..document import Curve, Layer, SplineNode
 from ..canvas.items import build_path
-from ..geometry import mirror_curve
+from ..geometry import mirror_curve, compute_catmull_handles  # noqa: F401 — re-exported for app.py
 
 # Layers that show a live mirror ghost while drawing
 _MIRROR_GHOST_LAYERS = {Layer.LENS, Layer.HINGE, Layer.OUTLINE}
@@ -39,23 +39,6 @@ class _LengthHud(QLabel):
         self.move(max(0, x), max(0, y))
         self.show()
         self.raise_()
-
-
-def compute_catmull_handles(nodes: list, closed: bool) -> None:
-    """Set cp_in / cp_out on every node using centripetal Catmull-Rom."""
-    n = len(nodes)
-    if n < 2:
-        return
-
-    def p(i):
-        return nodes[i % n] if closed else nodes[max(0, min(i, n - 1))]
-
-    for i, node in enumerate(nodes):
-        prev, nxt = p(i - 1), p(i + 1)
-        tx = (nxt.x - prev.x) / 6
-        ty = (nxt.y - prev.y) / 6
-        node.cp_out = ControlPoint(node.x + tx, node.y + ty)
-        node.cp_in  = ControlPoint(node.x - tx, node.y - ty)
 
 
 class DrawTool(QObject):

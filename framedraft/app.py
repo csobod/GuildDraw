@@ -3054,10 +3054,13 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction("Add Reference Image…", self._add_face)
         file_menu.addSeparator()
+        imp = file_menu.addMenu("Import")
+        imp.addAction("OMA Lens Trace…", self._import_oma)
         exp = file_menu.addMenu("Export")
         exp.addAction("Export DXF…", self._export_dxf)
         exp.addAction("Export SVG…", self._export_svg)
         exp.addAction("Export PNG…", self._export_png)
+        exp.addAction("Export OMA Trace…", self._export_oma)
         file_menu.addSeparator()
         file_menu.addAction("Quit", self.close)
 
@@ -5055,6 +5058,140 @@ class MainWindow(QMainWindow):
             self._status.showMessage(f"PNG exported: {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.critical(self, "PNG export failed", str(e))
+
+    # ------------------------------------------------------------------
+    # OMA lens-trace interchange (M7)
+    # ------------------------------------------------------------------
+
+    def _import_oma(self):
+        """File > Import > OMA Lens Trace… — traced lens shapes (from a frame
+        tracer / lab DCS file) become editable LENS splines in Frame Front."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import OMA Lens Trace", "",
+            "OMA / DCS Trace Files (*.oma *.dcs *.txt);;All Files (*)")
+        if not path:
+            return
+        try:
+            from .export.oma import parse_oma, trace_to_curve
+            with open(path, encoding="ascii", errors="replace") as f:
+                job = parse_oma(f.read())
+            if not job.traces:
+                QMessageBox.information(
+                    self, "No trace data",
+                    "This file contains no TRCFMT/R lens-trace records.")
+                return
+            lenses = {side: trace_to_curve(tr.radii_mm)
+                      for side, tr in job.traces.items()}
+        except Exception as e:
+            QMessageBox.critical(self, "OMA import failed", str(e))
+            return
+
+        # DBL from the file when present, else the boxing-guide setting.
+        front = self._workspaces[0]
+        dbl_vals = job.floats("DBL")
+        dbl = dbl_vals[0] if dbl_vals else front.boxing_dbl
+
+        # Place each lens: boxing centres on y = 0, nasal edges DBL apart.
+        # Side R (OD) sits at negative x — viewer's left, same convention as
+        # the measurement panel's OD/OS split about the mirror axis.
+        for side, c in lenses.items():
+            bb = _curves_bbox([c])
+            w  = bb[2] - bb[0]
+            tx = (-(dbl / 2 + w / 2) if side == "R" else (dbl / 2 + w / 2)) \
+                 - (bb[0] + bb[2]) / 2
+            ty = -(bb[1] + bb[3]) / 2
+            for nd in c.nodes:
+                nd.x += tx;  nd.y += ty
+                if nd.cp_in:
+                    nd.cp_in.x  += tx;  nd.cp_in.y  += ty
+                if nd.cp_out:
+                    nd.cp_out.x += tx;  nd.cp_out.y += ty
+
+        # Traces always land in Frame Front — switch first so the undo
+        # snapshot and status bar belong to the workspace that changes.
+        self._ws_tab_widget.setCurrentIndex(0)
+        self._push_undo_snapshot()
+        for c in lenses.values():
+            self._active_ws.add_curve(c)
+
+        src = "file DBL" if dbl_vals else "boxing-guide DBL"
+        msg = (f"Imported {len(lenses)} traced lens shape"
+               f"{'s' if len(lenses) != 1 else ''} onto LENS "
+               f"({src} {dbl:.1f} mm).")
+        if len(lenses) == 1:
+            msg += " Single-side file — the mirror ghost previews the other side."
+        self._status.showMessage(msg)
+
+    def _export_oma(self):
+        """File > Export > OMA Trace… — write the two LENS contours as a
+        TRCFMT format-1 DCS file for labs and edgers."""
+        if self._active_ws.workspace_type != "front":
+            QMessageBox.information(
+                self, "OMA export",
+                "OMA lens traces are exported from the Frame Front workspace.")
+            return
+
+        from .export.oma import (
+            OmaJob, OmaTrace, build_oma, curve_to_trace, boxing_center,
+        )
+        lenses = [c for c in self._doc_curves
+                  if not c.mirrored and c.layer == Layer.LENS]
+        if self._act_mirror.isChecked():
+            axis_x = self.scene.mirror.x if self.scene.mirror else 0.0
+            lenses += [mirror_curve(c, axis_x) for c in list(lenses)]
+        if len(lenses) != 2:
+            QMessageBox.warning(
+                self, "OMA export",
+                f"OMA export needs exactly 2 LENS contours "
+                f"(found {len(lenses)}).\nMirror doubling counts — draw one "
+                "lens with Mirror on, or both lenses with it off.")
+            return
+        for c in lenses:
+            if not c.closed and len(c.nodes) >= 2:
+                n0, n1 = c.nodes[0], c.nodes[-1]
+                gap = math.hypot(n1.x - n0.x, n1.y - n0.y)
+                if gap > 0.1:
+                    QMessageBox.warning(
+                        self, "OMA export",
+                        f"A LENS contour is not closed "
+                        f"(endpoint gap {gap:.3f} mm > 0.1 mm).")
+                    return
+
+        # OD (side R) = the lens with the smaller boxing-centre x.
+        lenses.sort(key=lambda c: boxing_center(c)[0])
+        od, os_lens = lenses
+
+        # Build the job before asking for a filename — curve_to_trace
+        # rejects non-star-shaped contours and we want that error first.
+        try:
+            job = OmaJob()
+            boxes = {}
+            for side, c in (("R", od), ("L", os_lens)):
+                job.traces[side] = OmaTrace(side=side,
+                                            radii_mm=curve_to_trace(c))
+                boxes[side] = _curves_bbox([c])
+            job.set_record("HBOX", ";".join(
+                f"{boxes[s][2] - boxes[s][0]:.2f}" for s in ("R", "L")))
+            job.set_record("VBOX", ";".join(
+                f"{boxes[s][3] - boxes[s][1]:.2f}" for s in ("R", "L")))
+            job.set_record("DBL", f"{boxes['L'][0] - boxes['R'][2]:.2f}")
+            job.set_record("FED", ";".join(
+                f"{2.0 * max(job.traces[s].radii_mm):.2f}" for s in ("R", "L")))
+        except ValueError as e:
+            QMessageBox.critical(self, "OMA export failed", str(e))
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export OMA Trace", "",
+            "OMA / DCS Trace Files (*.oma);;All Files (*)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="ascii", newline="") as f:
+                f.write(build_oma(job))
+            self._status.showMessage(f"OMA trace exported: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.critical(self, "OMA export failed", str(e))
 
     # ------------------------------------------------------------------
     # Persistent preferences

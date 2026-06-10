@@ -200,6 +200,28 @@ def arc_to_spline(curve: Curve) -> Curve:
                  line_weight=curve.line_weight, group_id=curve.group_id)
 
 
+def compute_catmull_handles(nodes: list, closed: bool) -> None:
+    """Set cp_in / cp_out on every node using centripetal Catmull-Rom.
+
+    Single source of truth for smooth-spline handle generation — used by the
+    draw tool, OMA trace import, and offset reconstruction. (Moved here from
+    tools/draw.py in M7 so Qt-free modules can build splines.)
+    """
+    n = len(nodes)
+    if n < 2:
+        return
+
+    def p(i):
+        return nodes[i % n] if closed else nodes[max(0, min(i, n - 1))]
+
+    for i, node in enumerate(nodes):
+        prev, nxt = p(i - 1), p(i + 1)
+        tx = (nxt.x - prev.x) / 6
+        ty = (nxt.y - prev.y) / 6
+        node.cp_out = ControlPoint(node.x + tx, node.y + ty)
+        node.cp_in  = ControlPoint(node.x - tx, node.y - ty)
+
+
 def mirror_curve(curve: Curve, axis_x: float = 0.0,
                  horizontal: bool = False) -> Curve:
     """Reflect *curve* across the mirror axis, returning a new independent Curve.
