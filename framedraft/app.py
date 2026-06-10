@@ -89,9 +89,15 @@ def _curves_bbox(curves, layers=None, x_lo=None, x_hi=None):
         matched.append(c)
     if not matched:
         return None
+    from .geometry import arc_bbox
     xs, ys = [], []
     for c in matched:
-        if c.kind in ("circle", "arc") and c.radius and c.nodes:
+        if (c.kind == "arc" and c.radius and c.nodes
+                and c.start_angle is not None and c.end_angle is not None):
+            bx0, by0, bx1, by1 = arc_bbox(c.nodes[0].x, c.nodes[0].y, c.radius,
+                                          c.start_angle, c.end_angle)
+            xs.extend([bx0, bx1]); ys.extend([by0, by1])
+        elif c.kind in ("circle", "arc") and c.radius and c.nodes:
             ox, oy, r = c.nodes[0].x, c.nodes[0].y, c.radius
             xs.extend([ox - r, ox + r]); ys.extend([oy - r, oy + r])
         else:
@@ -346,6 +352,9 @@ class CanvasView(QGraphicsView):
 
     zoom_changed = Signal(int)  # current zoom as integer percent (100 = 100%)
 
+    _MIN_ZOOM = 0.01    # 1%
+    _MAX_ZOOM = 100.0   # 10,000%
+
     def __init__(self, scene: FrameScene, status_bar: QStatusBar):
         super().__init__(scene)
         self._status_bar = status_bar
@@ -437,10 +446,17 @@ class CanvasView(QGraphicsView):
         super().resizeEvent(event)
         self._reposition_measure_bar()
 
-    def wheelEvent(self, event):
-        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        self.scale(factor, factor)
+    def zoom_by(self, factor: float):
+        """Scale the view by *factor*, clamped to [_MIN_ZOOM, _MAX_ZOOM]."""
+        current = self.transform().m11()
+        target  = max(self._MIN_ZOOM, min(self._MAX_ZOOM, current * factor))
+        f = target / current
+        if abs(f - 1.0) > 1e-9:
+            self.scale(f, f)
         self.zoom_changed.emit(round(self.transform().m11() * 100))
+
+    def wheelEvent(self, event):
+        self.zoom_by(1.15 if event.angleDelta().y() > 0 else 1 / 1.15)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -1244,6 +1260,7 @@ class MainWindow(QMainWindow):
             )
             ws.view.set_escape_callback(self._hide_move_gizmo)
             ws.view.measure_bar.commit_radius.connect(self._on_measure_commit_radius)
+            ws.scene.set_dim_drag_callback(self._pre_edit_snapshot)
 
         # ── Toggle actions wired to dispatch helpers (lambdas evaluate _active_ws) ─
         self._act_mirror.toggled.connect(self._on_mirror_toggled)
@@ -1333,14 +1350,9 @@ class MainWindow(QMainWindow):
         hinge.stock_guide.set_width(10.0)
         hinge.stock_guide.set_height(20.0)
 
-        # Connect toggles/spinboxes to _save_prefs AFTER applying initial values
-        for act in (self._act_mirror, self._act_guides, self._act_snap,
-                    self._act_smooth, self._act_boxing, self._act_stock, self._act_pad):
-            act.toggled.connect(lambda _: self._save_prefs())
-        for spin in (self._boxing_a_spin, self._boxing_b_spin, self._boxing_dbl_spin,
-                     self._stock_w_spin, self._stock_h_spin,
-                     self._pad_w_spin, self._pad_h_spin):
-            spin.valueChanged.connect(lambda _: self._save_prefs())
+        # Toolbar toggles and guide spinboxes are SESSION state (per-workspace,
+        # saved/restored on tab switch). They deliberately do NOT write prefs:
+        # startup defaults are only changed via Settings > Preferences.
 
         # Layer combo
         self._layer_combo.currentTextChanged.connect(self._on_layer_combo_changed)
@@ -2289,9 +2301,11 @@ class MainWindow(QMainWindow):
                 all_ob = _curves_bbox(os_out + od_out)
                 fw = all_ob[2] - all_ob[0]
             elif os_ob:
-                fw = (os_ob[2] - os_ob[0]) * 2.0
+                # One side drawn: full width = 2 × distance from the mirror
+                # axis to the outermost edge (not 2 × the half's own width).
+                fw = 2.0 * (os_ob[2] - mirror_x)
             elif od_ob:
-                fw = (od_ob[2] - od_ob[0]) * 2.0
+                fw = 2.0 * (mirror_x - od_ob[0])
             else:
                 # Joined closed outline centred on mirror axis (centroid == mirror_x)
                 # is dropped by _split; measure directly from all OUTLINE curves.
@@ -2506,6 +2520,19 @@ class MainWindow(QMainWindow):
             else:
                 act.setVisible(toolbar_prefs.get(key, True))
 
+    def _hotkey_dispatch(self, target):
+        """Run a hotkey target unless a text-entry widget has focus.
+
+        Hotkeys are single letters (L, S, E, …) with window-wide scope; without
+        this guard they fire while the user is typing in a HUD line edit
+        (MeasureBar, Point Move X/Y, Move gizmo distance).
+        """
+        from PySide6.QtWidgets import QAbstractSpinBox
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QAbstractSpinBox)):
+            return
+        target()
+
     def _apply_hotkeys(self, hotkey_prefs: dict):
         """Tear down existing hotkey QShortcuts and rebuild from hotkey_prefs."""
         from PySide6.QtGui import QShortcut, QKeySequence
@@ -2518,7 +2545,8 @@ class MainWindow(QMainWindow):
             if key_str:
                 sc = QShortcut(QKeySequence(key_str), self)
                 sc.setContext(Qt.ShortcutContext.WindowShortcut)
-                sc.activated.connect(target)
+                sc.activated.connect(
+                    lambda t=target: self._hotkey_dispatch(t))
                 self._shortcuts[key] = sc
 
     # ------------------------------------------------------------------
@@ -2605,8 +2633,8 @@ class MainWindow(QMainWindow):
         self._act_redo.setEnabled(False)
 
         view_menu = mb.addMenu("View")
-        view_menu.addAction("Zoom In",  lambda: self.view.scale(1.2, 1.2))
-        view_menu.addAction("Zoom Out", lambda: self.view.scale(1 / 1.2, 1 / 1.2))
+        view_menu.addAction("Zoom In",  lambda: self.view.zoom_by(1.2))
+        view_menu.addAction("Zoom Out", lambda: self.view.zoom_by(1 / 1.2))
         view_menu.addAction("Fit",      self._fit_view)
         view_menu.addSeparator()
         view_menu.addAction(self._act_mirror)
@@ -2720,7 +2748,7 @@ class MainWindow(QMainWindow):
         self._circle_tool.deactivate()
         self._dim_tool.deactivate()
         self.view.set_dim_tool(None)
-        self._split_tool.deactivate()
+        self._deactivate_cursor_tools()
         self._edit_tool.clear()
         self.scene.clearSelection()
         self.view.measure_bar.hide_bar()
@@ -2733,7 +2761,7 @@ class MainWindow(QMainWindow):
         self._circle_tool.deactivate()
         self._dim_tool.deactivate()
         self.view.set_dim_tool(None)
-        self._trim_tool.deactivate()
+        self._deactivate_cursor_tools()
         self._edit_tool.clear()
         self.scene.clearSelection()
         self.view.measure_bar.hide_bar()
@@ -2787,13 +2815,9 @@ class MainWindow(QMainWindow):
         self._circle_tool.deactivate()
         self._dim_tool.deactivate()
         self.view.set_dim_tool(None)
-        self._trim_tool.deactivate()
-        self._split_tool.deactivate()
+        self._deactivate_cursor_tools()
         self.view.measure_bar.hide_bar()
 
-        if source is None and not selected_curves:
-            # No curve selected at all — prompt via status, let tool handle click-pick
-            pass
         self._offset_tool.activate(self.scene, self.view, source)
         self.view.set_draw_tool(self._offset_tool)
 
@@ -2835,9 +2859,7 @@ class MainWindow(QMainWindow):
         self._circle_tool.deactivate()
         self._dim_tool.deactivate()
         self.view.set_dim_tool(None)
-        self._trim_tool.deactivate()
-        self._split_tool.deactivate()
-        self._offset_tool.deactivate()
+        self._deactivate_cursor_tools()
         self.view.measure_bar.hide_bar()
         self._point_move_tool.activate(self.scene, self.view,
                                         self._active_ws.snap)
@@ -3313,7 +3335,7 @@ class MainWindow(QMainWindow):
             label = "Temple L" if target_type == "temple_l" else "Temple R"
             r = QMessageBox.question(
                 self, "Replace temple content?",
-                f"Replace all content in {label}? This cannot be undone.",
+                f"Replace all content in {label}?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             )
             if r != QMessageBox.StandardButton.Yes:
@@ -3353,9 +3375,13 @@ class MainWindow(QMainWindow):
                            x1=d.x1, y1=flip_y(d.y1),
                            offset=d.offset)
 
-        # Push undo snapshot in target workspace before clearing
-        tgt_ws.undo_stack.append(_copy.deepcopy(tgt_ws.doc_curves))
-        if len(tgt_ws.undo_stack) > 100:
+        # Push undo snapshot in target workspace before clearing.
+        # Must match the {"curves", "dims"} shape _restore_snapshot expects.
+        tgt_ws.undo_stack.append({
+            "curves": _copy.deepcopy(tgt_ws.doc_curves),
+            "dims":   _copy.deepcopy(tgt_ws.doc_dims),
+        })
+        if len(tgt_ws.undo_stack) > self._MAX_UNDO:
             tgt_ws.undo_stack.pop(0)
         tgt_ws.redo_stack.clear()
 
@@ -3663,12 +3689,20 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _open_settings(self):
-        # Pre-populate dialog from live widget state (not stale prefs)
-        live = self._collect_prefs()
-        dlg = SettingsDialog(live, self)
+        # Pre-populate from stored prefs (startup defaults), with the durable
+        # live values (theme, weight, toolbar, hotkeys) overlaid.
+        current = {
+            **self._prefs,
+            "dark_mode":           self._dark_mode,
+            "default_line_weight": self._default_line_weight,
+            "toolbar":             dict(self._toolbar_prefs),
+            "hotkeys":             dict(self._hotkey_prefs),
+        }
+        dlg = SettingsDialog(current, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         p = dlg.to_prefs()
+        self._prefs.update(p)   # dialog is the sole writer of startup defaults
 
         # Appearance
         if p["dark_mode"] != self._dark_mode:
@@ -3757,7 +3791,10 @@ class MainWindow(QMainWindow):
         idx = items[0].data(Qt.ItemDataRole.UserRole)
         bm = self._bookmarks[idx]
         self._push_undo_snapshot()
-        self._restore_snapshot(bm["snapshot"])
+        # Deep-copy: _restore_snapshot installs the snapshot's objects as the
+        # live document, and later in-place node edits would otherwise mutate
+        # the stored bookmark.
+        self._restore_snapshot(copy.deepcopy(bm["snapshot"]))
         self._status.showMessage(f"Restored bookmark: {bm['name']}")
 
     def _rename_bookmark(self):
@@ -3826,12 +3863,13 @@ class MainWindow(QMainWindow):
                                     "This library entry contains no geometry.")
             return
 
-        # Translate bounding-box centre to canvas origin
-        xs = [n.x for c in curves if not c.mirrored for n in c.nodes]
-        ys = [n.y for c in curves if not c.mirrored for n in c.nodes]
-        if xs:
-            cx = (min(xs) + max(xs)) / 2
-            cy = (min(ys) + max(ys)) / 2
+        # Translate bounding-box centre to canvas origin.
+        # _curves_bbox is radius-aware, so circles/arcs centre correctly
+        # (node-only bbox put a lone circle's *centre point* at the origin).
+        bb = _curves_bbox([c for c in curves if not c.mirrored])
+        if bb:
+            cx = (bb[0] + bb[2]) / 2
+            cy = (bb[1] + bb[3]) / 2
             for c in curves:
                 for nd in c.nodes:
                     nd.x -= cx;  nd.y -= cy
@@ -3839,8 +3877,6 @@ class MainWindow(QMainWindow):
                         nd.cp_in.x  -= cx;  nd.cp_in.y  -= cy
                     if nd.cp_out:
                         nd.cp_out.x -= cx;  nd.cp_out.y -= cy
-                if c.kind in ("circle", "arc") and c.nodes:
-                    pass  # centre node already translated above
             for d in dims:
                 d.x0 -= cx;  d.y0 -= cy
                 d.x1 -= cx;  d.y1 -= cy
@@ -4300,11 +4336,18 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "DXF export failed", str(e))
 
     def _export_svg(self):
+        """Export the active workspace as SVG without touching the current
+        document path or window title (unlike File > Save)."""
         path, _ = QFileDialog.getSaveFileName(
             self, "Export SVG", "", "SVG Files (*.svg)"
         )
-        if path:
-            self._do_save(path)
+        if not path:
+            return
+        try:
+            self._do_save_svg(path)
+            self._status.showMessage(f"SVG exported: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.critical(self, "SVG export failed", str(e))
 
     def _export_png(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -4323,32 +4366,17 @@ class MainWindow(QMainWindow):
     # Persistent preferences
     # ------------------------------------------------------------------
 
-    def _collect_prefs(self) -> dict:
-        """Build a prefs dict from the current live widget state."""
-        return {
-            "dark_mode":            self._dark_mode,
-            "default_line_weight":  self._default_line_weight,
-            "mirror_on_startup":    self._act_mirror.isChecked(),
-            "guides_on_startup":    self._act_guides.isChecked(),
-            "snap_on_startup":      self._act_snap.isChecked(),
-            "smooth_handles":       self._act_smooth.isChecked(),
-            "boxing_on_startup":    self._act_boxing.isChecked(),
-            "boxing_a_mm":          self._boxing_a_spin.value(),
-            "boxing_b_mm":          self._boxing_b_spin.value(),
-            "boxing_dbl_mm":        self._boxing_dbl_spin.value(),
-            "stock_on_startup":     self._act_stock.isChecked(),
-            "stock_width_mm":       self._stock_w_spin.value(),
-            "stock_height_mm":      self._stock_h_spin.value(),
-            "pad_on_startup":       self._act_pad.isChecked(),
-            "pad_width_mm":         self._pad_w_spin.value(),
-            "pad_height_mm":        self._pad_h_spin.value(),
-            "toolbar":              dict(self._toolbar_prefs),
-            "hotkeys":              dict(self._hotkey_prefs),
-        }
-
     def _save_prefs(self):
-        """Collect current state and write to disk."""
-        self._prefs = self._collect_prefs()
+        """Persist durable settings only.
+
+        Startup toggles and guide dimensions are written exclusively by the
+        Settings dialog (see _open_settings) — toggling Ghost mid-session must
+        not silently rewrite mirror_on_startup.
+        """
+        self._prefs["dark_mode"]           = self._dark_mode
+        self._prefs["default_line_weight"] = self._default_line_weight
+        self._prefs["toolbar"]             = dict(self._toolbar_prefs)
+        self._prefs["hotkeys"]             = dict(self._hotkey_prefs)
         _prefs_mod.save(self._prefs)
 
     # ------------------------------------------------------------------

@@ -23,8 +23,8 @@ from PySide6.QtGui  import QPen, QColor
 
 from ..canvas.items import CurveItem
 from ..geometry import (
-    intersect_curve_params, dedup_ts, t_nearest,
-    split_curve_at_t, sample_curve,
+    intersect_curve_params, dedup_ts_mm, t_nearest,
+    split_curve_at_t, point_at_t,
 )
 
 
@@ -108,13 +108,13 @@ class SplitTool(QObject):
         results = [left, right]
 
         # Intersection-split: also split any other curve near the same point
-        split_x, split_y = self._point_at_t(target, split_t)
+        split_x, split_y = point_at_t(target, split_t)
         extra_pairs: list[tuple] = []
         for other in all_curves:
             if other is target:
                 continue
             o_t = t_nearest(other, split_x, split_y)
-            ox, oy = self._point_at_t(other, o_t)
+            ox, oy = point_at_t(other, o_t)
             if math.hypot(ox - split_x, oy - split_y) <= _ISECT_SNAP_MM:
                 ol, orr = split_curve_at_t(other, o_t)
                 if orr is not None:
@@ -193,21 +193,9 @@ class SplitTool(QObject):
         for other in all_curves:
             if other is target:
                 continue
-            ts = dedup_ts(intersect_curve_params(target, other))
+            ts = dedup_ts_mm(target, intersect_curve_params(target, other))
             for t in ts:
-                ix, iy = self._point_at_t(target, t)
+                ix, iy = point_at_t(target, t)
                 if math.hypot(ix - px, iy - py) <= _ISECT_SNAP_MM:
                     return t
         return None
-
-    @staticmethod
-    def _point_at_t(curve, t: float):
-        """Evaluate curve at t using the sampler (fast nearest-sample)."""
-        best_x, best_y = 0.0, 0.0
-        best_d2 = float("inf")
-        for x, y, st in sample_curve(curve, n_per_seg=32):
-            d2 = (st - t) ** 2
-            if d2 < best_d2:
-                best_d2 = d2
-                best_x, best_y = x, y
-        return best_x, best_y

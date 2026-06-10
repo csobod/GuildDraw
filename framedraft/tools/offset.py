@@ -226,7 +226,7 @@ class OffsetTool(QObject):
             off_c = offset_curve(self._source_curve, d)
         except Exception:
             return
-        item = CurveItem(off_c, self._scene)
+        item = CurveItem(off_c)
         pen = QPen(QColor(_PREVIEW_COLOR), 0)
         pen.setCosmetic(True)
         pen.setWidthF(_PREVIEW_WIDTH)

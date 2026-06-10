@@ -12,7 +12,7 @@ and export clean DXF for GuildCAM — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-09, v0.9.0)*
+## Status snapshot *(2026-06-09, v0.9.1 — M1 complete)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -25,11 +25,10 @@ DXF R2000 SPLINE export with validator, PNG render, PyInstaller Windows build.
 **Not yet built:** snap-along-curve, copy/paste/transform, frame fill overlay,
 text/engraving, GuildCAM hardware round-trip, BRIDGE layer tooling.
 
-**Code health (from the 2026-06-09 full-code review):** ~10,700 lines; geometry
-core is solid; the issues cluster in (a) a list of confirmed bugs (§M1 below),
-(b) zero safety net — no git repo, no tests, no unsaved-changes protection, and
-(c) `app.py` is a 4,400-line god-object whose proxy-property pattern is now the
-main source of new bugs.
+**Code health:** ~10,700 lines; geometry core is solid. The M1 bug list from the
+2026-06-09 review is fixed (v0.9.1) and the repo is under git. Remaining gaps:
+no unsaved-changes protection (M2), no tests (M3), and `app.py` is a 4,400-line
+god-object whose proxy-property pattern breeds bugs (M4).
 
 ---
 
@@ -67,9 +66,18 @@ a working app, and gets a version bump + git commit. Order matters: stabilizatio
 and data safety come before features, because every later milestone builds on
 being able to trust saves, undo, and the test suite.
 
-## M1 — Stabilization (v0.9.1) · *fix the confirmed bugs*
+## M1 — Stabilization (v0.9.1) · *fix the confirmed bugs* — ✅ DONE 2026-06-09
 
 Findings from the 2026-06-09 full-code review. All verified against source.
+**All 14 fixes + the Shapely hard-import landed in v0.9.1** (verified by compile
+check, geometry sanity tests, and a GUI launch smoke test). Notable
+implementation details: `geometry.point_at_t()` (exact evaluator) and
+`geometry.arc_bbox()` were added; `dedup_ts` was replaced by mm-space
+`dedup_ts_mm`; ghosts now update in place via `FrameScene._update_ghost_for`;
+DimItem drags gained a 4 px threshold and an undo hook
+(`FrameScene.set_dim_drag_callback`); hotkeys are suppressed while a
+`QLineEdit`/spinbox has focus; zoom is clamped to 1%–10,000% via
+`CanvasView.zoom_by`.
 
 | # | Bug | Where | Fix |
 |---|---|---|---|

@@ -25,7 +25,7 @@ from PySide6.QtGui  import QPen, QColor
 
 from ..canvas.items import CurveItem
 from ..geometry import (
-    intersect_curve_params, dedup_ts, t_nearest,
+    intersect_curve_params, dedup_ts_mm, t_nearest,
     extract_open_segment, extract_wrapping_segment,
 )
 
@@ -105,7 +105,7 @@ class TrimTool(QObject):
                 continue
             raw_ts.extend(intersect_curve_params(target, other))
 
-        ts = dedup_ts(raw_ts)
+        ts = dedup_ts_mm(target, raw_ts)
 
         is_closed = target.closed or target.kind == "circle"
         n_inter   = len(ts)

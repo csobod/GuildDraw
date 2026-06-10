@@ -2,10 +2,13 @@ from PySide6.QtWidgets import QGraphicsScene, QGraphicsPixmapItem, QGraphicsPath
 from PySide6.QtCore import QRectF, Qt, QPointF
 from PySide6.QtGui import QColor, QPen, QPixmap, QPainterPath
 
-from ..document import Curve, SplineNode, ControlPoint
+from ..document import Curve, Layer, SplineNode, ControlPoint
 from . import items as _items
 
 _DEFAULT_RECT = QRectF(-150, -100, 300, 200)   # mm
+
+# Layers whose curves cast a live mirror ghost
+_GHOST_LAYERS = {Layer.LENS, Layer.HINGE, Layer.OUTLINE, Layer.SCULPT}
 
 # Default display size for an uncalibrated face image (mm).
 # The image is scaled to fit inside this box while preserving aspect ratio.
@@ -79,6 +82,7 @@ class FrameScene(QGraphicsScene):
         self._ghost_items: dict = {}   # id(Curve) -> QGraphicsPathItem
         self._dim_items:   dict = {}   # id(DimLine) -> DimItem
         self._mirror_display = True
+        self._dim_drag_cb = None   # () -> None; pushed-undo hook for DimItem drags
         # Store the cross extents so set_dark_mode can redraw them correctly
         self._cross_hw: float = 150.0
         self._cross_hh: float = 100.0
@@ -275,20 +279,22 @@ class FrameScene(QGraphicsScene):
         item = CurveItem(curve)
         self.addItem(item)
         self._curve_items[id(curve)] = item
-        self._update_ghosts()
+        self._update_ghost_for(curve)
         return item
 
     def refresh_curve(self, curve: Curve):
         item = self._curve_items.get(id(curve))
         if item:
             item.refresh()
-        self._update_ghosts()
+        self._update_ghost_for(curve)
 
     def remove_curve(self, curve: Curve):
         item = self._curve_items.pop(id(curve), None)
         if item:
             self.removeItem(item)
-        self._update_ghosts()
+        ghost = self._ghost_items.pop(id(curve), None)
+        if ghost:
+            self.removeItem(ghost)
 
     # ------------------------------------------------------------------
     # Mirror ghost display
@@ -298,38 +304,63 @@ class FrameScene(QGraphicsScene):
         self._mirror_display = on
         self._update_ghosts()
 
-    def _update_ghosts(self):
-        for ghost in self._ghost_items.values():
-            self.removeItem(ghost)
-        self._ghost_items.clear()
-
+    def _ghost_eligible(self, curve: Curve) -> bool:
         if not self._mirror_display or self.mirror is None:
+            return False
+        if curve.mirrored or curve.layer not in _GHOST_LAYERS:
+            return False
+        if curve.layer == Layer.OUTLINE and curve.closed:
+            return False
+        return True
+
+    def _update_ghost_for(self, curve: Curve):
+        """Create, update, or remove the ghost for one curve in place.
+
+        Called per mouse-move during node drags — must not touch other
+        curves' ghost items (destroy/recreate-all caused visible churn).
+        """
+        key = id(curve)
+        if not self._ghost_eligible(curve):
+            ghost = self._ghost_items.pop(key, None)
+            if ghost:
+                self.removeItem(ghost)
             return
 
         from .items import _layer_pen
-        from ..document import Layer
-        _GHOST_LAYERS = {Layer.LENS, Layer.HINGE, Layer.OUTLINE, Layer.SCULPT}
+        path = _mirror_path(curve, self.mirror)
+        pen  = _layer_pen(curve.layer, curve.line_weight)
+        pen.setStyle(Qt.PenStyle.DotLine)
 
-        for curve_id, curve_item in self._curve_items.items():
-            curve = curve_item.curve
-            if curve.mirrored or curve.layer not in _GHOST_LAYERS:
-                continue
-            if curve.layer == Layer.OUTLINE and curve.closed:
-                continue
-            path  = _mirror_path(curve, self.mirror)
-            pen   = _layer_pen(curve.layer, curve.line_weight)
-            pen.setStyle(Qt.PenStyle.DotLine)
+        ghost = self._ghost_items.get(key)
+        if ghost is None:
             ghost = self.addPath(path, pen)
             ghost.setZValue(9)
-            self._ghost_items[curve_id] = ghost
+            self._ghost_items[key] = ghost
+        else:
+            ghost.setPath(path)
+            ghost.setPen(pen)
+
+    def _update_ghosts(self):
+        """Full rebuild — used on mirror toggle, theme change, layer change."""
+        for ghost in self._ghost_items.values():
+            self.removeItem(ghost)
+        self._ghost_items.clear()
+        if not self._mirror_display or self.mirror is None:
+            return
+        for curve_item in self._curve_items.values():
+            self._update_ghost_for(curve_item.curve)
 
     # ------------------------------------------------------------------
     # Dimension annotations
     # ------------------------------------------------------------------
 
+    def set_dim_drag_callback(self, cb):
+        """cb is invoked once when a DimItem offset-drag begins (undo hook)."""
+        self._dim_drag_cb = cb
+
     def add_dim(self, dim):
         from .dim import DimItem
-        item = DimItem(dim)
+        item = DimItem(dim, on_drag_start=self._dim_drag_cb)
         self.addItem(item)
         self._dim_items[id(dim)] = item
         return item

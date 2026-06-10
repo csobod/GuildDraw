@@ -43,18 +43,27 @@ def _dim_color(selected: bool = False) -> QColor:
     return QColor("#e67e22") if selected else QColor("#7a5c2e")
 
 
-class DimItem(QGraphicsItem):
-    """Scene item representing one DimLine annotation."""
+_DRAG_THRESHOLD_PX = 4   # screen pixels of travel before an offset-drag starts
 
-    def __init__(self, dim: DimLine):
+
+class DimItem(QGraphicsItem):
+    """Scene item representing one DimLine annotation.
+
+    on_drag_start: optional callable invoked once when an offset-drag actually
+    begins (after the movement threshold) — used to push an undo snapshot.
+    """
+
+    def __init__(self, dim: DimLine, on_drag_start=None):
         super().__init__()
         self.dim = dim
+        self._on_drag_start = on_drag_start
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(self.GraphicsItemFlag.ItemIsMovable, False)
         self.setAcceptHoverEvents(True)
         self.setZValue(15)
-        self._dragging       = False
-        self._drag_offset_start = 0.0
+        self._dragging    = False
+        self._maybe_drag  = False
+        self._press_screen = None
 
     # ------------------------------------------------------------------
     # Geometry helpers
@@ -259,11 +268,18 @@ class DimItem(QGraphicsItem):
     def mousePressEvent(self, event):
         super().mousePressEvent(event)   # handles selection
         if event.button() == Qt.MouseButton.LeftButton:
-            self._dragging          = True
-            self._drag_offset_start = self.dim.offset
+            self._maybe_drag   = True
+            self._dragging     = False
+            self._press_screen = event.screenPos()
             event.accept()
 
     def mouseMoveEvent(self, event):
+        if self._maybe_drag and not self._dragging:
+            moved = (event.screenPos() - self._press_screen).manhattanLength()
+            if moved > _DRAG_THRESHOLD_PX:
+                self._dragging = True
+                if self._on_drag_start:
+                    self._on_drag_start()
         if self._dragging:
             new_off = self._offset_from_scene(event.scenePos())
             if new_off != self.dim.offset:
@@ -275,8 +291,9 @@ class DimItem(QGraphicsItem):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if self._dragging and event.button() == Qt.MouseButton.LeftButton:
-            self._dragging = False
+        if self._maybe_drag and event.button() == Qt.MouseButton.LeftButton:
+            self._maybe_drag = False
+            self._dragging   = False
             event.accept()
         else:
             super().mouseReleaseEvent(event)

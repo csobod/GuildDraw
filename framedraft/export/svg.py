@@ -64,9 +64,16 @@ def _path_d(curve: Curve) -> str:
 
 def _content_bbox(curves: list) -> tuple[float, float, float, float]:
     """Return (min_x, min_y, max_x, max_y) bounding box over all curve nodes."""
+    from ..geometry import arc_bbox
     xs, ys = [], []
     for c in curves:
-        if c.kind in ("circle", "arc") and c.radius and c.nodes:
+        if (c.kind == "arc" and c.radius and c.nodes
+                and c.start_angle is not None and c.end_angle is not None):
+            bx0, by0, bx1, by1 = arc_bbox(c.nodes[0].x, c.nodes[0].y, c.radius,
+                                          c.start_angle, c.end_angle)
+            xs.extend([bx0, bx1])
+            ys.extend([by0, by1])
+        elif c.kind in ("circle", "arc") and c.radius and c.nodes:
             cx, cy, r = c.nodes[0].x, c.nodes[0].y, c.radius
             xs.extend([cx - r, cx + r])
             ys.extend([cy - r, cy + r])

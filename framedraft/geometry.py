@@ -23,14 +23,11 @@ from typing import List, Tuple, Optional
 
 from .document import Curve, SplineNode, ControlPoint
 
-try:
-    import shapely.geometry as _sg
-    _SHAPELY = True
-except ImportError:
-    _SHAPELY = False
+import shapely.geometry as _sg
 
 _SAMPLES_PER_SEG = 16   # polyline samples per Bezier segment
-_T_TOL = 0.04           # t values within this distance are merged as duplicates
+_DEDUP_TOL_MM    = 0.5  # intersection points closer than this (mm) merge as one
+_END_TOL_MM      = 0.25 # intersections/splits this close (mm) to an endpoint are ignored
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +88,64 @@ def _seg_nodes(curve: Curve, seg: int):
     """Return (node_a, node_b) for segment index seg."""
     nodes = curve.nodes
     return nodes[seg], nodes[(seg + 1) % len(nodes)]
+
+
+def point_at_t(curve: Curve, t: float) -> Tuple[float, float]:
+    """Evaluate the curve exactly at parameter t in [0, 1] (no sampling)."""
+    t = max(0.0, min(1.0, t))
+    nodes = curve.nodes
+
+    if curve.kind == "circle":
+        cx, cy, r = nodes[0].x, nodes[0].y, curve.radius or 0.0
+        a = 2 * math.pi * t
+        return (cx + r * math.cos(a), cy + r * math.sin(a))
+
+    if curve.kind == "arc":
+        cx, cy, r = nodes[0].x, nodes[0].y, curve.radius or 0.0
+        sa = math.radians(curve.start_angle or 0.0)
+        sw = math.radians(((curve.end_angle or 0.0) - (curve.start_angle or 0.0)) % 360)
+        a  = sa + sw * t
+        return (cx + r * math.cos(a), cy + r * math.sin(a))
+
+    if not nodes:
+        return (0.0, 0.0)
+    ns = _n_segs(curve)
+    if ns == 0:
+        return (nodes[0].x, nodes[0].y)
+
+    scaled = t * ns
+    seg    = min(int(scaled), ns - 1)
+    local  = scaled - seg
+    a, b   = _seg_nodes(curve, seg)
+    if curve.kind == "spline":
+        p0, p1, p2, p3 = _seg_pts(a, b)
+        return _bezier_eval(p0, p1, p2, p3, local)
+    return (a.x + (b.x - a.x) * local, a.y + (b.y - a.y) * local)
+
+
+def arc_bbox(cx: float, cy: float, r: float,
+             start_deg: float, end_deg: float
+             ) -> Tuple[float, float, float, float]:
+    """True (min_x, min_y, max_x, max_y) extents of an arc.
+
+    Angles use the scene atan2 convention (degrees; 0=right, 90=down-screen);
+    the sweep runs from start_deg to end_deg in the positive direction (mod 360),
+    matching build_path and sample_curve.
+    """
+    sweep = (end_deg - start_deg) % 360
+    if sweep < 1e-9:
+        sweep = 360.0
+    pts = []
+    for a in (start_deg, end_deg):
+        rad = math.radians(a)
+        pts.append((cx + r * math.cos(rad), cy + r * math.sin(rad)))
+    for q in (0.0, 90.0, 180.0, 270.0):
+        if ((q - start_deg) % 360) <= sweep:
+            rad = math.radians(q)
+            pts.append((cx + r * math.cos(rad), cy + r * math.sin(rad)))
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return (min(xs), min(ys), max(xs), max(ys))
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +226,6 @@ def t_nearest(curve: Curve, px: float, py: float) -> float:
 
 def curve_to_shapely(curve: Curve):
     """Convert curve to a Shapely geometry for intersection queries, or None."""
-    if not _SHAPELY:
-        return None
     pts = [(x, y) for x, y, _ in sample_curve(curve, _SAMPLES_PER_SEG)]
     if len(pts) < 2:
         return None
@@ -186,7 +239,7 @@ def curve_to_shapely(curve: Curve):
 
 def _iter_shapely_pts(geom):
     """Yield shapely Points from any Shapely geometry."""
-    if not _SHAPELY or geom is None or geom.is_empty:
+    if geom is None or geom.is_empty:
         return
     gtype = geom.geom_type
     if gtype == "Point":
@@ -203,13 +256,15 @@ def _iter_shapely_pts(geom):
             yield _sg.Point(x, y)
 
 
-def intersect_curve_params(target: Curve, other: Curve) -> List[float]:
+def intersect_curve_params(target: Curve, other: Curve,
+                           end_tol_mm: float = _END_TOL_MM) -> List[float]:
     """
     Return t values on `target` where it intersects `other`.
-    Filters out values very close to 0 or 1.
+
+    For open curves, intersections within end_tol_mm (scene mm) of either
+    endpoint are dropped — they are trivial endpoint touches, not crossings.
+    Closed curves keep all intersections (t≈0/1 is the seam, a real point).
     """
-    if not _SHAPELY:
-        return []
     ga = curve_to_shapely(target)
     gb = curve_to_shapely(other)
     if ga is None or gb is None:
@@ -218,23 +273,44 @@ def intersect_curve_params(target: Curve, other: Curve) -> List[float]:
         inter = ga.intersection(gb)
     except Exception:
         return []
+
+    is_closed = target.closed or target.kind == "circle"
+    if not is_closed:
+        sx, sy = point_at_t(target, 0.0)
+        ex, ey = point_at_t(target, 1.0)
+
     ts = []
     for pt in _iter_shapely_pts(inter):
-        t = t_nearest(target, pt.x, pt.y)
-        if 0.01 < t < 0.99:
-            ts.append(t)
+        if not is_closed:
+            if (math.hypot(pt.x - sx, pt.y - sy) <= end_tol_mm
+                    or math.hypot(pt.x - ex, pt.y - ey) <= end_tol_mm):
+                continue
+        ts.append(t_nearest(target, pt.x, pt.y))
     return ts
 
 
-def dedup_ts(ts: List[float], tol: float = _T_TOL) -> List[float]:
-    """Merge t values within tol of each other, returning sorted list."""
+def dedup_ts_mm(curve: Curve, ts: List[float],
+                tol_mm: float = _DEDUP_TOL_MM) -> List[float]:
+    """Merge t values whose points on *curve* are within tol_mm (scene mm).
+
+    Distance is measured in mm rather than t-space so the tolerance does not
+    grow with the number of segments in the curve.  For closed curves the
+    first and last survivors are also compared across the t=0/1 seam.
+    """
     if not ts:
         return []
-    ts = sorted(ts)
+    ts  = sorted(ts)
     out = [ts[0]]
     for t in ts[1:]:
-        if t - out[-1] > tol:
+        x0, y0 = point_at_t(curve, out[-1])
+        x1, y1 = point_at_t(curve, t)
+        if math.hypot(x1 - x0, y1 - y0) > tol_mm:
             out.append(t)
+    if (curve.closed or curve.kind == "circle") and len(out) > 1:
+        x0, y0 = point_at_t(curve, out[0])
+        x1, y1 = point_at_t(curve, out[-1])
+        if math.hypot(x1 - x0, y1 - y0) <= tol_mm:
+            out.pop()
     return out
 
 
@@ -441,12 +517,20 @@ def extract_wrapping_segment(curve: Curve,
 
 
 def split_curve_at_t(curve: Curve,
-                     t: float):
+                     t: float,
+                     end_tol_mm: float = _END_TOL_MM):
     """
     Split curve at t in (0, 1) into (left, right) open curves.
-    Returns (curve, None) if t is out of the useful range.
+    Returns (curve, None) if the split point is within end_tol_mm (scene mm)
+    of either endpoint — a split there would create a degenerate sliver.
     """
-    if t <= 0.01 or t >= 0.99:
+    if t <= 0.0 or t >= 1.0:
+        return curve, None
+    px, py = point_at_t(curve, t)
+    sx, sy = point_at_t(curve, 0.0)
+    ex, ey = point_at_t(curve, 1.0)
+    if (math.hypot(px - sx, py - sy) <= end_tol_mm
+            or math.hypot(px - ex, py - ey) <= end_tol_mm):
         return curve, None
     left  = extract_open_segment(curve, 0.0, t)
     right = extract_open_segment(curve, t,   1.0)
