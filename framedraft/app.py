@@ -323,7 +323,7 @@ _TOOLBAR_ACTION_DEFS = [
     ("pad",          "Pad",                     True),
     ("mirror",       "Mirror (bake)",           True),
     ("mirror_close", "Mirror-Close",            True),
-    ("copy_temple",  "Mirror Copy →",           True),
+    ("copy_temple",  "Temple Copy",             True),
     ("join",         "Join",                    True),
     ("snap_node",    "Snap Node",               True),
     ("split",        "Split",                   True),
@@ -1545,11 +1545,12 @@ class MainWindow(QMainWindow):
         self._act_dup_mirror.triggered.connect(self._on_duplicate_mirror)
         tb.addAction(self._act_dup_mirror)
 
-        self._act_copy_temple = QAction("Copy →", self)
+        self._act_copy_temple = QAction("Temple\nCopy", self)
         self._act_copy_temple.setToolTip(
-            "Mirror Copy: flip all content from this temple workspace into\n"
+            "Temple Copy: send a mirrored copy of this temple's content into\n"
             "the other temple workspace (R → L or L → R).\n"
-            "Replaces all content in the target workspace."
+            "Asks for confirmation — it replaces everything in the target\n"
+            "workspace (Ctrl+Z there restores it)."
         )
         self._act_copy_temple.setVisible(False)  # shown only in temple_r / temple_l
         self._act_copy_temple.triggered.connect(self._copy_temple_to_other)
@@ -2607,6 +2608,7 @@ class MainWindow(QMainWindow):
             (self._act_pad,          "toggle-pad"),
             (self._act_mirror_close, "op-mirror-close"),
             (self._act_dup_mirror,   "op-dup-mirror"),
+            (self._act_copy_temple,  "op-copy-temple"),
             (self._act_join,         "op-join"),
             (self._act_snap_ep,      "op-snap-node"),
             (self._act_split,        "op-split"),
@@ -3371,16 +3373,19 @@ class MainWindow(QMainWindow):
         target_type = "temple_l" if ws_type == "temple_r" else "temple_r"
         tgt_ws = self._workspaces[tab_names.index(target_type)]
 
-        # Confirm if target has content
-        if tgt_ws.doc_curves or tgt_ws.doc_dims:
-            label = "Temple L" if target_type == "temple_l" else "Temple R"
-            r = QMessageBox.question(
-                self, "Replace temple content?",
-                f"Replace all content in {label}?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            )
-            if r != QMessageBox.StandardButton.Yes:
-                return
+        # Always confirm — a mis-click must never silently wipe a workspace.
+        label = "Temple L" if target_type == "temple_l" else "Temple R"
+        has_content = bool(tgt_ws.doc_curves or tgt_ws.doc_dims)
+        detail = (f"This will REPLACE everything currently in {label}."
+                  if has_content else f"{label} is currently empty.")
+        r = QMessageBox.question(
+            self, "Temple Copy",
+            f"Send a mirrored copy of this temple to {label}?\n\n{detail}\n"
+            f"(Ctrl+Z in {label} restores its previous content.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if r != QMessageBox.StandardButton.Yes:
+            return
 
         def flip_y(y: float) -> float:
             return -y
@@ -3448,10 +3453,9 @@ class MainWindow(QMainWindow):
         # Switch to target tab
         self._ws_tab_widget.setCurrentIndex(tab_names.index(target_type))
         self._mark_dirty()
-        label = "Temple L" if target_type == "temple_l" else "Temple R"
         nc = len(tgt_ws.doc_curves)
         self._status.showMessage(
-            f"Mirror Copy: {nc} curve{'s' if nc != 1 else ''} copied to {label}."
+            f"Temple Copy: {nc} curve{'s' if nc != 1 else ''} copied to {label}."
         )
 
     # ------------------------------------------------------------------

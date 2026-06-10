@@ -62,10 +62,15 @@ the OS lens? Resolve during M8 hardware validation.
 
 # Road to 1.0
 
-Eight milestones. Each is small enough to finish in one or two sessions, ends in
+Nine milestones. Each is small enough to finish in one or two sessions, ends in
 a working app, and gets a version bump + git commit. Order matters: stabilization
 and data safety come before features, because every later milestone builds on
 being able to trust saves, undo, and the test suite.
+
+> **2026-06-09 replan:** OMA lens-trace import/export was promoted from the
+> Tier B candidate list to its own pre-1.0 milestone (M7) — opticians deriving
+> frames from traced lenses is a headline workflow, not a nice-to-have.
+> Visualization moved to M8; GuildCAM validation + release became M9.
 
 ## M1 — Stabilization (v0.9.1) · *fix the confirmed bugs* — ✅ DONE 2026-06-09
 
@@ -213,7 +218,49 @@ fixed — retest each first:
 5. **Selection & layer QoL**: Ctrl+A select-all, select-by-layer menu, per-layer
    show/hide and lock toggles in the Properties tab.
 
-## M7 — Visualization & engraving (v0.9.7)
+## M7 — OMA lens-trace interchange (v0.9.7) · *traced lenses in, lens shapes out*
+
+**Why pre-1.0:** opticians with a frame tracer can capture a customer's
+existing lens shape as OMA data; importing that trace as editable LENS
+geometry turns GuildDraw into "derive a frame from a traced lens" — a
+headline workflow. Export closes the loop with labs and edgers.
+
+**Format ground truth:** OMA / The Vision Council Data Communication
+Standard (DCS). ASCII `LABEL=value;value` records. Lens traces:
+`TRCFMT=<fmt>;<n points>;<E|U spacing>;<side R|L>;…` followed by `R=`
+records carrying radii in **1/100 mm** at equally spaced angles (format
+**1** = ASCII signed integers; format **4** = packed binary). Frame box
+records: `HBOX`, `VBOX`, `DBL`, `FED`, `CRIB`. Reference implementation:
+[eeng/lens_protocol](https://github.com/eeng/lens_protocol) (Ruby, MIT) —
+record parser/builder structure, TRCFMT two-dataset (R then L) handling,
+R-records emitted in 10-value chunks; it implements format 1 only, which
+confirms format 1 as the safe baseline.
+
+Scope:
+
+1. **`framedraft/export/oma.py`** — standalone, Qt-free module (testable):
+   - `parse_oma(text) -> OmaJob` — generic record parser (labels, multi-values,
+     repeated records), TRCFMT/R dataset extraction per side, format 1; tolerate
+     and preserve unknown records.
+   - `trace_to_curve(radii, spacing, …) -> Curve` — polar (1/100 mm, equal
+     angles, CCW) → Cartesian → closed Catmull-Rom spline, decimated to a
+     sensible node count (~24–36) so the result is hand-editable.
+   - `curve_to_trace(curve, n=400) -> radii` — sample a closed LENS contour at
+     equal angles about its boxing centre; fail clearly on non-star-shaped
+     contours (radial sampling can't represent them).
+   - `build_oma(job) -> text` — JOB, TRCFMT=1 + R records (both sides),
+     HBOX/VBOX/DBL/FED computed from the document.
+2. **Import UI** — File → Import → OMA Trace…: places OD/OS LENS curves into
+   Frame Front at DBL spacing (from the file, else boxing-guide DBL), undo-safe,
+   marks dirty; single-side files get the mirrored side via the existing ghost.
+3. **Export UI** — File → Export → OMA…: validates exactly 2 closed LENS
+   contours (workspace validator), writes format-1 file.
+4. **Round-trip test** in the M3 suite: import → export → reimport, max radius
+   deviation < 0.05 mm; plus golden-file parse tests with hand-written samples.
+5. **Stretch (may slip to 1.x):** TRCFMT format 4 (packed) import, Z/curve
+   records, direct serial tracer input.
+
+## M8 — Visualization & engraving (v0.9.8)
 
 1. **Frame fill / render overlay** — translucent fill of OUTLINE−LENS over the
    face photo; display-only. *(full spec: archive §25)*
@@ -223,7 +270,7 @@ fixed — retest each first:
 3. **Print / PDF at 1:1 scale** *(new — see Feature candidates)* — true-scale
    paper test fit before cutting stock.
 
-## M8 — GuildCAM validation + release engineering (v0.9.8 → 1.0)
+## M9 — GuildCAM validation + release engineering (v0.9.9 → 1.0)
 
 1. **Hardware round-trip** (old Phase 8): cut a real frame front + temples from
    exported DXF. Confirm layer counts, closure, spline fidelity, and resolve the
@@ -244,6 +291,8 @@ fixed — retest each first:
       before every release build
 - [ ] DXF from all four workspaces imports into GuildCAM and **a physical frame
       has been cut** from GuildDraw output
+- [ ] OMA: a real tracer file imports as editable LENS geometry, and
+      import → export → reimport round-trips within 0.05 mm
 - [ ] Repository under git with tagged releases
 - [ ] Packaged Windows build + written user guide
 
@@ -263,8 +312,9 @@ items need a maker-demand signal first.
 | Recent Files | Friction every single session | M2 |
 | Snap along curve | Blocks the scallop/extrusion workflow today | M6 |
 | Layer visibility/lock, select-all, select-by-layer | Standard CAD hygiene; cheap | M6 |
-| Print/PDF at **1:1 scale** | Makers test-fit on paper before cutting stock — needs only `QPrinter` + the existing scene render at true mm scale | M7 |
-| Batch DXF export (all workspaces) | One frame = 4 files; doing it one tab at a time invites mistakes | M8 |
+| OMA lens-trace import/export | Opticians derive frames from traced lenses; lab/edger interchange | **M7** (promoted 2026-06-09) |
+| Print/PDF at **1:1 scale** | Makers test-fit on paper before cutting stock — needs only `QPrinter` + the existing scene render at true mm scale | M8 |
+| Batch DXF export (all workspaces) | One frame = 4 files; doing it one tab at a time invites mistakes | M9 |
 
 ## Tier B — strong candidates for 1.x
 
@@ -288,8 +338,8 @@ items need a maker-demand signal first.
 6. **Symmetry checker** — report max deviation between left/right halves of a
    baked-mirror outline (sampled Hausdorff distance); warns before export when a
    "symmetric" frame isn't.
-7. **DXF / OMA import** — trace or reuse existing frames: import DXF outlines
-   onto REF or LENS, and (stretch) the optical-industry OMA/VCA lens-shape format.
+7. **DXF import** — trace or reuse existing frames: import DXF outlines onto
+   REF or LENS. *(OMA lens-trace import/export was promoted to milestone M7.)*
 8. **Angle + radius dimension annotations** — current dims are linear only.
 9. **Stroke (Hershey) fonts for engraving** — single-pass CNC engraving
    *(already specced as deferred in archive §26)*.
