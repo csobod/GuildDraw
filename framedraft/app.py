@@ -2244,18 +2244,13 @@ class MainWindow(QMainWindow):
         self._boxing_guide_box.setVisible(is_front)
         self._stock_guide_box.setVisible(True)   # all workspaces have a stock rect
         self._pad_guide_box.setVisible(is_front) # pad block only meaningful for front
-        for act in (self._act_guides, self._act_boxing):
-            act.setVisible(is_front)
-        self._act_stock.setVisible(True)
-        self._act_pad.setVisible(is_front)
+        # Toolbar buttons: combined prefs + workspace rules in one place
+        self._apply_toolbar_visibility(self._toolbar_prefs, ws_type)
         self._meas_front_box.setVisible(is_front)
         self._meas_temple_box.setVisible(is_temple)
         if is_temple:
             label = "Temple R" if ws_type == "temple_r" else "Temple L"
             self._meas_temple_box.setTitle(f"Measurements — {label}")
-        # Mirror Copy: visible only in temple workspaces
-        if hasattr(self, "_act_copy_temple"):
-            self._act_copy_temple.setVisible(is_temple)
         # Library tab: save/rename/delete only in Hinge Pocket workspace
         self._lib_hinge_actions.setVisible(is_hinge)
 
@@ -2512,13 +2507,34 @@ class MainWindow(QMainWindow):
     # Toolbar visibility + hotkey management
     # ------------------------------------------------------------------
 
-    def _apply_toolbar_visibility(self, toolbar_prefs: dict):
-        """Show/hide toolbar actions according to toolbar_prefs dict."""
+    # Actions restricted to certain workspaces. Final visibility is the AND
+    # of the user's toolbar pref and this rule.
+    _WS_ONLY_ACTIONS = {
+        "guides":      ("front",),
+        "boxing":      ("front",),
+        "pad":         ("front",),
+        "copy_temple": ("temple_r", "temple_l"),
+    }
+
+    def _apply_toolbar_visibility(self, toolbar_prefs: dict, ws_type: str | None = None):
+        """Show/hide toolbar actions: user prefs AND per-workspace rules.
+
+        Both inputs must be applied together — applying prefs alone (the old
+        Settings-dialog path) resurrected workspace-hidden buttons (e.g.
+        Mirror Copy on Front) until the next tab switch, and applying
+        workspace rules alone resurrected pref-hidden buttons on tab switch.
+        """
+        if ws_type is None:
+            ws_type = self._active_ws.workspace_type
         for key, act in self._toolbar_actions.items():
             if key == "select":
                 act.setVisible(True)
-            else:
-                act.setVisible(toolbar_prefs.get(key, True))
+                continue
+            visible = toolbar_prefs.get(key, True)
+            allowed = self._WS_ONLY_ACTIONS.get(key)
+            if allowed is not None:
+                visible = visible and (ws_type in allowed)
+            act.setVisible(visible)
 
     def _hotkey_dispatch(self, target):
         """Run a hotkey target unless a text-entry widget has focus.
