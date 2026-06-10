@@ -80,7 +80,12 @@ class SnapEngine:
                 best      = target
                 best_type = t
 
+        is_visible = getattr(self._scene, "is_layer_visible", None)
         for curve in self._doc_curves:
+            # Hidden layers offer no snap targets (locked layers still do —
+            # locked geometry remains a positioning reference).
+            if is_visible is not None and not is_visible(curve.layer):
+                continue
             if curve.kind in ("circle", "arc") and curve.radius and curve.nodes:
                 cx, cy, r = curve.nodes[0].x, curve.nodes[0].y, curve.radius
                 candidate(QPointF(cx, cy), "node")          # center

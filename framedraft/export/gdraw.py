@@ -33,6 +33,7 @@ def _empty_ws_data() -> dict:
         "machined_bridge": MachinedBridge(),
         "face_images": [],
         "bookmarks": [],
+        "layers": {},
     }
 
 
@@ -66,6 +67,7 @@ def save_gdraw(workspace_data: dict, path: str, active_tab: str = "front") -> No
                     face_images     = data.get("face_images", []),
                     bookmarks       = data.get("bookmarks", []),
                     dims            = data.get("dims", []),
+                    layers          = data.get("layers"),
                 )
                 zf.write(tmp_path, f"{tab}.svg")
             finally:

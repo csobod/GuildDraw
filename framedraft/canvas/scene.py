@@ -42,6 +42,8 @@ class FrameScene(QGraphicsScene):
         self._dim_items:   dict = {}   # id(DimLine) -> DimItem
         self._mirror_display = True
         self._dim_drag_cb = None   # () -> None; pushed-undo hook for DimItem drags
+        self._layer_visible: dict = {}   # Layer -> bool (default True)
+        self._layer_locked:  dict = {}   # Layer -> bool (default False)
         # Store the cross extents so set_dark_mode can redraw them correctly
         self._cross_hw: float = 150.0
         self._cross_hh: float = 100.0
@@ -229,6 +231,49 @@ class FrameScene(QGraphicsScene):
             self.mirror.refresh_theme(dark)
 
     # ------------------------------------------------------------------
+    # Layer visibility / locking
+    # ------------------------------------------------------------------
+
+    def is_layer_visible(self, layer) -> bool:
+        return self._layer_visible.get(layer, True)
+
+    def is_layer_locked(self, layer) -> bool:
+        return self._layer_locked.get(layer, False)
+
+    def _apply_layer_state_to_item(self, item):
+        """Push the item's layer visibility/lock onto the item itself."""
+        layer   = item.curve.layer
+        visible = self.is_layer_visible(layer)
+        item.setVisible(visible)
+        selectable = visible and not self.is_layer_locked(layer)
+        item.setFlag(item.GraphicsItemFlag.ItemIsSelectable, selectable)
+        if not selectable:
+            item.setSelected(False)
+
+    def set_layer_visible(self, layer, on: bool):
+        self._layer_visible[layer] = on
+        for item in self._curve_items.values():
+            if item.curve.layer == layer:
+                self._apply_layer_state_to_item(item)
+        for cid, ghost in self._ghost_items.items():
+            ci = self._curve_items.get(cid)
+            if ci is not None and ci.curve.layer == layer:
+                ghost.setVisible(on)
+
+    def set_layer_locked(self, layer, locked: bool):
+        self._layer_locked[layer] = locked
+        for item in self._curve_items.values():
+            if item.curve.layer == layer:
+                self._apply_layer_state_to_item(item)
+
+    def reset_layer_states(self):
+        """All layers visible and unlocked (File > New / before a load)."""
+        self._layer_visible.clear()
+        self._layer_locked.clear()
+        for item in self._curve_items.values():
+            self._apply_layer_state_to_item(item)
+
+    # ------------------------------------------------------------------
     # Curve management
     # ------------------------------------------------------------------
 
@@ -237,6 +282,7 @@ class FrameScene(QGraphicsScene):
         item = CurveItem(curve)
         self.addItem(item)
         self._curve_items[id(curve)] = item
+        self._apply_layer_state_to_item(item)
         self._update_ghost_for(curve)
         return item
 
@@ -297,6 +343,7 @@ class FrameScene(QGraphicsScene):
         else:
             ghost.setPath(path)
             ghost.setPen(pen)
+        ghost.setVisible(self.is_layer_visible(curve.layer))
 
     def _update_ghosts(self):
         """Full rebuild — used on mirror toggle, theme change, layer change."""

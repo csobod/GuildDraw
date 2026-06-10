@@ -233,10 +233,13 @@ class EditTool(QObject):
             best_x, best_y = None, None
             best_d = float("inf")
 
-            # Snap to open-curve endpoints
+            # Snap to open-curve endpoints (skip hidden layers)
+            is_visible = getattr(self._scene, "is_layer_visible", None)
             if self._ep_curves is not None:
                 for c in self._ep_curves:
                     if not c.nodes or c.closed:
+                        continue
+                    if is_visible is not None and not is_visible(c.layer):
                         continue
                     for ep in (c.nodes[0], c.nodes[-1]):
                         if ep is dragged_node:
@@ -312,6 +315,12 @@ class EditTool(QObject):
 
     def _add_curve_items(self, curve_item: CurveItem):
         curve = curve_item.curve
+
+        # Grouped curves move as a rigid unit — no node/handle editing.
+        # (This is what stops imported hinge groups from being distorted by
+        # accidental node drags + endpoint snap onto frame geometry.)
+        if curve.group_id:
+            return
 
         node_dots: dict[int, NodeDot] = {}
         for i in range(len(curve.nodes)):

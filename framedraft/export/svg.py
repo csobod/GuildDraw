@@ -113,6 +113,8 @@ def _curve_to_dict(curve: Curve) -> dict:
         d["start_angle"] = curve.start_angle
     if curve.end_angle is not None:
         d["end_angle"] = curve.end_angle
+    if curve.group_id:
+        d["group"] = curve.group_id
     return d
 
 
@@ -126,6 +128,7 @@ def save_svg(
     face_images:      list[FaceImage] | None = None,
     bookmarks:        list | None = None,
     dims:             list | None = None,
+    layers:           dict | None = None,   # {layer name: {"visible","locked"}}
 ) -> None:
     ET.register_namespace("", _NS)
     root = ET.Element(f"{{{_NS}}}svg")
@@ -176,6 +179,8 @@ def save_svg(
             {"x0": d.x0, "y0": d.y0, "x1": d.x1, "y1": d.y1, "offset": d.offset}
             for d in dims
         ]
+    if layers:
+        state["layers"] = layers
     meta_el.text = json.dumps(state, indent=2)
 
     for curve in non_mirrored:
@@ -213,6 +218,7 @@ def _curve_from_dict(d: dict) -> Curve:
         radius      = d.get("radius"),
         start_angle = d.get("start_angle"),
         end_angle   = d.get("end_angle"),
+        group_id    = d.get("group"),
     )
 
 
@@ -297,4 +303,5 @@ def load_svg(path: str) -> dict:
         ),
         "face_images": _load_face_images(state),
         "bookmarks": bookmarks,
+        "layers": state.get("layers", {}),
     }

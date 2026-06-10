@@ -35,6 +35,7 @@ def saved(tmp_path):
         arc(0, 0, 8, 30, 200),
     ]
     curves[0].line_weight = 0.75
+    curves[1].group_id = "abcd1234"   # grouped curve round-trips its group
     dims = [DimLine(x0=0, y0=0, x1=10, y1=0, offset=5.5)]
     bookmarks = [{
         "name": "rev one", "timestamp": "12:00:00",
@@ -48,6 +49,8 @@ def saved(tmp_path):
         forming=FormingMetadata(bridge_angle_deg=15.0, apical_radius_mm=8.0),
         machined_bridge=MachinedBridge(depth_mm=4.5, width_mm=6.0),
         bookmarks=bookmarks, dims=dims,
+        layers={"OUTLINE": {"visible": True, "locked": True},
+                "REF":     {"visible": False, "locked": False}},
     )
     return curves, load_svg(str(path))
 
@@ -91,6 +94,19 @@ def test_dims_roundtrip(saved):
     _, data = saved
     d = data["dims"][0]
     assert (d.x0, d.y0, d.x1, d.y1, d.offset) == (0, 0, 10, 0, 5.5)
+
+
+def test_group_id_roundtrips(saved):
+    _, data = saved
+    assert data["curves"][1].group_id == "abcd1234"
+    assert data["curves"][0].group_id is None
+
+
+def test_layer_states_roundtrip(saved):
+    _, data = saved
+    layers = data["layers"]
+    assert layers["OUTLINE"] == {"visible": True, "locked": True}
+    assert layers["REF"]["visible"] is False
 
 
 def test_bookmarks_roundtrip(saved):

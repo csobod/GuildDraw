@@ -12,7 +12,7 @@ and export clean DXF for GuildCAM — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-10, v0.9.4 — M1–M4 complete)*
+## Status snapshot *(2026-06-10, v0.9.5 — M1–M4 complete, M5 features landed)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -28,11 +28,12 @@ text/engraving, GuildCAM hardware round-trip, BRIDGE layer tooling.
 **Code health:** ~10,900 lines; geometry core is solid. The M1 bug list is fixed
 (v0.9.1), the repo is under git, and data safety landed in v0.9.2 (dirty-flag
 guards, atomic saves with .bak, autosave/crash recovery, surfaced load errors,
-Recent Files). v0.9.3 added the test suite (58 tests incl. mirror-math) and a
-ruff-clean codebase. v0.9.4 centralized tool switching (`_teardown_tools`),
-document mutations (`WorkspaceState` primitives), and mirror math
-(`geometry.mirror_curve`), and deleted the dead model classes. Next: M5 UX
-retest, M6 workflow features, M7 OMA.
+Recent Files). v0.9.3 added the test suite (60 tests) and a ruff-clean
+codebase. v0.9.4 centralized tool switching, document mutations
+(`WorkspaceState` primitives), and mirror math (`geometry.mirror_curve`).
+v0.9.5 added the Layers panel (visibility/lock), Group/Ungroup, grouped hinge
+imports (fixes the snap-distortion bug), and the Point Move reliability fix.
+Next: M5 retest list, M6 workflow features, M7 OMA.
 
 ---
 
@@ -187,10 +188,35 @@ revisit in M4 when document state is centralized.
 5. ⏭ `QUndoStack` migration — skipped (optional); snapshot undo behind
    `WorkspaceState.undo()/redo()` is now a one-file swap if ever wanted.
 
-## M5 — Maker-demo UX fixes (v0.9.5) · *retest, then fix what's still broken*
+## M5 — Maker UX (v0.9.5) · *layers, groups, reliable moves + demo retest*
 
-Carried from the 2026-06-08 demo (archive "Known issues"). Some may already be
-fixed — retest each first:
+### Landed 2026-06-10 (v0.9.5) — from the maker session
+
+- ✅ **Layers panel** (sidebar tab 1, Fusion/Inkscape-style): tree of the active
+  workspace's layers with every object listed beneath; per-layer **Show** and
+  **Lock** checkboxes; clicking an object row selects it on canvas. Hidden
+  layers vanish and offer **no snap targets**; locked layers stay visible and
+  snappable (reference geometry) but can't be selected, trimmed, split,
+  offset, or Alt+click-cycled. States persist in the SVG/.gdraw metadata
+  (`"layers"` key) and reset on File > New. Panel auto-refreshes via
+  `WorkspaceState.on_document_changed`.
+- ✅ **Group / Ungroup** (Ctrl+G / Ctrl+Shift+G, Edit menu): `Curve.group_id`
+  (persisted, `"group"` key). Selecting any member selects the whole group;
+  grouped curves move as a rigid unit and expose **no node dots** (node insert
+  is blocked too).
+- ✅ **Hinge-import distortion bug fixed**: imports arrive as a group, so the
+  pocket can't be warped by accidental node drags + endpoint-snap onto frame
+  geometry at the origin. Root cause: loose curves at origin + 12 px endpoint
+  drag-snap onto overlapping frame curves.
+- ✅ **Point Move reliability fixed**: root cause — activating the tool strips
+  `ItemIsSelectable`, which *clears the Qt selection*; the handler then fell
+  back to a stale press-time capture that was only sometimes right. Now the
+  selection is captured before activation, and the view's drag capture is
+  cleared on every mouse release.
+
+### Remaining (close M5): retest list from the 2026-06-08 demo
+
+Some may already be fixed by M1/M5 work — retest each first:
 
 - [ ] **Click selection over-reliant on Alt+Click** — selecting a lens inside an
   outline is hard. The stroked `shape()` fix exists; verify hit tolerance scales

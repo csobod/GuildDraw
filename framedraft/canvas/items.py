@@ -71,6 +71,17 @@ def make_handle_line_pen() -> QPen:
     return pen
 
 
+def curve_layer_locked(item) -> bool:
+    """True if a CurveItem's layer is locked in its FrameScene.
+
+    Used by cursor tools (trim/split/offset) so locked geometry can't be
+    modified by a click even though it remains visible.
+    """
+    sc = item.scene()
+    fn = getattr(sc, "is_layer_locked", None)
+    return bool(fn and fn(item.curve.layer))
+
+
 # ---------- path builder ----------
 
 def build_path(curve: Curve) -> QPainterPath:

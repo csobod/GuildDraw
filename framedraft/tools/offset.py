@@ -20,7 +20,7 @@ from PySide6.QtCore import QObject, Signal, QPointF, Qt, QRect
 from PySide6.QtGui  import QPen, QColor, QFont
 from PySide6.QtWidgets import QLabel
 
-from ..canvas.items import CurveItem
+from ..canvas.items import CurveItem, curve_layer_locked
 
 
 _PREVIEW_COLOR = "#ffd580"   # amber — same as hover/lock color used elsewhere
@@ -269,4 +269,6 @@ class OffsetTool(QObject):
         vp = self._view.mapFromScene(scene_pos)
         t  = 8
         candidates = self._view.items(QRect(vp.x() - t, vp.y() - t, 2 * t, 2 * t))
-        return next((i for i in candidates if isinstance(i, CurveItem)), None)
+        return next((i for i in candidates
+                     if isinstance(i, CurveItem) and not curve_layer_locked(i)),
+                    None)

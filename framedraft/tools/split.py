@@ -21,7 +21,7 @@ import math
 from PySide6.QtCore import QObject, Signal, QPointF, Qt, QRect
 from PySide6.QtGui  import QPen, QColor
 
-from ..canvas.items import CurveItem
+from ..canvas.items import CurveItem, curve_layer_locked
 from ..geometry import (
     intersect_curve_params, dedup_ts_mm, t_nearest,
     split_curve_at_t, point_at_t,
@@ -178,7 +178,9 @@ class SplitTool(QObject):
         vp = self._view.mapFromScene(scene_pos)
         t  = _HIT_TOL_PX
         candidates = self._view.items(QRect(vp.x()-t, vp.y()-t, 2*t, 2*t))
-        return next((i for i in candidates if isinstance(i, CurveItem)), None)
+        return next((i for i in candidates
+                     if isinstance(i, CurveItem) and not curve_layer_locked(i)),
+                    None)
 
     def _clear_hover(self):
         if self._hover_item is not None:

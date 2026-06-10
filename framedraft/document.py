@@ -87,6 +87,8 @@ class Curve:
     radius: Optional[float] = None       # circle / arc radius (mm)
     start_angle: Optional[float] = None  # arc start angle (degrees; 0=right, 90=down-screen)
     end_angle: Optional[float] = None    # arc end angle (degrees, same convention)
+    group_id: Optional[str] = None       # curves sharing a group_id select/move as
+                                         # a rigid unit and expose no node editing
 
 
 @dataclass
