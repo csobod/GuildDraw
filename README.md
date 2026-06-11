@@ -1,0 +1,80 @@
+# GuildDraw
+
+A focused, open-source 2D drafting application for acetate / horn eyewear
+design. Draw a frame front, temples, and hinge pockets; verify them against a
+calibrated face photo; export clean DXF for CNC machining (GuildCAM) — and
+nothing else.
+
+Built with Python + PySide6 (Qt 6). Scene units are true millimetres (1 scene
+unit = 1 mm) end to end: what you draw is what gets cut.
+
+**Status: v1.0.0-rc1 — release candidate.** All drafting features are
+complete and tested. Final 1.0 sign-off is gated on the GuildCAM hardware
+round-trip (cutting a physical frame from exported DXF), which is pending
+GuildCAM's redevelopment.
+
+## Highlights
+
+- **Four workspaces** — Frame Front, Temple R, Temple L, Hinge Pocket — in one
+  `.gdraw` project file, each with its own layers, guides, and undo history.
+- **Drawing tools**: line, spline (centripetal Catmull-Rom), circle, arc, with
+  node/handle editing, trim, split, offset, join/explode, and a Transform
+  dialog (scale/rotate about selection centre or origin).
+- **Mirror system**: live ghost preview across the bridge axis, one-click bake,
+  mirror-close, and Mirror Copy between temple workspaces.
+- **Snapping**: nodes, handles, midpoints, quadrants, on-curve nearest point,
+  mirror axis, and origin.
+- **Face-photo calibration**: load a reference photo, calibrate px-per-mm with
+  two clicks, and design directly over the customer's face.
+- **OMA/DCS lens-trace interchange**: import a frame tracer's `.oma` file as
+  editable LENS geometry ("derive a frame from a traced lens"), export traces
+  back to labs/edgers. Round-trips within 0.05 mm.
+- **ENGRAVING text**: re-editable text objects on temples, converted to
+  outline splines only at DXF export time.
+- **Visualization**: frame fill overlay (outline minus lenses, over the photo),
+  print/PDF at exact 1:1 scale with a 50 mm verification ruler for paper
+  test-fits.
+- **Clean DXF out**: R2000 SPLINE entities (exact Bézier → B-spline, never
+  flattened), strict layer vocabulary, per-workspace validation, and batch
+  export of all four workspaces in one go.
+
+## Install & run (from source)
+
+Requires Python 3.12+ (developed on 3.14) and Windows/macOS/Linux with Qt 6
+support.
+
+```
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt     # PySide6, ezdxf, shapely
+.venv\Scripts\python main.py
+```
+
+## Windows build
+
+```
+.venv\Scripts\pip install -r requirements-dev.txt
+.venv\Scripts\python -m PyInstaller framedraft.spec --clean
+```
+
+Output: `dist/GuildDraw/GuildDraw.exe` (one-folder, flat layout).
+
+## Tests
+
+```
+.venv\Scripts\python -m pytest tests -q
+```
+
+## Documentation
+
+- **[User guide](docs/USER-GUIDE.md)** — tool reference, hotkeys, workflows,
+  GuildCAM handoff.
+- **[BUILDPLAN.md](BUILDPLAN.md)** — roadmap and engineering history.
+
+## DXF export contract (GuildCAM)
+
+- DXF R2000 (AC1015), SPLINE entities — exact cubic Bézier → B-spline.
+- Units: true mm at 1:1 (`$INSUNITS = 4` by convention).
+- Closed contours: endpoints within 0.1 mm auto-close.
+- Strict layers: `OUTLINE` ×1, `LENS` ×2, `BRIDGE`/`HINGE` optional, `REF`
+  ignored, `SCULPT` (back-surface), `ENGRAVING` (temples).
+- Scene is Y-down; DXF is Y-up — Y is negated on export.

@@ -3183,6 +3183,7 @@ class MainWindow(QMainWindow):
         imp.addAction("OMA Lens Trace…", self._import_oma)
         exp = file_menu.addMenu("Export")
         exp.addAction("Export DXF…", self._export_dxf)
+        exp.addAction("Export All DXF…", self._export_all_dxf)
         exp.addAction("Export SVG…", self._export_svg)
         exp.addAction("Export PNG…", self._export_png)
         exp.addAction("Export OMA Trace…", self._export_oma)
@@ -5244,6 +5245,92 @@ class MainWindow(QMainWindow):
             self._status.showMessage(f"DXF exported: {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.critical(self, "DXF export failed", str(e))
+
+    def _export_all_dxf(self):
+        """File > Export > Export All DXF… — one DXF per populated workspace
+        (<base>_front.dxf, _temple_r, _temple_l, _hinge), each validated
+        against its workspace rules before anything is written."""
+        from .export.batch import (
+            BatchWorkspace, base_from_path, check_batch, write_batch,
+        )
+        # Flush sidebar state so the active workspace's mirror toggle is
+        # current in ws.mirror_enabled (the other workspaces were flushed
+        # when their tabs were left).
+        self._save_ws_sidebar_state(self._active_ws)
+
+        items = []
+        tab_names = ["front", "temple_r", "temple_l", "hinge"]
+        for ws, tab in zip(self._workspaces, tab_names, strict=True):
+            curves = [c for c in ws.doc_curves if not c.mirrored]
+            if ws.doc_texts:
+                from .textpath import text_to_curves
+                for tobj in ws.doc_texts:
+                    curves.extend(text_to_curves(tobj))
+            items.append(BatchWorkspace(
+                workspace_type = tab,
+                curves         = curves,
+                mirror_on      = ws.mirror_enabled,
+                axis_x         = ws.scene.mirror.x if ws.scene.mirror else 0.0,
+            ))
+
+        if not any(it.curves for it in items):
+            QMessageBox.information(self, "Export All DXF",
+                                    "All workspaces are empty — nothing to export.")
+            return
+
+        ws_titles = {"front": "Frame Front", "temple_r": "Temple R",
+                     "temple_l": "Temple L",  "hinge": "Hinge Pocket"}
+        report = check_batch(items)
+        if not report.ok:
+            lines = []
+            for tab, errs in report.errors.items():
+                lines.append(f"{ws_titles[tab]}:")
+                lines += [f"  • {e}" for e in errs]
+            QMessageBox.critical(
+                self, "Validation failed",
+                "Export blocked — fix the following:\n\n" + "\n".join(lines))
+            return
+        if report.warnings:
+            lines = []
+            for tab, warns in report.warnings.items():
+                lines.append(f"{ws_titles[tab]}:")
+                lines += [f"  • {w}" for w in warns]
+            r = QMessageBox.warning(
+                self, "Validation warnings",
+                "Warnings (export will proceed):\n\n" + "\n".join(lines),
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            )
+            if r != QMessageBox.StandardButton.Ok:
+                return
+
+        suggested = ""
+        if self._current_path:
+            suggested = os.path.splitext(self._current_path)[0] + ".dxf"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export All DXF — choose base name", suggested,
+            "DXF Files (*.dxf)")
+        if not path:
+            return
+        base = base_from_path(path)
+        try:
+            written = write_batch(items, base)
+        except Exception as e:
+            QMessageBox.critical(self, "Batch DXF export failed", str(e))
+            return
+        names = ", ".join(os.path.basename(p) for p in written)
+        msg = f"Exported {len(written)} DXF file(s): {names}"
+        if report.skipped:
+            msg += " — skipped (empty): " + ", ".join(
+                ws_titles[t] for t in report.skipped)
+        self._status.showMessage(msg)
+        # The file-name preview in the dialog can't show the suffixing, so
+        # confirm what actually landed on disk.
+        QMessageBox.information(
+            self, "Export All DXF",
+            "Written:\n" + "\n".join(f"• {os.path.basename(p)}" for p in written)
+            + ("\n\nSkipped (empty): "
+               + ", ".join(ws_titles[t] for t in report.skipped)
+               if report.skipped else ""))
 
     def _export_svg(self):
         """Export the active workspace as SVG without touching the current

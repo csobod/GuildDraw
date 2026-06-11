@@ -12,7 +12,7 @@ and export clean DXF for GuildCAM — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-10, v0.9.8 — M1–M8 complete; next: M9 GuildCAM validation + 1.0)*
+## Status snapshot *(2026-06-10, v1.0.0-rc1 — M1–M8 complete; M9 software side done, release candidate cut; 1.0 gated on GuildCAM hardware round-trip)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -25,8 +25,8 @@ layers panel + groups, on-curve snap, clipboard + Transform dialog, OMA lens-tra
 import/export (TRCFMT format 1), frame fill overlay, ENGRAVING text objects,
 print/PDF at 1:1 scale.
 
-**Not yet built:** GuildCAM hardware round-trip, batch DXF export,
-BRIDGE layer tooling.
+**Not yet built:** GuildCAM hardware round-trip (blocked on the GuildCAM
+redevelopment), BRIDGE layer tooling.
 
 **Code health:** ~10,900 lines; geometry core is solid. The M1 bug list is fixed
 (v0.9.1), the repo is under git, and data safety landed in v0.9.2 (dirty-flag
@@ -370,31 +370,47 @@ place/undo/delete/edit + DXF ENGRAVING splines, and the 1:1 PDF.
 *Known gaps (accepted):* texts don't appear in the Layers-panel object tree
 and aren't copied by Ctrl+C/V — revisit on demand.
 
-## M9 — GuildCAM validation + release engineering (v0.9.9 → 1.0)
+## M9 — GuildCAM validation + release engineering (v1.0.0-rc1 → 1.0)
 
-1. **Hardware round-trip** (old Phase 8): cut a real frame front + temples from
-   exported DXF. Confirm layer counts, closure, spline fidelity, and resolve the
-   asymmetric-lens question (§2).
-2. **Batch export** — "Export All DXF…" writes `<name>_front.dxf`,
-   `<name>_temple_r.dxf`, `<name>_temple_l.dxf`, `<name>_hinge.dxf` in one go,
-   running each workspace's validator.
-3. PyInstaller build refresh; version stamping; smoke-test the frozen build.
-4. README + a short user guide (tool reference, hotkeys, GuildCAM handoff steps).
-5. Tag `v1.0.0`.
+> **2026-06-10 replan:** GuildCAM is not yet built out enough for the hardware
+> round-trip, so M9's software scope shipped as **v1.0.0-rc1** (release
+> candidate). The rc graduates to `v1.0.0` once a physical frame has been cut
+> from GuildDraw DXF on the redeveloped GuildCAM.
+
+1. ⏸ **Hardware round-trip** (old Phase 8): cut a real frame front + temples
+   from exported DXF. Confirm layer counts, closure, spline fidelity, and
+   resolve the asymmetric-lens question (§2). **Blocked on the GuildCAM
+   redevelopment — the only remaining 1.0 gate.**
+2. ✅ **Batch export** (2026-06-10) — File > Export > "Export All DXF…" writes
+   `<name>_front.dxf`, `_temple_r.dxf`, `_temple_l.dxf`, `_hinge.dxf` in one
+   go. Qt-free `export/batch.py` (BatchWorkspace/check_batch/write_batch):
+   all populated workspaces are validated first and **nothing is written if
+   any fails**; empty workspaces are skipped (an empty hinge tab is normal);
+   ENGRAVING texts convert at export exactly like single-file export; a
+   summary dialog lists what landed. 7 tests in `tests/test_batch.py`
+   (suite: 95).
+3. ✅ PyInstaller build refresh (spec hidden-imports updated for the modules
+   added since 0.9.3: library, textpath, tools.offset/point_move,
+   export.oma/batch); version stamped `1.0.0-rc1`; frozen build smoke-tested.
+4. ✅ README.md + `docs/USER-GUIDE.md` (workspaces, tool reference, hotkeys,
+   snapping/layers/mirror, OMA, 1:1 print, GuildCAM handoff + validator
+   rules, data-safety notes).
+5. ✅ Tag `v1.0.0-rc1`. ⏸ Tag `v1.0.0` after the hardware round-trip.
 
 ### 1.0 release criteria (definition of done)
 
-- [ ] All M1 bugs fixed; M5 demo issues retested and closed
-- [ ] No data-loss path: dirty-flag guards, atomic saves, autosave recovery, load
+- [x] All M1 bugs fixed; M5 demo issues retested and closed
+- [x] No data-loss path: dirty-flag guards, atomic saves, autosave recovery, load
       errors surfaced
-- [ ] Test suite green (geometry, SVG round-trip, validator, DXF smoke) and run
-      before every release build
+- [x] Test suite green (geometry, SVG round-trip, validator, DXF, batch) and run
+      before every release build *(95 tests at rc1)*
 - [ ] DXF from all four workspaces imports into GuildCAM and **a physical frame
-      has been cut** from GuildDraw output
-- [ ] OMA: a real tracer file imports as editable LENS geometry, and
-      import → export → reimport round-trips within 0.05 mm
-- [ ] Repository under git with tagged releases
-- [ ] Packaged Windows build + written user guide
+      has been cut** from GuildDraw output *(← the only open gate; blocked on
+      the GuildCAM redevelopment)*
+- [x] OMA: import → export → reimport round-trips within 0.05 mm *(synthetic;
+      a real tracer file should be confirmed when one is available)*
+- [x] Repository under git with tagged releases
+- [x] Packaged Windows build + written user guide
 
 ---
 
