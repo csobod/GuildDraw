@@ -73,6 +73,10 @@ The Properties sidebar's layer tree is the layer interface:
 - **Padlock** locks it (visible + snappable, but not selectable/editable).
 - Click a **layer name** to make it the active drawing layer (bold).
 - Click an **object** to select it on canvas.
+- **Drag an object** onto another layer row to move it to that layer (e.g. a
+  lens path accidentally drawn on OUTLINE → drop it on LENS). Ctrl/Shift-click
+  to drag several at once. The move is undoable; locked layers can't be
+  dragged from.
 - Right-click for *select all on layer* / *move selection to layer*.
 
 ### Mirror system (frame front)

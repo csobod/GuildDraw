@@ -12,7 +12,7 @@ and export clean DXF for GuildCAM — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-10, v1.0.0-rc1 — M1–M8 complete; M9 software side done, release candidate cut; 1.0 gated on GuildCAM hardware round-trip)*
+## Status snapshot *(2026-06-11, v1.0.0-rc1b — M1–M8 complete; M9 software side done, release candidate cut + rc1b drag-and-drop layer fix; 1.0 gated on GuildCAM hardware round-trip)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -396,6 +396,18 @@ and aren't copied by Ctrl+C/V — revisit on demand.
    snapping/layers/mirror, OMA, 1:1 print, GuildCAM handoff + validator
    rules, data-safety notes).
 5. ✅ Tag `v1.0.0-rc1`. ⏸ Tag `v1.0.0` after the hardware round-trip.
+6. ✅ **rc1b — drag-and-drop layer reassignment** (2026-06-11). Fixes the one
+   workflow flaw found in rc1: a curve drawn on the wrong layer (e.g. a lens
+   path started on OUTLINE) couldn't be moved without the right-click menu
+   being discovered. Object rows in the Layers panel can now be dragged onto
+   a layer row (or among its children) to move them there; multi-select drag
+   supported; curves on locked layers can't be dragged; the move is
+   undoable and shares the same code path as the context-menu action.
+   Also fixed two pieces of console noise found while testing rc1b: quit-time
+   `RuntimeError (FrameScene already deleted)` tracebacks (scene destruction
+   emitted `selectionChanged` into live slots — `closeEvent` now severs those
+   connections) and the `QFont::setPointSize(-1)` warning from dim-label
+   painting. Version stamped `1.0.0-rc1b`.
 
 ### 1.0 release criteria (definition of done)
 

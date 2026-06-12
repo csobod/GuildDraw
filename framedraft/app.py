@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QComboBox, QMessageBox,
     QDialog, QCheckBox, QHBoxLayout, QInputDialog, QListWidget, QListWidgetItem,
     QScrollArea, QTabWidget, QLineEdit, QTreeWidget, QTreeWidgetItem,
-    QColorDialog,
+    QColorDialog, QAbstractItemView,
 )
 from PySide6.QtCore import Qt, QPointF, QSize, QTimer, Signal
 from PySide6.QtGui import (
@@ -924,6 +924,54 @@ class KeyCaptureEdit(QLineEdit):
         seq = QKeySequence(int(event.modifiers()) | key)
         self.setText(seq.toString())
         event.accept()
+
+
+class LayerTree(QTreeWidget):
+    """Layer-panel tree with drag-and-drop reassignment.
+
+    Object rows can be dragged onto a layer row (or among its children) to
+    move those curves to that layer. Qt's default item relocation is
+    suppressed: the drop is translated into a document edit via the
+    curves_dropped signal and MainWindow rebuilds the panel afterwards.
+    """
+
+    curves_dropped = Signal(list, object)   # ([id(curve), ...], Layer)
+
+    def __init__(self):
+        super().__init__()
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setDropIndicatorShown(True)
+
+    def _drop_target_layer(self, pos):
+        item = self.itemAt(pos)
+        if item is None:
+            return None
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data:
+            return None
+        kind, payload = data
+        if kind == "layer":
+            return payload
+        parent = item.parent()
+        pdata = parent.data(0, Qt.ItemDataRole.UserRole) if parent else None
+        return pdata[1] if pdata else None
+
+    def dropEvent(self, event):
+        layer = self._drop_target_layer(event.position().toPoint())
+        curve_ids = []
+        for it in self.selectedItems():
+            data = it.data(0, Qt.ItemDataRole.UserRole)
+            if data and data[0] == "curve":
+                curve_ids.append(data[1])
+        # Never let the view move/delete rows itself; report IgnoreAction so
+        # InternalMove's source-row cleanup is skipped, then apply the edit
+        # after the drag machinery has fully unwound.
+        event.setDropAction(Qt.DropAction.IgnoreAction)
+        event.accept()
+        if layer is not None and curve_ids:
+            QTimer.singleShot(
+                0, lambda: self.curves_dropped.emit(curve_ids, layer))
 
 
 class SettingsDialog(QDialog):
@@ -1913,7 +1961,7 @@ class MainWindow(QMainWindow):
         layers_lay = QVBoxLayout(layers_box)
         layers_lay.setContentsMargins(4, 4, 4, 4)
 
-        self._layer_tree = QTreeWidget()
+        self._layer_tree = LayerTree()
         self._layer_tree.setHeaderHidden(True)
         self._layer_tree.setColumnCount(3)
         hdr = self._layer_tree.header()
@@ -1931,9 +1979,11 @@ class MainWindow(QMainWindow):
             "Click the padlock to lock/unlock; locked layers stay visible and\n"
             "snappable but cannot be selected or modified.\n"
             "Click an object to select it on the canvas.\n"
+            "Drag an object onto another layer to move it there.\n"
             "Right-click for: select all on layer, move selection to layer."
         )
         self._layer_tree.itemClicked.connect(self._on_layer_tree_clicked)
+        self._layer_tree.curves_dropped.connect(self._on_layer_tree_drop)
         self._layer_tree.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu)
         self._layer_tree.customContextMenuRequested.connect(
@@ -2435,17 +2485,29 @@ class MainWindow(QMainWindow):
         self._layer_tree_layer_rows: dict = {}  # Layer -> top-level row
         for layer in WORKSPACE_LAYERS[ws.workspace_type]:
             curves = [c for c in ws.doc_curves if c.layer == layer]
+            locked = ws.scene.is_layer_locked(layer)
             top = QTreeWidgetItem([f"{layer.value}  ({len(curves)})", "", ""])
             top.setIcon(1, self._layer_icon(
                 "layer-show" if ws.scene.is_layer_visible(layer) else "layer-hide"))
             top.setIcon(2, self._layer_icon(
-                "layer-lock" if ws.scene.is_layer_locked(layer) else "layer-unlock"))
+                "layer-lock" if locked else "layer-unlock"))
             top.setData(0, Qt.ItemDataRole.UserRole, ("layer", layer))
+            # Layer rows are drop targets, never drag sources.
+            top.setFlags(Qt.ItemFlag.ItemIsEnabled
+                         | Qt.ItemFlag.ItemIsSelectable
+                         | Qt.ItemFlag.ItemIsDropEnabled)
             tree.addTopLevelItem(top)
             self._layer_tree_layer_rows[layer] = top
+            # Curve rows are drag sources (unless their layer is locked),
+            # never drop targets.
+            child_flags = (Qt.ItemFlag.ItemIsEnabled
+                           | Qt.ItemFlag.ItemIsSelectable)
+            if not locked:
+                child_flags |= Qt.ItemFlag.ItemIsDragEnabled
             for c in curves:
                 child = QTreeWidgetItem([self._curve_label(c), "", ""])
                 child.setData(0, Qt.ItemDataRole.UserRole, ("curve", id(c)))
+                child.setFlags(child_flags)
                 top.addChild(child)
                 self._layer_tree_rows[id(c)] = child
             top.setExpanded(bool(curves) and len(curves) <= 12)
@@ -2550,14 +2612,28 @@ class MainWindow(QMainWindow):
         if not targets:
             self._status.showMessage("Move to layer: nothing selected")
             return
+        self._move_curve_items_to_layer(targets, layer)
+
+    def _on_layer_tree_drop(self, curve_ids: list, layer: Layer):
+        """A drag-and-drop in the layer panel landed on *layer*."""
+        items = [self.scene._curve_items.get(cid) for cid in curve_ids]
+        self._move_curve_items_to_layer([it for it in items if it is not None],
+                                        layer)
+
+    def _move_curve_items_to_layer(self, items: list, layer: Layer):
+        """Shared by the context menu and layer-panel drag-and-drop."""
+        items = [it for it in items if it.curve.layer is not layer]
+        if not items:
+            self._status.showMessage(f"Move to layer: already on {layer.value}")
+            return
         self._push_undo_snapshot()
-        for it in targets:
+        for it in items:
             it.curve.layer = layer
             it.refresh()
             self.scene._update_ghost_for(it.curve)
             self.scene._apply_layer_state_to_item(it)
         self._refresh_layer_panel()
-        self._status.showMessage(f"Moved {len(targets)} curve(s) → {layer.value}")
+        self._status.showMessage(f"Moved {len(items)} curve(s) → {layer.value}")
 
     # ------------------------------------------------------------------
     # Status bar info label (layer + zoom)
@@ -4684,6 +4760,16 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._clear_autosave()
+        # Teardown: destroying a scene deletes its items, and deleting a
+        # selected item emits selectionChanged — into slots that would call
+        # back into the half-destroyed scene (shiboken RuntimeError on quit).
+        # Sever every selectionChanged connection (ours + each EditTool's)
+        # now that no further UI updates can matter.
+        for ws in self._workspaces:
+            try:
+                ws.scene.selectionChanged.disconnect()
+            except RuntimeError:
+                pass   # already disconnected / already gone
         super().closeEvent(event)
 
     # ------------------------------------------------------------------

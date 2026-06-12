@@ -237,7 +237,7 @@ class DimItem(QGraphicsItem):
         painter.save()
         painter.resetTransform()
 
-        font = QFont("Segoe UI", -1)
+        font = QFont("Segoe UI")   # no point size — pixel-sized below
         font.setPixelSize(_LABEL_PX)
         painter.setFont(font)
         painter.setPen(QPen(color))
