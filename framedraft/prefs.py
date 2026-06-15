@@ -83,6 +83,7 @@ DEFAULTS: dict = {
         "text":         "I",
         "snap_node_ep": "E",
         "move_gizmo":   "M",
+        "join":         "J",
         "bookmark":     "Ctrl+B",
     },
 }

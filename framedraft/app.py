@@ -357,6 +357,7 @@ _HOTKEY_ACTION_DEFS = [
     ("text",         "Text tool"),
     ("snap_node_ep", "Snap Node to Endpoint"),
     ("move_gizmo",   "Move gizmo"),
+    ("join",         "Join curves"),
     ("bookmark",     "Bookmark revision"),
 ]
 
@@ -1626,6 +1627,7 @@ class MainWindow(QMainWindow):
             "text":         self._act_text.trigger,
             "snap_node_ep": self._snap_selected_node_to_endpoint,
             "move_gizmo":   self._toggle_move_gizmo,
+            "join":         self._act_join.trigger,
             "bookmark":     self._add_bookmark,
         }
         self._apply_toolbar_visibility(self._toolbar_prefs)
