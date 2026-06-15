@@ -773,3 +773,116 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
 
     return Curve(kind="spline", layer=curve.layer, nodes=new_nodes,
                  closed=closed, line_weight=curve.line_weight)
+
+
+# ---------------------------------------------------------------------------
+# Arc construction helpers
+# ---------------------------------------------------------------------------
+
+def arc_start_end_center(sx: float, sy: float,
+                         ex: float, ey: float,
+                         cx: float, cy: float):
+    """Build a true circular arc from two endpoints and an approximate centre.
+
+    The clicked centre is snapped onto the perpendicular bisector of the
+    chord S→E so both endpoints lie on the circle (equal radii). The *minor*
+    arc between the endpoints is always returned, so placing the centre on
+    one side of the chord vs. the other flips which way the arc bulges — an
+    intuitive, predictable control.
+
+    Returns ``(cx2, cy2, radius, start_deg, end_deg)`` in the scene angle
+    convention (degrees; 0=right, 90=down-screen; sweep runs positive from
+    start to end, matching :func:`point_at_t` / build_path), or ``None`` when
+    the construction is degenerate (coincident endpoints, or a centre that
+    lands on the chord).
+    """
+    mx, my = (sx + ex) / 2.0, (sy + ey) / 2.0
+    chord_dx, chord_dy = ex - sx, ey - sy
+    chord_len2 = chord_dx * chord_dx + chord_dy * chord_dy
+    if chord_len2 < 1e-12:
+        return None   # endpoints coincide
+
+    # Perpendicular bisector direction (unit), then project the clicked centre
+    # onto the bisector line through the chord midpoint.
+    bx, by = -chord_dy, chord_dx
+    bL = math.hypot(bx, by)
+    bx, by = bx / bL, by / bL
+    proj = (cx - mx) * bx + (cy - my) * by
+    cx2, cy2 = mx + bx * proj, my + by * proj
+
+    r = math.hypot(sx - cx2, sy - cy2)
+    if r < 1e-9:
+        return None
+
+    start_deg = math.degrees(math.atan2(sy - cy2, sx - cx2))
+    end_deg   = math.degrees(math.atan2(ey - cy2, ex - cx2))
+    sweep     = (end_deg - start_deg) % 360
+    if sweep < 1e-6 or abs(sweep - 360) < 1e-6:
+        return None
+    # Keep the minor arc: if the positive sweep S→E is the major one, swap.
+    if sweep > 180.0:
+        start_deg, end_deg = end_deg, start_deg
+    return (cx2, cy2, r, start_deg, end_deg)
+
+
+def fillet_lines(corner: tuple, far1: tuple, far2: tuple, r: float):
+    """Compute the tangent fillet arc blending two line legs at a shared corner.
+
+    ``corner`` is the shared vertex; ``far1``/``far2`` are the opposite
+    endpoints of the two legs (they only define the leg *directions*). ``r`` is
+    the fillet radius in mm.
+
+    Returns a dict with::
+
+        t1, t2      tangent points on leg 1 / leg 2 (the legs are trimmed here)
+        center      arc centre
+        radius      r
+        start_deg   arc start angle (scene convention, minor arc t1→t2)
+        end_deg     arc end angle
+        tan_len     distance from corner to each tangent point
+
+    or ``None`` when the legs are collinear, ``r`` is non-positive, or the
+    tangent length exceeds either leg (radius too large to fit the corner).
+    """
+    if r <= 0.0:
+        return None
+    cxv, cyv = corner
+    d1x, d1y = far1[0] - cxv, far1[1] - cyv
+    d2x, d2y = far2[0] - cxv, far2[1] - cyv
+    L1 = math.hypot(d1x, d1y)
+    L2 = math.hypot(d2x, d2y)
+    if L1 < 1e-9 or L2 < 1e-9:
+        return None
+    d1x, d1y = d1x / L1, d1y / L1
+    d2x, d2y = d2x / L2, d2y / L2
+
+    cos_t = max(-1.0, min(1.0, d1x * d2x + d1y * d2y))
+    theta = math.acos(cos_t)          # interior angle between the legs
+    half  = theta / 2.0
+    if math.sin(half) < 1e-6 or math.tan(half) < 1e-6:
+        return None                   # collinear legs — no corner to fillet
+
+    tan_len = r / math.tan(half)
+    if tan_len > L1 + 1e-9 or tan_len > L2 + 1e-9:
+        return None                   # radius too large to fit on a leg
+
+    t1 = (cxv + d1x * tan_len, cyv + d1y * tan_len)
+    t2 = (cxv + d2x * tan_len, cyv + d2y * tan_len)
+
+    # Centre lies along the angle bisector at distance r / sin(half).
+    bx, by = d1x + d2x, d1y + d2y
+    bL = math.hypot(bx, by)
+    if bL < 1e-9:
+        return None
+    bx, by = bx / bL, by / bL
+    dist_c = r / math.sin(half)
+    center = (cxv + bx * dist_c, cyv + by * dist_c)
+
+    start_deg = math.degrees(math.atan2(t1[1] - center[1], t1[0] - center[0]))
+    end_deg   = math.degrees(math.atan2(t2[1] - center[1], t2[0] - center[0]))
+    if (end_deg - start_deg) % 360 > 180.0:   # always the minor (fillet) arc
+        start_deg, end_deg = end_deg, start_deg
+    return {
+        "t1": t1, "t2": t2, "center": center, "radius": r,
+        "start_deg": start_deg, "end_deg": end_deg, "tan_len": tan_len,
+    }

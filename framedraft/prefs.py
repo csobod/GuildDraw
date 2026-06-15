@@ -43,6 +43,8 @@ DEFAULTS: dict = {
         "spline":       True,
         "circle":       True,
         "arc":          True,
+        "arc_sec":      True,
+        "fillet":       True,
         "dim":          True,
         "trim":         True,
         "split_curve":  True,
@@ -71,6 +73,8 @@ DEFAULTS: dict = {
         "spline":       "S",
         "circle":       "C",
         "arc":          "A",
+        "arc_sec":      "",     # no default (A is taken); assign in Settings
+        "fillet":       "F",
         "dim":          "D",
         "trim":         "T",
         "split_curve":  "X",
@@ -79,6 +83,7 @@ DEFAULTS: dict = {
         "text":         "I",
         "snap_node_ep": "E",
         "move_gizmo":   "M",
+        "bookmark":     "Ctrl+B",
     },
 }
 

@@ -294,9 +294,16 @@ class EditTool(QObject):
     def _on_selection(self):
         had_selected = self._selected_dot is not None
         self._remove_all()   # clears _selected_dot
-        for item in self._scene.selectedItems():
-            if isinstance(item, CurveItem):
-                self._add_curve_items(item)
+        # Node/handle editing dots only appear for a SINGLE selected curve.
+        # When several curves are selected (e.g. the final mirror, or any
+        # band-select), showing every curve's nodes lets an accidental drag
+        # grab a node and endpoint-snap it — geometry "snaps around" even
+        # though the user only meant to move the group. A multi-selection
+        # therefore stays rigid (like a group), independent of the snap toggle.
+        curve_items = [it for it in self._scene.selectedItems()
+                       if isinstance(it, CurveItem)]
+        if len(curve_items) == 1:
+            self._add_curve_items(curve_items[0])
         if had_selected:
             self.node_selection_changed.emit(False)
 

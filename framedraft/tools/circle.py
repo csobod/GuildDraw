@@ -71,6 +71,9 @@ class CircleTool(QObject):
         self._layer:       Layer = Layer.OUTLINE
         self._state:       int   = 0        # 0=idle, 1=center placed, 2=arc start placed
         self._center:      tuple | None = None   # (x, y) mm
+        # Start-End-Center arc ("arc_sec") working points.
+        self._sec_start:   tuple | None = None
+        self._sec_end:     tuple | None = None
         self._radius:      float = 0.0
         self._start_angle: float = 0.0
         self._scene  = None
@@ -108,6 +111,8 @@ class CircleTool(QObject):
         self._layer = layer
         self._state = 0
         self._center = None
+        self._sec_start = None
+        self._sec_end   = None
         self._measure_bar   = measure_bar
         self._locked_radius = None
         self._radius_input  = ""
@@ -123,6 +128,10 @@ class CircleTool(QObject):
             self.status_message.emit(
                 "Circle: click to place center  |  Esc to cancel"
             )
+        elif kind == "arc_sec":
+            self.status_message.emit(
+                "Arc (start-end-center): click the start point  |  Esc to cancel"
+            )
         else:
             self.status_message.emit(
                 "Arc: click to place center  |  Esc to cancel"
@@ -132,6 +141,8 @@ class CircleTool(QObject):
         self._clear_preview()
         self._state  = 0
         self._center = None
+        self._sec_start = None
+        self._sec_end   = None
         if self._snap:
             self._snap.hide()
         if self._measure_bar:
@@ -156,6 +167,9 @@ class CircleTool(QObject):
             return False
         if self._snap:
             pos = self._snap.snap(pos, [], self._view, use_snap)
+
+        if self._kind == "arc_sec":
+            return self._handle_press_sec(pos)
 
         if self._state == 0:
             self._center = (pos.x(), pos.y())
@@ -221,6 +235,10 @@ class CircleTool(QObject):
         if self._snap:
             pos = self._snap.snap(pos, [], self._view, use_snap)
         self._last_cursor = pos
+        if self._kind == "arc_sec":
+            if self._sec_start is not None:
+                self._repaint_sec(pos)
+            return
         if self._center is not None:
             self._repaint(pos)
 
@@ -254,6 +272,24 @@ class CircleTool(QObject):
                 if self._locked_radius is not None:
                     self.set_radius_and_advance(self._locked_radius)
                 return True
+
+        if self._kind == "arc_sec" and key == Qt.Key.Key_Escape:
+            if self._sec_end is not None:        # back to picking the end point
+                self._sec_end = None
+                self._state   = 1
+                self._clear_preview()
+                self.status_message.emit(
+                    "Arc (start-end-center): click the end point  |  Esc to cancel")
+            elif self._sec_start is not None:    # back to picking the start
+                self._sec_start = None
+                self._state     = 0
+                self._clear_preview()
+                self.status_message.emit(
+                    "Arc (start-end-center): click the start point  |  Esc to cancel")
+            else:
+                self.status_message.emit("Arc cancelled")
+                self.deactivate()
+            return True
 
         if key == Qt.Key.Key_Escape:
             if self._state == 1 and self._radius_input:
@@ -315,6 +351,99 @@ class CircleTool(QObject):
                 self._measure_bar = None
 
     # ------------------------------------------------------------------
+    # Start-End-Center arc
+    # ------------------------------------------------------------------
+
+    def _handle_press_sec(self, pos: QPointF) -> bool:
+        if self._sec_start is None:
+            self._sec_start = (pos.x(), pos.y())
+            self._state = 1
+            self.status_message.emit(
+                "Arc (start-end-center): click the end point  |  Esc to cancel")
+            return True
+        if self._sec_end is None:
+            self._sec_end = (pos.x(), pos.y())
+            self._state = 2
+            self.status_message.emit(
+                "Arc (start-end-center): click the center "
+                "(snaps to the chord's perpendicular bisector)  |  Esc to cancel")
+            return True
+        # Third click: center.
+        from ..geometry import arc_start_end_center
+        sx, sy = self._sec_start
+        ex, ey = self._sec_end
+        res = arc_start_end_center(sx, sy, ex, ey, pos.x(), pos.y())
+        if res is None:
+            self.status_message.emit(
+                "Arc: degenerate — center too close to the chord; try again")
+            return True
+        cx, cy, r, sa, ea = res
+        if r < self._MIN_RADIUS:
+            self.status_message.emit(
+                f"Arc radius too small (< {self._MIN_RADIUS} mm) — try again")
+            return True
+        self._center = (cx, cy)
+        self._emit_arc(r, sa, ea)
+        return True
+
+    def _repaint_sec(self, cursor: QPointF):
+        self._clear_preview()
+        if not self._scene or self._sec_start is None:
+            return
+        R         = 4
+        dot_pen   = QPen(QColor("#2e8b57"), 1)
+        dot_pen.setCosmetic(True)
+        dot_brush = QBrush(QColor("#ffd580"))
+        ghost_pen = QPen(QColor("#888888"), 0, Qt.PenStyle.DashLine)
+        ghost_pen.setCosmetic(True)
+
+        sx, sy = self._sec_start
+
+        def _dot(x, y):
+            d = self._scene.addEllipse(-R, -R, 2 * R, 2 * R, dot_pen, dot_brush)
+            d.setPos(x, y)
+            d.setFlag(d.GraphicsItemFlag.ItemIgnoresTransformations, True)
+            d.setZValue(101)
+            self._preview.append(d)
+
+        _dot(sx, sy)
+
+        if self._sec_end is None:
+            # Picking the end point: preview the chord.
+            chord = QPainterPath()
+            chord.moveTo(sx, sy)
+            chord.lineTo(cursor.x(), cursor.y())
+            item = self._scene.addPath(chord, ghost_pen)
+            item.setZValue(100)
+            self._preview.append(item)
+            return
+
+        ex, ey = self._sec_end
+        _dot(ex, ey)
+        # Picking the center: preview the resulting arc live.
+        from ..geometry import arc_start_end_center
+        res = arc_start_end_center(sx, sy, ex, ey, cursor.x(), cursor.y())
+        if res is None:
+            return
+        cx, cy, r, sa, ea = res
+        sweep = (ea - sa) % 360
+        if sweep < 0.001:
+            sweep = 360
+        arc_path = QPainterPath()
+        sa_rad = math.radians(sa)
+        arc_path.moveTo(cx + r * math.cos(sa_rad), cy + r * math.sin(sa_rad))
+        arc_path.arcTo(cx - r, cy - r, 2 * r, 2 * r, -sa, -sweep)
+        item = self._scene.addPath(arc_path, ghost_pen)
+        item.setZValue(100)
+        self._preview.append(item)
+        # Center marker.
+        cdot = self._scene.addEllipse(-R, -R, 2 * R, 2 * R, dot_pen, dot_brush)
+        cdot.setPos(cx, cy)
+        cdot.setFlag(cdot.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        cdot.setZValue(101)
+        self._preview.append(cdot)
+
+    # ------------------------------------------------------------------
     # Finish helpers
     # ------------------------------------------------------------------
 
@@ -347,6 +476,8 @@ class CircleTool(QObject):
         self._clear_preview()
         self._state  = 0
         self._center = None
+        self._sec_start = None
+        self._sec_end   = None
         self._scene  = None
         self.curve_added.emit(curve)
 

@@ -14,9 +14,9 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QComboBox, QMessageBox,
     QDialog, QCheckBox, QHBoxLayout, QInputDialog, QListWidget, QListWidgetItem,
     QScrollArea, QTabWidget, QLineEdit, QTreeWidget, QTreeWidgetItem,
-    QColorDialog, QAbstractItemView,
+    QColorDialog, QAbstractItemView, QRubberBand,
 )
-from PySide6.QtCore import Qt, QPointF, QSize, QTimer, Signal
+from PySide6.QtCore import Qt, QPointF, QSize, QTimer, Signal, QRect, QPoint
 from PySide6.QtGui import (
     QAction, QActionGroup, QColor, QBrush, QIcon, QPainter, QPen, QPixmap,
 )
@@ -24,6 +24,7 @@ from PySide6.QtGui import (
 from .canvas.items import CurveItem
 from .canvas.dim import DimItem
 from .canvas.measure_bar import MeasureBar
+from .canvas.readiness_dot import ReadinessDot, readiness_state
 from .canvas.scene import FrameScene, TextItem
 from .canvas.snapping import SnapEngine
 from .calibration import CalibTool
@@ -39,6 +40,7 @@ from .tools.edit import EditTool
 from .tools.dim import DimTool
 from .tools.circle import CircleTool
 from .tools.trim import TrimTool
+from .tools.fillet import FilletTool
 from .tools.split import SplitTool
 from .tools.offset import OffsetTool
 from .tools.point_move import PointMoveTool
@@ -314,6 +316,8 @@ _TOOLBAR_ACTION_DEFS = [
     ("spline",       "Spline",                  True),
     ("circle",       "Circle",                  True),
     ("arc",          "Arc",                     True),
+    ("arc_sec",      "Arc (3-point)",           True),
+    ("fillet",       "Fillet",                  True),
     ("dim",          "Dim",                     True),
     ("trim",         "Trim",                    True),
     ("split_curve",  "Split Curve",             True),
@@ -343,6 +347,8 @@ _HOTKEY_ACTION_DEFS = [
     ("spline",       "Spline tool"),
     ("circle",       "Circle tool"),
     ("arc",          "Arc tool"),
+    ("arc_sec",      "Arc 3-point tool"),
+    ("fillet",       "Fillet tool"),
     ("dim",          "Dim tool"),
     ("trim",         "Trim tool"),
     ("split_curve",  "Split Curve tool"),
@@ -351,6 +357,7 @@ _HOTKEY_ACTION_DEFS = [
     ("text",         "Text tool"),
     ("snap_node_ep", "Snap Node to Endpoint"),
     ("move_gizmo",   "Move gizmo"),
+    ("bookmark",     "Bookmark revision"),
 ]
 
 
@@ -381,6 +388,15 @@ class CanvasView(QGraphicsView):
         self._drag_move_items: list = []   # pre-click selected items captured at press
         self._drag_moving      = False
         self._drag_pre_called  = False
+        # Manual rubber-band selection (plain left-drag). Qt's built-in band is
+        # suppressed once the press lands on an item, which made box-select
+        # impossible over dense geometry; we drive our own band so a drag from
+        # anywhere — empty space or on top of a curve — selects everything it
+        # encloses/crosses.
+        self._rb_origin: QPoint | None = None     # viewport press point
+        self._rb_band:  QRubberBand | None = None
+        self._rb_press_item = None                # CurveItem under press (click-select)
+        self._rb_dragging   = False
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
@@ -463,6 +479,32 @@ class CanvasView(QGraphicsView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._reposition_measure_bar()
+        self._ensure_scroll_room()
+
+    def _ensure_scroll_room(self):
+        """Grow this view's sceneRect so panning always reaches the geometry.
+
+        The FrameScene pins its own sceneRect to the face image / default
+        extents; left alone, the scrollbars clamp to that rect and you can't
+        pan out to geometry drawn beyond it once zoomed in (and AnchorUnderMouse
+        zoom drifts off the cursor when it hits that clamp). We give the *view*
+        a generous sceneRect = (content ∪ visible area ∪ scene rect) padded by
+        one viewport on every side, leaving the scene's own rect untouched for
+        face/PNG/print rendering.
+        """
+        sc = self.scene()
+        if sc is None:
+            return
+        vis = self.mapToScene(self.viewport().rect()).boundingRect()
+        rect = sc.itemsBoundingRect()
+        if rect.isNull():
+            rect = vis
+        else:
+            rect = rect.united(vis)
+        rect = rect.united(sc.sceneRect())
+        # One-viewport pad so the user can always drag a full screen past content.
+        rect.adjust(-vis.width(), -vis.height(), vis.width(), vis.height())
+        self.setSceneRect(rect)
 
     def zoom_by(self, factor: float):
         """Scale the view by *factor*, clamped to [_MIN_ZOOM, _MAX_ZOOM]."""
@@ -474,7 +516,11 @@ class CanvasView(QGraphicsView):
         self.zoom_changed.emit(round(self.transform().m11() * 100))
 
     def wheelEvent(self, event):
+        # Ensure scroll room first so AnchorUnderMouse keeps the point under the
+        # cursor fixed instead of drifting when it would hit the old clamp.
+        self._ensure_scroll_room()
         self.zoom_by(1.15 if event.angleDelta().y() > 0 else 1 / 1.15)
+        self._ensure_scroll_room()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -540,34 +586,43 @@ class CanvasView(QGraphicsView):
                 # DimItems handle their own offset-drag via mousePressEvent/mouseMoveEvent;
                 # intercepting them here would translate the anchor points instead.
                 top_item = self.scene().itemAt(scene_pos, self.transform())
-                if isinstance(top_item, CurveItem):
-                    # Check whether a currently-selected item is anywhere under cursor.
-                    selected_ids = {id(it) for it in self.scene().selectedItems()
-                                    if isinstance(it, (CurveItem, DimItem))}
-                    hit_ids = {id(it) for it in self.items(vp_pos)
-                               if isinstance(it, (CurveItem, DimItem))}
-                    if selected_ids & hit_ids:
-                        # A selected item is under the cursor. Capture the pre-click
-                        # selection now — super() may reselect the topmost item instead.
-                        self._drag_move_items = [
-                            it for it in self.scene().selectedItems()
-                            if isinstance(it, (CurveItem, DimItem))
-                        ]
-                    else:
-                        # Nothing selected under cursor; after super() selects the
-                        # clicked item, _pre_move_selected will use that new selection.
-                        self._drag_move_items = []
-                    self._drag_move_start = scene_pos
-                else:
-                    # NodeDot, HandleDot, gizmo arrow, or empty — don't intercept.
-                    self._drag_move_items = []
-                    self._drag_move_start = None
+                selected_ids = {id(it) for it in self.scene().selectedItems()
+                                if isinstance(it, (CurveItem, DimItem))}
+                hit_ids = {id(it) for it in self.items(vp_pos)
+                           if isinstance(it, (CurveItem, DimItem))}
                 self._drag_moving     = False
                 self._drag_pre_called = False
+                if (isinstance(top_item, CurveItem)
+                        and (selected_ids & hit_ids)):
+                    # Press on an ALREADY-SELECTED item → drag to move it.
+                    # Capture the pre-click selection now — super() may reselect
+                    # only the topmost item otherwise.
+                    self._drag_move_items = [
+                        it for it in self.scene().selectedItems()
+                        if isinstance(it, (CurveItem, DimItem))
+                    ]
+                    self._drag_move_start = scene_pos
+                    super().mousePressEvent(event)
+                elif top_item is None or isinstance(top_item, CurveItem):
+                    # Empty space or an UNSELECTED curve → manual rubber-band
+                    # (drag) or click-select (no drag). We take over selection
+                    # so a box-drag works even when it starts on top of a curve.
+                    self._drag_move_items = []
+                    self._drag_move_start = None
+                    self._rb_origin     = vp_pos
+                    self._rb_press_item = top_item if isinstance(top_item, CurveItem) else None
+                    self._rb_dragging   = False
+                    event.accept()
+                    return
+                else:
+                    # NodeDot, HandleDot, gizmo arrow, DimItem — default handling.
+                    self._drag_move_items = []
+                    self._drag_move_start = None
+                    super().mousePressEvent(event)
             else:
                 self._drag_move_items = []
                 self._drag_move_start = None
-            super().mousePressEvent(event)
+                super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         if self._draw_tool and self._draw_tool.active:
@@ -591,6 +646,7 @@ class CanvasView(QGraphicsView):
         scene_pos = self.mapToScene(event.position().toPoint())
         self._status_bar.showMessage(self._fmt(scene_pos))
         if self._pan_active:
+            self._ensure_scroll_room()   # grow bounds before clamping the pan
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
             self.horizontalScrollBar().setValue(
@@ -609,6 +665,21 @@ class CanvasView(QGraphicsView):
             use_snap  = not (mods & Qt.KeyboardModifier.ControlModifier)
             constrain = bool(mods & Qt.KeyboardModifier.ShiftModifier)
             self._draw_tool.handle_move(scene_pos, use_snap, constrain)
+        elif (self._rb_origin is not None
+                and event.buttons() & Qt.MouseButton.LeftButton):
+            # Manual rubber-band selection in progress.
+            cur = event.position().toPoint()
+            if not self._rb_dragging:
+                if (cur - self._rb_origin).manhattanLength() > 4:
+                    self._rb_dragging = True
+                    if self._rb_band is None:
+                        self._rb_band = QRubberBand(
+                            QRubberBand.Shape.Rectangle, self.viewport())
+            if self._rb_dragging:
+                self._rb_band.setGeometry(
+                    QRect(self._rb_origin, cur).normalized())
+                self._rb_band.show()
+                event.accept()
         else:
             # Drag-to-move selected items
             if (self._drag_move_start is not None
@@ -638,17 +709,56 @@ class CanvasView(QGraphicsView):
             self._pan_active = False
             self.unsetCursor()
             event.accept()
+            return
+        if (self._rb_origin is not None
+                and event.button() == Qt.MouseButton.LeftButton):
+            self._finish_rubber_band()
+            event.accept()
+            return
+        was_moving = self._drag_moving
+        self._drag_move_start = None
+        self._drag_moving     = False
+        self._drag_pre_called = False
+        if was_moving and self._move_end_cb:
+            self._move_end_cb()
+        super().mouseReleaseEvent(event)
+        # Never let a press-time capture leak into a later operation —
+        # stale captures made gizmo/point moves act on the wrong curves.
+        self._drag_move_items = []
+
+    @staticmethod
+    def _rb_selectable(it) -> bool:
+        if not isinstance(it, (CurveItem, DimItem)):
+            return False
+        return bool(it.flags() & it.GraphicsItemFlag.ItemIsSelectable)
+
+    def _finish_rubber_band(self):
+        """Resolve a manual rubber-band press: box-select on drag, click-select
+        (single item, or clear on empty) on a plain click."""
+        dragging   = self._rb_dragging
+        band       = self._rb_band
+        press_item = self._rb_press_item
+        self._rb_origin     = None
+        self._rb_press_item = None
+        self._rb_dragging   = False
+        sc = self.scene()
+        if dragging and band is not None:
+            rect = band.geometry()
+            band.hide()
+            picked = [it for it in self.items(rect) if self._rb_selectable(it)]
+            sc.clearSelection()
+            for it in picked:
+                it.setSelected(True)
+            n = len(picked)
+            self._status_bar.showMessage(
+                f"Box selected {n} item{'s' if n != 1 else ''}")
         else:
-            was_moving = self._drag_moving
-            self._drag_move_start = None
-            self._drag_moving     = False
-            self._drag_pre_called = False
-            if was_moving and self._move_end_cb:
-                self._move_end_cb()
-            super().mouseReleaseEvent(event)
-            # Never let a press-time capture leak into a later operation —
-            # stale captures made gizmo/point moves act on the wrong curves.
-            self._drag_move_items = []
+            if band is not None:
+                band.hide()
+            # Plain click: select the pressed curve, or clear if empty.
+            sc.clearSelection()
+            if press_item is not None and self._rb_selectable(press_item):
+                press_item.setSelected(True)
 
     def keyPressEvent(self, event):
         key = event.key()
@@ -741,6 +851,7 @@ class WorkspaceState:
         self.edit_tool   = EditTool(self.scene, parent_win)
         self.dim_tool    = DimTool(parent_win)
         self.trim_tool   = TrimTool(parent_win)
+        self.fillet_tool = FilletTool(parent_win)
         self.split_tool  = SplitTool(parent_win)
         self.offset_tool     = OffsetTool(parent_win)
         self.point_move_tool = PointMoveTool(parent_win)
@@ -1349,6 +1460,8 @@ class MainWindow(QMainWindow):
     @property
     def _trim_tool(self): return self._active_ws.trim_tool
     @property
+    def _fillet_tool(self): return self._active_ws.fillet_tool
+    @property
     def _split_tool(self): return self._active_ws.split_tool
     @property
     def _offset_tool(self): return self._active_ws.offset_tool
@@ -1407,6 +1520,7 @@ class MainWindow(QMainWindow):
         # ── Global (non-workspace) state ──────────────────────────────────
         self._dark_mode            = self._prefs["dark_mode"]
         self._updating_weight_spin = False
+        self._syncing_selection = False   # guards tree↔canvas selection sync
         self._default_line_weight: float = self._prefs["default_line_weight"]
         self._current_path: str | None = None   # .gdraw file path (or single SVG)
         self._dirty = False                     # unsaved changes (any workspace)
@@ -1423,6 +1537,11 @@ class MainWindow(QMainWindow):
         self._info_label = QLabel()
         self._info_label.setContentsMargins(0, 0, 8, 0)
         self._status.addPermanentWidget(self._info_label)
+        # "Ready for GuildCAM" readiness dot (mirrors GuildCAM's M5.2 traffic
+        # light): green when the active workspace meets the export contract,
+        # amber when it doesn't, grey when there's nothing to hand off.
+        self._readiness_dot = ReadinessDot()
+        self._status.addPermanentWidget(self._readiness_dot)
 
         # ── Phase 14: create per-workspace state containers ───────────────
         # _ws_tab_widget must be created before any proxy property access.
@@ -1459,6 +1578,9 @@ class MainWindow(QMainWindow):
             ws.trim_tool.trim_applied.connect(self._on_trim_applied)
             ws.trim_tool.status_message.connect(self._status.showMessage)
             ws.trim_tool.cancelled.connect(self._on_trim_cancelled)
+            ws.fillet_tool.fillet_applied.connect(self._on_fillet_applied)
+            ws.fillet_tool.status_message.connect(self._status.showMessage)
+            ws.fillet_tool.cancelled.connect(self._on_trim_cancelled)
             ws.split_tool.split_applied.connect(self._on_split_applied)
             ws.split_tool.status_message.connect(self._status.showMessage)
             ws.split_tool.cancelled.connect(self._on_split_cancelled)
@@ -1494,6 +1616,8 @@ class MainWindow(QMainWindow):
             "spline":       self._act_spline.trigger,
             "circle":       self._act_circle.trigger,
             "arc":          self._act_arc.trigger,
+            "arc_sec":      self._act_arc_sec.trigger,
+            "fillet":       self._act_fillet.trigger,
             "dim":          self._act_dim.trigger,
             "trim":         self._act_trim.trigger,
             "split_curve":  self._act_split_curve.trigger,
@@ -1502,6 +1626,7 @@ class MainWindow(QMainWindow):
             "text":         self._act_text.trigger,
             "snap_node_ep": self._snap_selected_node_to_endpoint,
             "move_gizmo":   self._toggle_move_gizmo,
+            "bookmark":     self._add_bookmark,
         }
         self._apply_toolbar_visibility(self._toolbar_prefs)
         self._apply_hotkeys(self._hotkey_prefs)
@@ -1716,6 +1841,16 @@ class MainWindow(QMainWindow):
         self._act_arc.setToolTip(
             "Arc: click center, click start point (sets radius), click end point.\n"
             "Arc sweeps clockwise from start to end.")
+        self._act_arc_sec = QAction("Arc\n3-pt", self, checkable=True)
+        self._act_arc_sec.setToolTip(
+            "Arc (start-end-center): click the start point, the end point, then\n"
+            "the center. The center snaps to the chord's perpendicular bisector\n"
+            "for a true circular arc; place it on either side to flip the bulge.")
+        self._act_fillet = QAction("Fillet", self, checkable=True)
+        self._act_fillet.setToolTip(
+            "Fillet: click two connected lines, then type a radius (mm) + Enter\n"
+            "to round the corner with a tangent arc (legs trimmed to the tangents).\n"
+            "Esc to exit.")
         self._act_dim    = QAction("Dim",    self, checkable=True)
         self._act_dim.setToolTip(
             "Dim: click two points to place a dimension annotation (mm).\n"
@@ -1763,6 +1898,8 @@ class MainWindow(QMainWindow):
         self._act_spline.triggered.connect(self._set_tool_spline)
         self._act_circle.triggered.connect(self._set_tool_circle)
         self._act_arc.triggered.connect(self._set_tool_arc)
+        self._act_arc_sec.triggered.connect(self._set_tool_arc_sec)
+        self._act_fillet.triggered.connect(self._set_tool_fillet)
         self._act_dim.triggered.connect(self._set_tool_dim)
         self._act_trim.triggered.connect(self._set_tool_trim)
         self._act_split_curve.triggered.connect(self._set_tool_split_curve)
@@ -1771,7 +1908,8 @@ class MainWindow(QMainWindow):
         self._act_text.triggered.connect(self._set_tool_text)
 
         for act in (self._act_select, self._act_line, self._act_spline,
-                    self._act_circle, self._act_arc, self._act_dim,
+                    self._act_circle, self._act_arc, self._act_arc_sec,
+                    self._act_fillet, self._act_dim,
                     self._act_text,
                     self._act_trim, self._act_split_curve, self._act_offset,
                     self._act_point_move):
@@ -1895,6 +2033,8 @@ class MainWindow(QMainWindow):
             "spline":       self._act_spline,
             "circle":       self._act_circle,
             "arc":          self._act_arc,
+            "arc_sec":      self._act_arc_sec,
+            "fillet":       self._act_fillet,
             "dim":          self._act_dim,
             "trim":         self._act_trim,
             "split_curve":  self._act_split_curve,
@@ -1983,6 +2123,8 @@ class MainWindow(QMainWindow):
             "Right-click for: select all on layer, move selection to layer."
         )
         self._layer_tree.itemClicked.connect(self._on_layer_tree_clicked)
+        self._layer_tree.itemSelectionChanged.connect(
+            self._on_layer_tree_selection_changed)
         self._layer_tree.curves_dropped.connect(self._on_layer_tree_drop)
         self._layer_tree.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu)
@@ -2451,6 +2593,7 @@ class MainWindow(QMainWindow):
     def _do_layer_panel_refresh(self):
         self._layer_refresh_pending = False
         self._refresh_layer_panel()
+        self._update_readiness()
 
     @staticmethod
     def _curve_label(c: Curve) -> str:
@@ -2555,17 +2698,49 @@ class MainWindow(QMainWindow):
             else:
                 self._set_active_layer(layer)
             return
-        # Object row: select the curve on canvas
-        ci = self.scene._curve_items.get(payload)
-        if ci is None:
+        # Object rows: canvas selection is driven by the tree's own selection
+        # (see _on_layer_tree_selection_changed), so a Ctrl/Shift multi-row
+        # pick selects all those curves on canvas — across layers — which is
+        # what Join / Mirror need.
+
+    def _on_layer_tree_selection_changed(self):
+        """Mirror the tree's selected object rows onto the canvas selection.
+
+        Lets the maker multi-select curves in the panel (Ctrl/Shift) across
+        different layers and then Join/Mirror them. The `_syncing_selection`
+        guard stops this from fighting the canvas→tree row sync in
+        `_on_selection_changed`. Scene signals are deliberately NOT blocked:
+        each setSelected must reach EditTool (so node dots update) and the view
+        (so the selection highlight repaints) — blocking them was why only a
+        stale single curve appeared highlighted."""
+        if self._syncing_selection:
             return
-        layer = ci.curve.layer
-        if not self.scene.is_layer_visible(layer) or self.scene.is_layer_locked(layer):
+        ids = []
+        for it in self._layer_tree.selectedItems():
+            data = it.data(0, Qt.ItemDataRole.UserRole)
+            if data and data[0] == "curve":
+                ids.append(data[1])
+        if not ids:
+            return   # a layer row (or nothing) selected — leave canvas as-is
+        self._syncing_selection = True
+        skipped = False
+        try:
+            self.scene.clearSelection()
+            for cid in ids:
+                ci = self.scene._curve_items.get(cid)
+                if ci is None:
+                    continue
+                lyr = ci.curve.layer
+                if (self.scene.is_layer_visible(lyr)
+                        and not self.scene.is_layer_locked(lyr)):
+                    ci.setSelected(True)
+                else:
+                    skipped = True
+        finally:
+            self._syncing_selection = False
+        if skipped:
             self._status.showMessage(
-                f"{layer.value} is hidden or locked — cannot select")
-            return
-        self.scene.clearSelection()
-        ci.setSelected(True)
+                "Some rows are on hidden/locked layers — not selected")
 
     def _on_layer_tree_menu(self, pos):
         from PySide6.QtWidgets import QMenu
@@ -2643,6 +2818,18 @@ class MainWindow(QMainWindow):
         layer = self._active_ws.active_layer.value
         zoom  = round(self.view.transform().m11() * 100)
         self._info_label.setText(f"{layer}  |  {zoom}%")
+        self._update_readiness()
+
+    def _update_readiness(self):
+        """Recompute the 'Ready for GuildCAM' dot for the active workspace."""
+        dot = getattr(self, "_readiness_dot", None)
+        if dot is None:
+            return
+        ws = self._active_ws
+        mirror_on = bool(ws.scene.mirror and ws.scene.mirror.enabled)
+        state, tip = readiness_state(ws.doc_curves, mirror_on, ws.workspace_type)
+        dot.set_dark_mode(self._dark_mode)
+        dot.set_readiness(state, tip)
 
     # ------------------------------------------------------------------
     # Workspace tab switching (Phase 14)
@@ -3062,10 +3249,12 @@ class MainWindow(QMainWindow):
                 it.setSelected(True)
             self.scene.blockSignals(False)
 
-        # Rebuild edit handles for the (now-selected) moved curves.
+        # Rebuild edit handles only for a single moved curve — a multi-curve
+        # selection stays rigid (no node dots), matching EditTool._on_selection
+        # so a follow-up drag can't grab and endpoint-snap a node.
         self._edit_tool.clear()
-        for it in moved_items:
-            self._edit_tool._add_curve_items(it)
+        if len(moved_items) == 1:
+            self._edit_tool._add_curve_items(moved_items[0])
 
         self._drag_moving_curves = []
         self._drag_moving_dims   = []
@@ -3193,6 +3382,8 @@ class MainWindow(QMainWindow):
             (self._act_spline,       "tool-spline"),
             (self._act_circle,       "tool-circle"),
             (self._act_arc,          "tool-arc"),
+            (self._act_arc_sec,      "tool-arc-sec"),
+            (self._act_fillet,       "op-fillet"),
             (self._act_dim,          "tool-dim"),
             (self._act_mirror,       "toggle-mirror"),
             (self._act_guides,       "toggle-guides"),
@@ -3316,6 +3507,7 @@ class MainWindow(QMainWindow):
     def _deactivate_cursor_tools(self):
         """Deactivate trim/split/offset/point-move tools and clear their state."""
         self._trim_tool.deactivate()
+        self._fillet_tool.deactivate()
         self._split_tool.deactivate()
         self._offset_tool.deactivate()
         self._point_move_tool.deactivate()
@@ -3376,6 +3568,19 @@ class MainWindow(QMainWindow):
                                    all_curves=self._doc_curves,
                                    measure_bar=self.view.measure_bar)
         self.view.set_draw_tool(self._circle_tool)
+
+    def _set_tool_arc_sec(self):
+        self._teardown_tools(clear_selection=True)
+        self._circle_tool.activate("arc_sec", self._current_layer(), self.scene,
+                                   self.view, snap=self._snap,
+                                   all_curves=self._doc_curves,
+                                   measure_bar=self.view.measure_bar)
+        self.view.set_draw_tool(self._circle_tool)
+
+    def _set_tool_fillet(self):
+        self._teardown_tools(clear_selection=True)
+        self._fillet_tool.activate(self.scene, self.view, lambda: self._doc_curves)
+        self.view.set_draw_tool(self._fillet_tool)
 
     def _set_tool_dim(self):
         self._teardown_tools(clear_selection=True)
@@ -3452,6 +3657,15 @@ class MainWindow(QMainWindow):
         self.scene.clearSelection()
         self._active_ws.remove_curve(original)
         for c in parts:
+            self._active_ws.add_curve(c)
+
+    def _on_fillet_applied(self, line1, line2, new_curves: list):
+        self._push_undo_snapshot()
+        self._edit_tool.clear()
+        self.scene.clearSelection()
+        self._active_ws.remove_curve(line1)
+        self._active_ws.remove_curve(line2)
+        for c in new_curves:
             self._active_ws.add_curve(c)
 
     def _on_trim_cancelled(self):
@@ -3568,6 +3782,7 @@ class MainWindow(QMainWindow):
         self._snap.set_mirror(axis_x, on, horizontal=horizontal)
         self._boxing_guide.set_mirror(on)
         self._boxing_guide.set_axis_x(axis_x)
+        self._update_readiness()   # mirror doubling changes LENS/OUTLINE counts
 
     def _on_curve_added(self, curve):
         curve.line_weight = self._default_line_weight
@@ -3600,6 +3815,8 @@ class MainWindow(QMainWindow):
         for it in to_add:
             it.setSelected(True)
         self.scene.blockSignals(False)
+        # Repaint: blocked signals suppressed the view's selection-highlight update.
+        self.view.viewport().update()
 
     def _on_selection_changed(self):
         """Reflect the selected curve's layer and weight in the UI (Select mode)."""
@@ -3614,9 +3831,15 @@ class MainWindow(QMainWindow):
             if sel_layer is not self._active_ws.active_layer:
                 self._active_ws.active_layer = sel_layer
                 self._sync_layer_panel_active()
-            row = getattr(self, "_layer_tree_rows", {}).get(id(selected[0].curve))
-            if row is not None:
-                self._layer_tree.setCurrentItem(row)
+            # Reflect a single canvas selection in the tree's current row, but
+            # NOT while we're syncing FROM the tree (that would clear the user's
+            # multi-row pick mid-loop).
+            if not self._syncing_selection:
+                row = getattr(self, "_layer_tree_rows", {}).get(id(selected[0].curve))
+                if row is not None:
+                    self._syncing_selection = True
+                    self._layer_tree.setCurrentItem(row)
+                    self._syncing_selection = False
             self._updating_weight_spin = True
             self._weight_spin.setValue(selected[0].curve.line_weight)
             self._updating_weight_spin = False
@@ -4164,7 +4387,31 @@ class MainWindow(QMainWindow):
             self._status.showMessage("Join: select 2 or more curves first")
             return
 
-        curves = [item.curve for item in selected_items]
+        # The original curves are what we remove from the document at the end.
+        originals = [item.curve for item in selected_items]
+
+        # Arcs store only their centre node, so their endpoints can't be read
+        # from nodes[0]/nodes[-1] — convert them to splines (with real endpoint
+        # nodes) before chaining. Closed circles have no endpoints to join to,
+        # so they're dropped from the join with a note.
+        curves = []
+        skipped_circles = 0
+        for c in originals:
+            if c.kind == "arc":
+                curves.append(arc_to_spline(c))
+            elif c.kind == "circle":
+                skipped_circles += 1
+            else:
+                curves.append(c)
+
+        if len(curves) < 2:
+            if skipped_circles:
+                self._status.showMessage(
+                    "Join: circles have no endpoints — trim/split a circle to an "
+                    "arc first, then join. Need 2+ joinable curves.")
+            else:
+                self._status.showMessage("Join: select 2 or more joinable curves")
+            return
 
         def ep_dist(a, b):
             return math.hypot(a.x - b.x, a.y - b.y)
@@ -4258,13 +4505,15 @@ class MainWindow(QMainWindow):
         )
 
         self.scene.clearSelection()
-        for c in curves:
+        for c in originals:
             self._active_ws.remove_curve(c)
 
         item = self._active_ws.add_curve(new_curve)
         item.setSelected(True)
+        note = (f"  ({skipped_circles} circle(s) skipped)"
+                if skipped_circles else "")
         self._status.showMessage(
-            f"Joined {len(curves)} curves → "
+            f"Joined {len(curves)} curves{note} → "
             f"{'closed' if is_closed else 'open'} {result_kind} "
             f"({len(result_nodes)} nodes)"
         )
@@ -5721,6 +5970,7 @@ class MainWindow(QMainWindow):
             ws.edit_tool.refresh_theme()
         self._apply_toolbar_icons(dark)
         self._refresh_layer_panel()   # eye/padlock icons are theme-colored
+        self._update_readiness()      # dot colours are theme-aware
         self._save_prefs()
 
     # ------------------------------------------------------------------

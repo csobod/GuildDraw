@@ -34,6 +34,10 @@ def _node_fill() -> QColor:
 def _node_hover() -> QColor:
     return QColor("#4aca7a") if _DARK else QColor("#2e8b57")
 
+def _selection_halo_color() -> QColor:
+    # Bright, semi-transparent amber glow drawn behind a selected curve.
+    return QColor(255, 170, 60, 150) if _DARK else QColor(255, 140, 0, 130)
+
 
 # ---------- per-layer pen factory ----------
 # All pens are cosmetic (constant screen width regardless of zoom).
@@ -161,16 +165,23 @@ class CurveItem(QGraphicsPathItem):
         return stroker.createStroke(self.path())
 
     def paint(self, painter, option, widget=None):
+        selected = bool(option.state & option.state.State_Selected)
+        # Prominent selection feedback: a wide, semi-transparent highlight
+        # halo drawn UNDER the normal stroke, so every selected curve is
+        # obviously highlighted whether one or many are picked (node-editing
+        # dots only appear for a single selection, so the halo is the primary
+        # multi-select cue).
+        if selected:
+            halo = QPen(_selection_halo_color(), self.curve.line_weight + 3.0)
+            halo.setCosmetic(True)
+            halo.setCapStyle(Qt.PenCapStyle.RoundCap)
+            halo.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(halo)
+            painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            painter.drawPath(self.path())
         plain = QStyleOptionGraphicsItem(option)
         plain.state &= ~plain.state.State_Selected
         super().paint(painter, plain, widget)
-        if option.state & option.state.State_Selected:
-            sel_pen = QPen(_handle_color(), 0)
-            sel_pen.setCosmetic(True)
-            sel_pen.setStyle(Qt.PenStyle.DotLine)
-            painter.setPen(sel_pen)
-            painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-            painter.drawPath(self.path())
 
 
 # ---------- NodeDot ----------

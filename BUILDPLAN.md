@@ -12,7 +12,7 @@ and export clean DXF for GuildCAM — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-11, v1.0.0-rc1b — M1–M8 complete; M9 software side done, release candidate cut + rc1b drag-and-drop layer fix; 1.0 gated on GuildCAM hardware round-trip)*
+## Status snapshot *(2026-06-15, v1.0.0-rc1c — M1–M8 complete; M9 software side done; rc1c adds the "Ready for GuildCAM" readiness dot, a drafting round (zoom/pan-to-edge, box/Ctrl/tree multi-select with amber highlight halo, arc-to-line join, Start-End-Center arc + Fillet tools, Ctrl+B bookmark), and SVG-import/BRIDGE-layer proposals; 1.0 still gated on GuildCAM hardware round-trip)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -408,6 +408,62 @@ and aren't copied by Ctrl+C/V — revisit on demand.
    emitted `selectionChanged` into live slots — `closeEvent` now severs those
    connections) and the `QFont::setPointSize(-1)` warning from dim-label
    painting. Version stamped `1.0.0-rc1b`.
+7. ✅ **rc1c — "Ready for GuildCAM" readiness indicator + drafting round**
+   *(2026-06-15)*. Shipped the readiness dot plus a maker-reported drafting
+   batch:
+   - **Readiness dot** — `framedraft/canvas/readiness_dot.py`: a status-bar
+     traffic light (grey/amber/green) driven by `readiness_state()`, which
+     reuses the export validator (`export/validate.py`) so the dot and the
+     export gate never disagree. Per-workspace, dark-mode aware, non-blocking;
+     tooltip names the gap. Tests in `tests/test_readiness.py`. *(The SCULPT
+     section-cut check stays as a validator extension for when GuildCAM's zone
+     partition lands; the dot picks it up automatically once `validate()`
+     enforces it.)*
+   - **Zoom/pan** — the view now manages its own generous sceneRect
+     (`CanvasView._ensure_scroll_room`), so panning reaches geometry drawn
+     beyond the face/default extents and `AnchorUnderMouse` scroll-zoom stays
+     under the cursor instead of drifting at the old clamp.
+   - **Group selection stays rigid** — `EditTool` only shows node/handle dots
+     for a *single* selected curve; multi-selects (e.g. the final mirror) no
+     longer let a stray drag grab + endpoint-snap a node.
+   - **Multi-select overhaul** (maker follow-up) — drag-to-move now only fires
+     when the press lands on an *already-selected* item; a plain left-drag from
+     empty space or on an unselected curve drives a manual `QRubberBand`
+     box-select (`CanvasView._finish_rubber_band`) that works even over dense
+     geometry. Layer-panel rows drive canvas selection across layers
+     (`_on_layer_tree_selection_changed`); the earlier signal-blocking there
+     starved `EditTool`/repaint and left only a stale single curve highlighted —
+     fixed. Selected curves now draw a thin amber **highlight halo**
+     (`CurveItem.paint`, width `line_weight+3`) so any number of selected curves
+     read clearly without relying on node dots.
+   - **Join arcs to lines** — `_join_selected_curves` converts arcs to splines
+     (real endpoints) before chaining; closed circles are skipped with a note.
+   - **New tools** — Start-End-Center arc (`CircleTool` "arc_sec" mode; centre
+     snaps to the chord bisector for a true circular arc) and a Fillet tool
+     (`tools/fillet.py`; tangent arc via `geometry.fillet_lines`, legs trimmed).
+   - **Bookmark hotkey** — Ctrl+B → "Bookmark Current State…" (remappable in
+     Settings).
+   - Tests: `test_arc_fillet.py`, `test_join.py`, `test_trim.py` (arc/circle
+     trim reliability confirmed — no fix needed), `test_readiness.py`.
+   - Two future-RC features researched and specced (no code): SVG import and a
+     BRIDGE layer — see *Post-rc1c feature proposals*.
+
+   *Original spec:* The downstream tool (GuildCAM) is gaining a subtle corner
+   traffic-light that tells the maker how close a job is to being machinable
+   (M5.2 in GuildCAM's BUILDPLAN: DXF → 3D model → G-code). We want the
+   **upstream mirror**: a small, subtle status dot in GuildDraw that, at a
+   glance, says whether the *current drawing* satisfies the GuildCAM export
+   contract (§2) before the maker exports — green when ready to hand off, amber
+   when the design is incomplete for the castle workflow, with the gap named in
+   the tooltip. It reuses the checks GuildDraw **already performs** (the handoff
+   validator): OUTLINE present + closed; LENS closed (2, or the resolved
+   asymmetric case); SCULPT section cuts present (needed for GuildCAM's zone
+   partition — their absence is the common "why won't it build the castle?"
+   trap); HINGE optional; closure within tolerance; units mm. Surface it as a
+   non-blocking indicator (export still works; this only *warns*), tooltip e.g.
+   *"Ready for GuildCAM"* / *"Missing SCULPT section cuts — GuildCAM can't
+   partition zones"*. Keeps the two apps symmetric: GuildDraw answers "is this
+   design ready to send?", GuildCAM answers "is this job ready to cut?".
 
 ### 1.0 release criteria (definition of done)
 
@@ -476,11 +532,95 @@ items need a maker-demand signal first.
 
 ## Parking lot (needs demand signal)
 
-- BRIDGE layer tooling (GuildCAM angled bridge cutaway — enum already reserved)
+- ~~BRIDGE layer tooling~~ — promoted to a proposal (see *Post-rc1c proposals*).
 - Grid + grid snap (mm grid; makers may prefer guides-only)
 - Multi-document / multiple `.gdraw` projects open at once
 - macOS signing + notarization (archive §11)
 - Localization
+
+---
+
+# Post-rc1c feature proposals (research)
+
+> **2026-06-15.** Two candidates investigated for the *next* release candidate
+> (rc1d or 1.x). **Research/spec only — no code yet.** Both extend the
+> GuildDraw → GuildCAM handoff: SVG import widens what a maker can bring *in*;
+> the BRIDGE layer adds geometry GuildCAM machines.
+
+## Proposal A — Import external SVG (trace/reuse existing frames)
+
+**Why.** Makers and opticians often start from an existing vector (a logo, a
+scanned frame traced in Illustrator/Inkscape, a customer file). Today the only
+SVG path is GuildDraw's *native* round-trip (`export/svg.py`), which assumes
+GuildDraw's own attributes; it is **not** a general importer. This closes the
+Tier-B "DXF/vector import" gap for the common SVG case.
+
+**Approach.**
+- New Qt-free module `framedraft/export/svg_import.py` (sibling to `oma.py`),
+  `import_svg(text|path, scale) -> list[Curve]`. Parse with a dependency we can
+  vendor cleanly — `svgpathtools` (MIT) or `svgelements` — to get each `<path>`
+  as a sequence of `Line`/`CubicBezier`/`QuadraticBezier`/`Arc` segments
+  already flattened through the element's transform stack. Quadratics elevate
+  to cubics; SVG elliptical-arc segments convert via the existing
+  `arc_to_spline`-style sampling (or `circle_to_spline` for full circles).
+- **Curve mapping.** Contiguous Béziers → one `spline` Curve (reuse
+  `compute_catmull_handles` only where we *generate* handles; imported handles
+  are kept verbatim as `cp_in`/`cp_out`). Straight runs → `line` Curves.
+  `closePath`/`Z` → `closed=True`.
+- **Units & scale.** SVG user units are not mm. Read `width`/`height` +
+  `viewBox` to derive a unit→mm factor when the document declares physical
+  units; otherwise show a small **Import SVG** dialog (target layer + "1 user
+  unit = N mm" or "scale longest side to N mm"). Default target layer = **REF**
+  (non-machined, safe), with a dropdown to pick LENS/OUTLINE.
+- **Y-axis.** SVG is Y-down like the scene — no flip needed (unlike DXF).
+- **UI.** File → Import → SVG…; lands selected + grouped + undo-safe (mirror the
+  OMA import wiring in `app.py`).
+
+**Known gaps (call out, defer).** `<text>` (needs the M8 textpath outliner or
+skip), nested `<use>`/symbols, gradients/strokes/clip-paths (ignored — geometry
+only), percentage/`em` units. Ship path/rect/circle/ellipse/polyline/polygon
+first.
+
+**Test plan.** Golden-file parse (a known multi-subpath SVG), unit-scale cases,
+closed-vs-open, transform flattening, and a curve-fidelity round-trip
+(import → native export → re-import) within tolerance.
+
+## Proposal B — BRIDGE layer (tapered-chamfer bridge path → GuildCAM)
+
+**Why.** `Layer.BRIDGE` is already reserved in the export contract (§2) and the
+enum (`document.py`). GuildCAM machines a bridge cutaway; GuildDraw should let
+the maker *draw the path of a tapered chamfer along the bridge line* and hand it
+off, rather than describing the bridge only by the forming-spin metadata
+(`FormingMetadata.bridge_angle_deg`). This is the "castle towers/bridge"
+geometry in the shared design ethos.
+
+**Semantics.** A BRIDGE object is a **centerline** (open spline/line across the
+bridge between the two eyewires) plus **taper parameters**: chamfer width at
+each end and depth/angle. It is drawn in a distinct **pink** stroke
+(`#ff69b4` / "hotpink") so it never reads as OUTLINE/LENS, and it is a Frame
+Front layer only.
+
+**Data model.** Reuse `Curve(layer=Layer.BRIDGE, kind="spline"|"line")` for the
+centerline; carry taper params either on a small `MachinedBridge`-style sidecar
+(the dataclass already exists in `document.py`) keyed to the curve, or as new
+optional `Curve` fields persisted under a `"bridge"` key in SVG/.gdraw (follow
+the `"texts"`/`"fill"` precedent from M8). Add BRIDGE to `WORKSPACE_LAYERS`
+["front"] and to the Layers-panel layer set; pink swatch in the panel.
+
+**UI.** A "Bridge" tool (or a layer-aware draw mode) to place the centerline,
+with width/depth spinboxes in the Properties panel. Display the chamfer envelope
+as a translucent pink ribbon (offset the centerline by ±width via the existing
+`offset_curve`) so the maker sees the cut footprint.
+
+**Export.** Emit the centerline (and, if GuildCAM wants the envelope, the offset
+edges) on the DXF **BRIDGE** layer — already a machined layer in the contract
+(§2), so no contract change. Confirm with GuildCAM whether it wants the
+centerline + params or the pre-offset envelope during the round-trip.
+
+**Validator.** BRIDGE is optional; when present, require an open centerline with
+≥2 nodes and positive taper width (extend `export/validate.py`). The readiness
+dot already reflects validator output, so BRIDGE gaps would surface there for
+free.
 
 ---
 
