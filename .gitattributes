@@ -1,0 +1,21 @@
+# Normalize all text files to LF in the repository and on checkout, on every
+# platform. This ends the "LF will be replaced by CRLF" churn that Git for
+# Windows' autocrlf otherwise produces, and keeps diffs identical for Windows
+# and Linux contributors. PowerShell and Inno Setup both run LF-terminated
+# files fine, so no per-script CRLF override is needed.
+* text=auto eol=lf
+
+# Treat known binary assets as binary: never line-ending-normalize or try to
+# diff them as text.
+*.ico   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.zip   binary
+*.gdraw binary
+*.exe   binary
+*.dll   binary
+
+# Mark generated/vendored content so GitHub's language stats and diffs behave.
+docs/BUILDPLAN-v0.9-archive.md linguist-documentation
