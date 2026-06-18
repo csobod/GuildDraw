@@ -16,6 +16,7 @@ geometry coordinates, which are already in mm.
 """
 
 import json
+import os
 from xml.etree import ElementTree as ET
 
 from PySide6.QtGui import QPainterPath
@@ -212,6 +213,48 @@ def save_svg(
 
 # ---------- load ----------
 
+# No legitimate GuildDraw SVG comes anywhere near this; the cap keeps a hostile
+# multi-gigabyte file from being read into memory just to be rejected below.
+_MAX_SVG_BYTES = 64 * 1024 * 1024   # 64 MB
+
+
+def _read_checked_svg(path: str) -> bytes:
+    """Read an SVG file, refusing inputs that could be used for a parser DoS.
+
+    GuildDraw opens .svg/.gdraw files that are freely shared between makers, so
+    they are untrusted input. Python's stdlib ``xml.etree.ElementTree`` expands
+    internal entities, which makes it vulnerable to the "billion laughs" /
+    quadratic-blowup attack (a few hundred bytes inflating to gigabytes in
+    memory). We never want a third-party parser here (defusedxml) — the bundle
+    is deliberately minimal — so we close the hole with a dependency-free guard:
+
+      * cap the on-disk size (no legitimate GuildDraw file is this large), and
+      * reject any DTD/entity declaration. GuildDraw-native SVGs never declare a
+        DOCTYPE or ENTITY, and ``load_svg`` only accepts GuildDraw-native files
+        (it requires the metadata block), so this rejects nothing valid.
+
+    ElementTree does not resolve *external* entities, so entity-expansion is the
+    only vector and the DOCTYPE/ENTITY scan fully covers it.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError as exc:
+        raise ValueError(str(exc)) from exc
+    if size > _MAX_SVG_BYTES:
+        raise ValueError(
+            f"Refusing to open: file is {size / 1_048_576:.0f} MB, larger than "
+            f"the {_MAX_SVG_BYTES // 1_048_576} MB limit for a GuildDraw SVG.")
+    with open(path, "rb") as f:
+        data = f.read()
+    upper = data.upper()
+    if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
+        raise ValueError(
+            "Refusing to open: the file declares an XML DTD or entities, which "
+            "GuildDraw never writes and which can be abused for a "
+            "denial-of-service (entity-expansion) attack.")
+    return data
+
+
 def _curve_from_dict(d: dict) -> Curve:
     nodes = []
     for nd in d["nodes"]:
@@ -266,8 +309,7 @@ def load_svg(path: str) -> dict:
     Return a dict with keys: curves, calibration, mirror, forming,
     machined_bridge, face_image.  Raises on parse error.
     """
-    tree = ET.parse(path)
-    root = tree.getroot()
+    root = ET.fromstring(_read_checked_svg(path))
 
     meta_el = root.find(f"{{{_NS}}}metadata")
     if meta_el is None or not meta_el.text:

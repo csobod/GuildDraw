@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- GuildDraw app icon: drafted eyewear front.
+       Dark charcoal rounded-square plate (matches the app's dark theme),
+       amber spectacles outline (#ffd580 brand accent), with small node
+       dots that echo the spline-editing nature of the tool. -->
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2b2b"/>
+      <stop offset="1" stop-color="#161616"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#plate)"/>
+  <rect x="8.5" y="8.5" width="239" height="239" rx="51.5" fill="none"
+        stroke="#ffd580" stroke-opacity="0.18" stroke-width="1"/>
+
+  <g fill="none" stroke="#ffd580" stroke-width="11"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- left lens / eyewire -->
+    <rect x="40" y="104" width="68" height="56" rx="18"/>
+    <!-- right lens / eyewire -->
+    <rect x="148" y="104" width="68" height="56" rx="18"/>
+    <!-- bridge over the nose -->
+    <path d="M108 120 Q128 104 148 120"/>
+    <!-- temples / endpieces -->
+    <path d="M40 120 L20 108"/>
+    <path d="M216 120 L236 108"/>
+  </g>
+
+  <!-- editable spline nodes -->
+  <g fill="#ffd580">
+    <circle cx="74" cy="132" r="7"/>
+    <circle cx="182" cy="132" r="7"/>
+  </g>
+</svg>

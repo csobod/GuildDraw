@@ -38,25 +38,84 @@ GuildCAM's redevelopment.
   flattened), strict layer vocabulary, per-workspace validation, and batch
   export of all four workspaces in one go.
 
+## Download
+
+- **Prebuilt Windows builds** (installer, portable exe, and zip) are on the
+  [Releases](../../releases) page and our website — no Python needed.
+- **Build it yourself** on Windows or Linux with the steps below.
+
 ## Install & run (from source)
 
-Requires Python 3.12+ (developed on 3.14) and Windows/macOS/Linux with Qt 6
-support.
+Requires Python 3.12+ (developed on 3.14) and Qt 6 support (Windows, Linux, or
+macOS). Three runtime dependencies: PySide6, ezdxf, shapely.
 
-```
+**Windows** (PowerShell):
+
+```powershell
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt     # PySide6, ezdxf, shapely
+.venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\python main.py
 ```
 
-## Windows build
+**Linux / macOS** (bash):
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python main.py
+```
+
+On a bare Linux box Qt may also need the usual X/XCB system libraries (e.g. on
+Debian/Ubuntu: `sudo apt install libxcb-cursor0 libegl1`).
+
+## Packaging (building executables)
+
+### Windows
+
+One command builds every distribution artifact (gates on the test suite first):
 
 ```
 .venv\Scripts\pip install -r requirements-dev.txt
-.venv\Scripts\python -m PyInstaller framedraft.spec --clean
+powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1
 ```
 
-Output: `dist/GuildDraw/GuildDraw.exe` (one-folder, flat layout).
+It writes three files to `dist\` (version stamped from `framedraft/__version__`):
+
+| Artifact | What it is |
+|---|---|
+| `GuildDraw-<ver>-setup.exe` | **Installer** — per-user (no admin), Start Menu + optional Desktop shortcuts, `.gdraw` file association, Add/Remove Programs uninstaller. Built with [Inno Setup](https://jrsoftware.org/isinfo.php). |
+| `GuildDraw-<ver>.exe` | **Portable** single-file build — double-click to run, nothing to install. |
+| `GuildDraw-<ver>-win64.zip` | **Portable folder** — unzip and run `GuildDraw.exe` (fastest launch). |
+
+The installer step needs Inno Setup (`winget install JRSoftware.InnoSetup`); the
+script warns and skips it if `ISCC.exe` isn't found, still producing the zip and
+portable exe.
+
+Build a single artifact by hand:
+
+```
+.venv\Scripts\python -m PyInstaller framedraft.spec --clean           # one-folder -> dist\GuildDraw\
+.venv\Scripts\python -m PyInstaller framedraft-onefile.spec --clean   # portable  -> dist\GuildDraw.exe
+"%LocalAppData%\Programs\Inno Setup 6\ISCC.exe" installer\GuildDraw.iss
+```
+
+Both specs share their hidden-imports / Qt-excludes / bundled data via
+`build_common.py`. The app icon is rendered from `assets/icon.svg` by
+`scripts/make_icon.py` (run automatically by the release script; the build
+works without it — PyInstaller just falls back to its default icon).
+
+### Linux
+
+PyInstaller is cross-platform; the same one-folder spec produces a native Linux
+binary. There's no `.ico` and no Inno installer — ship the folder (or a tarball):
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m PyInstaller framedraft.spec --clean      # -> dist/GuildDraw/GuildDraw
+```
+
+Build on the oldest Linux/glibc you intend to support, since PyInstaller bundles
+against the host's system libraries.
 
 ## Tests
 
@@ -75,6 +134,14 @@ Output: `dist/GuildDraw/GuildDraw.exe` (one-folder, flat layout).
 - DXF R2000 (AC1015), SPLINE entities — exact cubic Bézier → B-spline.
 - Units: true mm at 1:1 (`$INSUNITS = 4` by convention).
 - Closed contours: endpoints within 0.1 mm auto-close.
-- Strict layers: `OUTLINE` ×1, `LENS` ×2, `BRIDGE`/`HINGE` optional, `REF`
-  ignored, `SCULPT` (back-surface), `ENGRAVING` (temples).
+- Strict layers: `OUTLINE` ×1, `LENS` ≥1 (at least one lens is required; a
+  classic pair is two, but aviators and other shapes may carry more),
+  `BRIDGE`/`HINGE` optional, `REF` ignored, `SCULPT` (back-surface),
+  `ENGRAVING` (temples).
 - Scene is Y-down; DXF is Y-up — Y is negated on export.
+
+## License
+
+GuildDraw is free software, released under the **GNU General Public License,
+version 3.0** — see [LICENSE](LICENSE) for the full text. A production of the
+Guild of American Spectacle Makers.

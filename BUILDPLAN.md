@@ -63,8 +63,11 @@ editing, anything not related to eyewear drafting.
   0.01 mm.
 - **Units: true mm at 1:1.** GuildCAM ignores `$INSUNITS`; we set 4 by convention.
 - **Closed contours**: endpoints within **0.1 mm** auto-close.
-- **Strict layers**: `OUTLINE` ×1, `LENS` ×2, `BRIDGE`/`HINGE` optional (machined),
-  `REF` ignored, `SCULPT` (back-surface), `ENGRAVING` (temples).
+- **Strict layers**: `OUTLINE` ×1, `LENS` ≥1 (*2026-06-17:* at least one lens
+  required — the classic pair is two, but aviators and similar carry more, so
+  the validator now accepts any positive count rather than exactly two),
+  `BRIDGE`/`HINGE` optional (machined), `REF` ignored, `SCULPT` (back-surface),
+  `ENGRAVING` (temples).
 - **Y-axis**: scene is Y-down; DXF is Y-up — negate Y, swap+negate arc angles.
 - Full details and resolved Q&A: archive §4, §13.
 
@@ -479,6 +482,88 @@ and aren't copied by Ctrl+C/V — revisit on demand.
       a real tracer file should be confirmed when one is available)*
 - [x] Repository under git with tagged releases
 - [x] Packaged Windows build + written user guide
+
+---
+
+# Security hardening
+
+> **2026-06-17.** Prompted by makers relaying that their IT/AV tools flag "funny
+> background stuff" from GuildDraw. A full source audit (every module under
+> `framedraft/`, both specs, the installer, and the build scripts) found **the
+> application code is clean**: no network/sockets/HTTP, no telemetry or
+> phone-home, no subprocess/shell execution, no dynamic code execution
+> (`eval`/`exec`/`pickle`/`marshal`), no registry writes, and no persistence
+> (no Run keys, services, or scheduled tasks). The bundle even *excludes*
+> `QtNetwork`/`QtWebEngine*`/`QtWebSockets` ([build_common.py](build_common.py)).
+> The app writes only to `~/.guilddraw/` (prefs, autosave, hinge library) and
+> short-lived temp files. The Inno Setup installer is per-user, HKCU-only, and
+> touches the registry solely for the optional `.gdraw` association.
+>
+> The AV reports are therefore **packaging behavior, not malware**. Logged here
+> so the finding (and the accepted risks) survive into 1.x.
+
+### Root cause of the AV/EDR reports (ranked)
+
+1. **One-file portable `.exe` self-extracts to `%TEMP%` on every launch**
+   (PyInstaller onefile, [framedraft-onefile.spec](framedraft-onefile.spec)) —
+   drops DLLs into temp, loads code from temp, self-deletes. Textbook-suspicious
+   to behavioral engines. **Accepted as noisy** (see below).
+2. **UPX compression** trips signature + heuristic AV on sight and flags the
+   runtime self-decompression. — ✅ **fixed** (below).
+3. **Unsigned binaries** → SmartScreen "unknown publisher" + low-reputation AV
+   verdicts, compounding #1/#2. **Accepted** (no code-signing budget).
+
+### Decisions & status
+
+1. ✅ **`upx=False` in both specs** *(2026-06-17)* — removed the UPX packing
+   layer ([framedraft.spec](framedraft.spec) EXE + COLLECT,
+   [framedraft-onefile.spec](framedraft-onefile.spec)). Costs some on-disk size;
+   the installer/zip download barely changes because Inno's `lzma2/max`
+   recompresses anyway. Also removes a class of UPX-on-Qt-DLL corruption bugs.
+   With UPX gone, the **one-folder installer build** (which does *not* extract to
+   temp) should be substantially quieter even while unsigned. *Verify on the next
+   clean rebuild that nothing depended on a `upx_exclude` workaround.*
+2. **Accepted risk — portable one-file `.exe` stays noisy.** We keep shipping it
+   for the no-install workflow; its temp self-extraction will keep drawing
+   EDR attention and that is fine. Lead users toward the installer.
+3. **Accepted risk — no code signing.** Users trust the app once at first launch
+   (SmartScreen → "More info" → "Run anyway"). Revisit only if a cert budget
+   appears (an OV/EV Authenticode signing step would slot into
+   [build_release.ps1](scripts/build_release.ps1)).
+
+### Remaining code-level hardening (not yet done)
+
+These are independent of packaging and matter because GuildDraw **opens
+untrusted files** (`.gdraw`/`.svg` are shared between makers). Low risk to
+implement; each wants a regression test.
+
+1. ✅ **Harden XML parsing against entity-expansion DoS** *(2026-06-17).*
+   `load_svg` ([export/svg.py](framedraft/export/svg.py)) no longer hands the
+   file straight to stdlib `xml.etree.ElementTree` (vulnerable to "billion
+   laughs"/quadratic-blowup). A dependency-free guard (`_read_checked_svg`)
+   now caps the on-disk size (64 MB) and rejects any `DOCTYPE`/`ENTITY`
+   declaration before parsing — GuildDraw-native SVGs never declare one and
+   `load_svg` only accepts native files (it requires the metadata block), so
+   nothing valid is refused. No `defusedxml` dependency added (the bundle stays
+   minimal). Regression tests in `tests/test_svg_roundtrip.py` (billion-laughs,
+   plain DOCTYPE, oversized file). *(No XXE path — ElementTree doesn't resolve
+   external entities — so this was DoS-only.)*
+2. **Sanitize `face_images[].path` on load.** A loaded `.gdraw` carries absolute
+   image paths ([svg.py:165](framedraft/export/svg.py#L165)) that the app
+   `QPixmap()`-loads if the file exists ([app.py:5358](framedraft/app.py#L5358)).
+   Impact is local-only (no network = no exfil): a malicious file can surface an
+   unexpected local image or a huge one (memory). Also a **privacy leak** —
+   shared files embed the author's `C:\Users\<name>\…` paths. Store project-
+   relative paths and/or only honor paths under the project directory.
+3. **`.gdraw` tempfile round-trip → in-memory buffer** *(low priority).*
+   [export/gdraw.py:59](framedraft/export/gdraw.py#L59) writes each SVG to a
+   `mkstemp` file then re-reads it; an in-memory buffer removes the temp churn
+   and a small TOCTOU window. (ZIP reads are already safe — members are read by
+   name into temp, never `extractall`, so no zip-slip.)
+4. **Ship an IT-facing explainer** — a one-page "what GuildDraw does and does
+   not do" (writes only to `~/.guilddraw/`, no network, no persistence) plus a
+   VirusTotal link, so makers can answer their IT departments directly. Fold
+   into `docs/` next to the user guide.
 
 ---
 

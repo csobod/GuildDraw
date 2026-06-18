@@ -15,12 +15,29 @@ def test_valid_document_passes():
 
 
 def test_mirror_doubles_lens_count():
-    # One drawn lens + mirror ghost = the required two at export time
+    # One drawn lens + mirror ghost = a pair at export time; both the mirrored
+    # and un-mirrored forms are valid now that any positive LENS count passes.
     curves = [outline(), circle(15, 0, 10)]
     errors, _ = validate(curves, mirror_on=True)
     assert errors == []
     errors, _ = validate(curves, mirror_on=False)
-    assert any("LENS" in e for e in errors)
+    assert errors == []
+
+
+def test_lens_count_is_flexible():
+    # Aviators (bridge opening) and shapes like peace-sign glasses carry more
+    # than the classic pair — any positive LENS count is accepted; only a total
+    # absence of LENS geometry is flagged.
+    four = [outline(),
+            circle(-20, 0, 8), circle(20, 0, 8),
+            circle(-8, 12, 5), circle(8, 12, 5)]
+    assert validate(four, mirror_on=False)[0] == []
+
+    one = [outline(), circle(0, 0, 10)]
+    assert validate(one, mirror_on=False)[0] == []
+
+    none = [outline()]
+    assert any("LENS" in e for e in validate(none, mirror_on=False)[0])
 
 
 def test_missing_outline_is_an_error():
@@ -67,8 +84,10 @@ def test_hinge_workspace_rules():
 
 
 def test_mirrored_flag_curves_are_ignored():
+    # A `.mirrored` ghost must not satisfy the LENS requirement on its own:
+    # with only a ghost lens present the validator still sees zero real lenses.
     ghost = circle(15, 0, 10)
     ghost.mirrored = True
-    curves = [outline(), circle(-15, 0, 10), ghost]
+    curves = [outline(), ghost]
     errors, _ = validate(curves, mirror_on=False)
-    assert any("LENS" in e for e in errors)   # ghost doesn't count
+    assert any("LENS" in e for e in errors)   # ghost doesn't count → 0 lenses

@@ -127,3 +127,49 @@ def test_mirrored_curves_are_not_saved(tmp_path):
              forming=FormingMetadata(), machined_bridge=MachinedBridge())
     data = load_svg(str(path))
     assert len(data["curves"]) == 1
+
+
+# --- security: entity-expansion (billion laughs) DoS guard ---
+
+_BILLION_LAUGHS = """<?xml version="1.0"?>
+<!DOCTYPE svg [
+ <!ENTITY a "AAAAAAAAAA">
+ <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+ <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+]>
+<svg xmlns="http://www.w3.org/2000/svg"><metadata>{}</metadata><desc>&c;</desc></svg>
+"""
+
+
+def test_dtd_entity_file_is_rejected(tmp_path):
+    """A shared .svg carrying a DTD/entity bomb must be refused, not expanded
+    in memory by the stdlib parser."""
+    path = tmp_path / "bomb.svg"
+    path.write_text(_BILLION_LAUGHS, encoding="utf-8")
+    with pytest.raises(ValueError, match="DTD|entit"):
+        load_svg(str(path))
+
+
+def test_plain_doctype_without_entities_is_rejected(tmp_path):
+    """Even an entity-free DOCTYPE is refused — GuildDraw never writes one, so
+    its presence marks a non-native (untrusted) file."""
+    path = tmp_path / "doctype.svg"
+    path.write_text(
+        '<?xml version="1.0"?>\n'
+        '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "x.dtd">\n'
+        '<svg xmlns="http://www.w3.org/2000/svg"><metadata>{}</metadata></svg>\n',
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="DTD|entit"):
+        load_svg(str(path))
+
+
+def test_oversized_file_is_rejected(tmp_path, monkeypatch):
+    """An absurdly large file is refused before being read into memory."""
+    import framedraft.export.svg as svg_mod
+    monkeypatch.setattr(svg_mod, "_MAX_SVG_BYTES", 16)
+    path = tmp_path / "big.svg"
+    path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"><metadata>{}</metadata></svg>',
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="larger than|too large|limit"):
+        load_svg(str(path))

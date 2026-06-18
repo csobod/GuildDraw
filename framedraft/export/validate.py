@@ -25,10 +25,14 @@ def validate(
     mirror_on: bool,
     workspace_type: str = "front",
 ) -> tuple[list[str], list[str]]:
-    """Return (errors, warnings).  Export is blocked if errors is non-empty.
+    """Return (errors, warnings).  Errors mean "not GuildCAM-ready" and drive
+    the readiness dot, but they no longer block DXF export — the maker decides
+    when geometry is complete and GuildCAM's intake is the final gate.
 
     Layer-count rules depend on the workspace:
-      front    — OUTLINE ×1, LENS ×2 (mirror doubling counts)
+      front    — OUTLINE ×1, LENS ≥1 (any count: aviators with a bridge opening
+                 and other unusual shapes carry more than the classic pair;
+                 mirror doubling counts)
       temple_* — OUTLINE ×1, no LENS allowed
       hinge    — HINGE ≥1, no OUTLINE/LENS allowed
     """
@@ -49,9 +53,9 @@ def validate(
             errors.append(
                 f"Need exactly 1 OUTLINE contour, found {by_layer[Layer.OUTLINE]}."
             )
-        if by_layer[Layer.LENS] != 2:
+        if by_layer[Layer.LENS] < 1:
             errors.append(
-                f"Need exactly 2 LENS contours, found {by_layer[Layer.LENS]}."
+                f"Need at least 1 LENS contour, found {by_layer[Layer.LENS]}."
             )
     elif workspace_type in ("temple_r", "temple_l"):
         if by_layer[Layer.OUTLINE] != 1:

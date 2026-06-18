@@ -2609,6 +2609,13 @@ class MainWindow(QMainWindow):
             label = f"[grp {c.group_id[:4]}]  " + label
         return label
 
+    @staticmethod
+    def _text_label(t) -> str:
+        """Layer-tree label for an engraving TextObject (re-editable, exported
+        as outline paths at DXF time)."""
+        s = t.text if len(t.text) <= 16 else t.text[:15] + "…"
+        return f'text  ·  "{s}"'
+
     def _layer_icon(self, name: str) -> QIcon:
         """Theme-aware cached icon for the eye/padlock tree cells."""
         color = "#d4cfc0" if self._dark_mode else "#1f1f1f"
@@ -2627,11 +2634,14 @@ class MainWindow(QMainWindow):
         tree.blockSignals(True)
         tree.clear()
         self._layer_tree_rows: dict = {}        # id(curve) -> row item
+        self._layer_tree_text_rows: dict = {}   # id(TextObject) -> row item
         self._layer_tree_layer_rows: dict = {}  # Layer -> top-level row
         for layer in WORKSPACE_LAYERS[ws.workspace_type]:
             curves = [c for c in ws.doc_curves if c.layer == layer]
+            texts  = [t for t in ws.doc_texts if t.layer == layer]
+            count  = len(curves) + len(texts)
             locked = ws.scene.is_layer_locked(layer)
-            top = QTreeWidgetItem([f"{layer.value}  ({len(curves)})", "", ""])
+            top = QTreeWidgetItem([f"{layer.value}  ({count})", "", ""])
             top.setIcon(1, self._layer_icon(
                 "layer-show" if ws.scene.is_layer_visible(layer) else "layer-hide"))
             top.setIcon(2, self._layer_icon(
@@ -2655,7 +2665,16 @@ class MainWindow(QMainWindow):
                 child.setFlags(child_flags)
                 top.addChild(child)
                 self._layer_tree_rows[id(c)] = child
-            top.setExpanded(bool(curves) and len(curves) <= 12)
+            # Engraving TextObjects live on their layer too — re-editable, so
+            # never drag sources (no layer reassignment) but selectable.
+            for t in texts:
+                child = QTreeWidgetItem([self._text_label(t), "", ""])
+                child.setData(0, Qt.ItemDataRole.UserRole, ("text", id(t)))
+                child.setFlags(Qt.ItemFlag.ItemIsEnabled
+                               | Qt.ItemFlag.ItemIsSelectable)
+                top.addChild(child)
+                self._layer_tree_text_rows[id(t)] = child
+            top.setExpanded(bool(count) and count <= 12)
         tree.blockSignals(False)
         self._sync_layer_panel_active()
 
@@ -2717,12 +2736,16 @@ class MainWindow(QMainWindow):
         stale single curve appeared highlighted."""
         if self._syncing_selection:
             return
-        ids = []
+        ids, text_ids = [], []
         for it in self._layer_tree.selectedItems():
             data = it.data(0, Qt.ItemDataRole.UserRole)
-            if data and data[0] == "curve":
+            if not data:
+                continue
+            if data[0] == "curve":
                 ids.append(data[1])
-        if not ids:
+            elif data[0] == "text":
+                text_ids.append(data[1])
+        if not ids and not text_ids:
             return   # a layer row (or nothing) selected — leave canvas as-is
         self._syncing_selection = True
         skipped = False
@@ -2736,6 +2759,16 @@ class MainWindow(QMainWindow):
                 if (self.scene.is_layer_visible(lyr)
                         and not self.scene.is_layer_locked(lyr)):
                     ci.setSelected(True)
+                else:
+                    skipped = True
+            for tid in text_ids:
+                ti = self.scene._text_items.get(tid)
+                if ti is None:
+                    continue
+                lyr = ti.text_obj.layer
+                if (self.scene.is_layer_visible(lyr)
+                        and not self.scene.is_layer_locked(lyr)):
+                    ti.setSelected(True)
                 else:
                     skipped = True
         finally:
@@ -3633,6 +3666,7 @@ class MainWindow(QMainWindow):
         text_obj.anchor_x = v["anchor_x"]
         text_obj.anchor_y = v["anchor_y"]
         self.scene.refresh_text(text_obj)
+        self._refresh_layer_panel()   # label shows the (now-changed) string
         self._status.showMessage("Text updated.")
 
     def _set_tool_trim(self):
@@ -3845,6 +3879,14 @@ class MainWindow(QMainWindow):
             self._updating_weight_spin = True
             self._weight_spin.setValue(selected[0].curve.line_weight)
             self._updating_weight_spin = False
+        # A single selected engraving text highlights its panel row too.
+        texts = [i for i in self.scene.selectedItems() if isinstance(i, TextItem)]
+        if not selected and len(texts) == 1 and not self._syncing_selection:
+            row = getattr(self, "_layer_tree_text_rows", {}).get(id(texts[0].text_obj))
+            if row is not None:
+                self._syncing_selection = True
+                self._layer_tree.setCurrentItem(row)
+                self._syncing_selection = False
         # Reposition gizmo on selection change, or hide if nothing selected
         if self._move_gizmo is not None:
             center = self._gizmo_center_from_selection()
@@ -5533,30 +5575,22 @@ class MainWindow(QMainWindow):
     # Exports
     # ------------------------------------------------------------------
 
-    def _run_validator(self) -> bool:
-        """Show validation errors/warnings. Return True if export may proceed."""
+    def _readiness_note(self) -> str:
+        """One-line GuildCAM-readiness summary for the active workspace, used
+        as the status-bar marker after a (never-blocked) DXF export."""
         from .export.validate import validate
-        mirror_on = self._act_mirror.isChecked()
-        errors, warnings = validate(self._doc_curves, mirror_on,
+        errors, warnings = validate(self._doc_curves, self._act_mirror.isChecked(),
                                     self._active_ws.workspace_type)
         if errors:
-            msg = "Export blocked — fix the following:\n\n" + "\n".join(f"• {e}" for e in errors)
-            if warnings:
-                msg += "\n\nWarnings:\n" + "\n".join(f"• {w}" for w in warnings)
-            QMessageBox.critical(self, "Validation failed", msg)
-            return False
+            return f"not yet GuildCAM-ready ({errors[0]})"
         if warnings:
-            msg = "Warnings (export will proceed):\n\n" + "\n".join(f"• {w}" for w in warnings)
-            r = QMessageBox.warning(
-                self, "Validation warnings", msg,
-                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-            )
-            return r == QMessageBox.StandardButton.Ok
-        return True
+            return f"ready for GuildCAM (with warnings: {warnings[0]})"
+        return "ready for GuildCAM"
 
     def _export_dxf(self):
-        if not self._run_validator():
-            return
+        # DXF export is never blocked on the contract: the maker may want a
+        # partial frame, or an unusual multi-lens shape GuildCAM will finish.
+        # The readiness dot and the status note below report GuildCAM-readiness.
         path, _ = QFileDialog.getSaveFileName(
             self, "Export DXF", "", "DXF Files (*.dxf)"
         )
@@ -5579,14 +5613,16 @@ class MainWindow(QMainWindow):
                 horizontal = (self._active_ws.workspace_type
                               in ("temple_r", "temple_l")),
             )
-            self._status.showMessage(f"DXF exported: {os.path.basename(path)}")
+            self._status.showMessage(
+                f"DXF exported: {os.path.basename(path)} — {self._readiness_note()}")
         except Exception as e:
             QMessageBox.critical(self, "DXF export failed", str(e))
 
     def _export_all_dxf(self):
         """File > Export > Export All DXF… — one DXF per populated workspace
-        (<base>_front.dxf, _temple_r, _temple_l, _hinge), each validated
-        against its workspace rules before anything is written."""
+        (<base>_front.dxf, _temple_r, _temple_l, _hinge). Export is never
+        blocked; the per-workspace validator only annotates which files aren't
+        GuildCAM-ready yet (reported after the write)."""
         from .export.batch import (
             BatchWorkspace, base_from_path, check_batch, write_batch,
         )
@@ -5617,28 +5653,9 @@ class MainWindow(QMainWindow):
 
         ws_titles = {"front": "Frame Front", "temple_r": "Temple R",
                      "temple_l": "Temple L",  "hinge": "Hinge Pocket"}
+        # Validation never blocks the batch export — it only annotates which
+        # workspaces aren't GuildCAM-ready yet (reported after the write).
         report = check_batch(items)
-        if not report.ok:
-            lines = []
-            for tab, errs in report.errors.items():
-                lines.append(f"{ws_titles[tab]}:")
-                lines += [f"  • {e}" for e in errs]
-            QMessageBox.critical(
-                self, "Validation failed",
-                "Export blocked — fix the following:\n\n" + "\n".join(lines))
-            return
-        if report.warnings:
-            lines = []
-            for tab, warns in report.warnings.items():
-                lines.append(f"{ws_titles[tab]}:")
-                lines += [f"  • {w}" for w in warns]
-            r = QMessageBox.warning(
-                self, "Validation warnings",
-                "Warnings (export will proceed):\n\n" + "\n".join(lines),
-                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-            )
-            if r != QMessageBox.StandardButton.Ok:
-                return
 
         suggested = ""
         if self._current_path:
@@ -5659,15 +5676,22 @@ class MainWindow(QMainWindow):
         if report.skipped:
             msg += " — skipped (empty): " + ", ".join(
                 ws_titles[t] for t in report.skipped)
+        not_ready = [t for t in ws_titles if t in report.errors]
+        if not_ready:
+            msg += " — not yet GuildCAM-ready: " + ", ".join(
+                ws_titles[t] for t in not_ready)
         self._status.showMessage(msg)
         # The file-name preview in the dialog can't show the suffixing, so
         # confirm what actually landed on disk.
-        QMessageBox.information(
-            self, "Export All DXF",
-            "Written:\n" + "\n".join(f"• {os.path.basename(p)}" for p in written)
-            + ("\n\nSkipped (empty): "
-               + ", ".join(ws_titles[t] for t in report.skipped)
-               if report.skipped else ""))
+        info = "Written:\n" + "\n".join(f"• {os.path.basename(p)}" for p in written)
+        if report.skipped:
+            info += "\n\nSkipped (empty): " + ", ".join(
+                ws_titles[t] for t in report.skipped)
+        if not_ready:
+            info += "\n\nNot yet GuildCAM-ready (exported anyway):"
+            for tab in not_ready:
+                info += f"\n• {ws_titles[tab]}: {report.errors[tab][0]}"
+        QMessageBox.information(self, "Export All DXF", info)
 
     def _export_svg(self):
         """Export the active workspace as SVG without touching the current
@@ -5985,9 +6009,25 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName("GuildDraw")
+    app.setApplicationDisplayName("GuildDraw")
+    app.setOrganizationName("Guild of American Spectacle Makers")
     app.setStyleSheet(QSS)
+
+    # Show the loading splash before building the (slower) main window, so the
+    # maker sees the app is starting and doesn't re-launch a second copy.
+    from .splash import make_splash
+    splash = make_splash(app)
+
     win = MainWindow()
     win.show()
+    splash.finish(win)   # dismiss once the window is up
+    # Open a project passed on the command line (e.g. double-clicking a
+    # .gdraw/.svg via the installed file association).
+    for arg in app.arguments()[1:]:
+        if not arg.startswith("-") and os.path.isfile(arg):
+            win._open_path(arg)
+            break
     sys.exit(app.exec())
 
 

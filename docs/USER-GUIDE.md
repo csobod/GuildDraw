@@ -10,12 +10,15 @@ layers, guides, and undo history:
 
 | Tab | Purpose | Machined layers |
 |---|---|---|
-| **Frame Front** | The front: outline + two lenses | `OUTLINE` ×1, `LENS` ×2 |
+| **Frame Front** | The front: outline + lenses | `OUTLINE` ×1, `LENS` ≥1 |
 | **Temple R / L** | Each temple arm | `OUTLINE` ×1, optional `HINGE`, `ENGRAVING` |
 | **Hinge Pocket** | Hinge recess geometry | `HINGE` ≥1 |
 
-The validator enforces these rules per workspace at export time, so mistakes
-are caught in-app rather than at the machine.
+At least one `LENS` contour is required for a GuildCAM-ready front (a classic
+pair is two; aviators and other shapes may carry more). The validator checks
+these rules per workspace and drives the readiness dot, but it no longer blocks
+export — you decide when the geometry is complete and GuildCAM's intake is the
+final gate.
 
 **Mirror Copy** (toolbar, temple workspaces) copies Temple R to Temple L (or
 back) mirrored, so you draw one temple and stamp the other.
