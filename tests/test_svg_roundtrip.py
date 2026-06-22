@@ -5,9 +5,31 @@ import pytest
 
 from framedraft.document import (
     Calibration, MirrorAxis, FormingMetadata, MachinedBridge, DimLine, Layer,
+    BevelSpec,
 )
 from framedraft.export.svg import save_svg, load_svg
 from helpers import line, spline, circle, arc
+
+
+def _save_min(path, **kw):
+    save_svg(curves=[circle(0, 0, 10, layer=Layer.LENS)], path=str(path),
+             calibration=Calibration(), mirror=MirrorAxis(),
+             forming=FormingMetadata(), machined_bridge=MachinedBridge(), **kw)
+
+
+def test_bevel_roundtrips(tmp_path):
+    p = tmp_path / "bevel.svg"
+    _save_min(p, bevel=BevelSpec(preset="horn_metal", depth_mm=0.5))
+    bevel = load_svg(str(p))["bevel"]
+    assert bevel is not None
+    assert bevel.preset == "horn_metal"
+    assert bevel.depth_mm == 0.5
+
+
+def test_bevel_absent_in_pre_rc2_files_is_none(tmp_path):
+    p = tmp_path / "nobevel.svg"
+    _save_min(p)   # no bevel passed -> not written
+    assert load_svg(str(p))["bevel"] is None
 
 
 def nodes_equal(a, b, tol=1e-9):

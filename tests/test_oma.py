@@ -30,6 +30,65 @@ GOLDEN = (
 )
 
 
+import pathlib
+
+from framedraft.export.oma import OmaDrill
+
+_DRILLED = (
+    "TRCFMT=1;8;E;R;F\r\n"
+    "R=2000;2000;2000;2000;2000;2000;2000;2000\r\n"
+    "DRILLE=B;C;-25.00;9.00;1.40;-25.00;9.00;0;1;F\r\n"
+    "DRILLE=B;C;21.67;6.20;1.40;21.67;6.20;0;1;F\r\n"
+)
+
+
+def test_parse_drille_holes():
+    job = parse_oma(_DRILLED)
+    assert len(job.drills) == 2
+    d0 = job.drills[0]
+    assert (d0.x, d0.y, d0.dia) == pytest.approx((-25.0, 9.0, 1.4))
+    assert d0.eye == "B" and d0.ftype == "C"
+
+
+def test_drille_round_trips_verbatim():
+    # A parsed DRILLE keeps its raw fields → build re-emits it byte-for-byte.
+    job = parse_oma(_DRILLED)
+    out = build_oma(job)
+    assert "DRILLE=B;C;-25.00;9.00;1.40;-25.00;9.00;0;1;F" in out
+    assert "DRILLE=B;C;21.67;6.20;1.40;21.67;6.20;0;1;F" in out
+    assert parse_oma(out).drills[0].x == pytest.approx(-25.0)
+
+
+def test_drille_built_from_scratch_uses_canonical_format():
+    job = OmaJob()
+    job.traces["R"] = OmaTrace(side="R", radii_mm=[20.0] * 8)
+    job.drills.append(OmaDrill(x=-25.0, y=9.0, dia=1.4))
+    assert "DRILLE=B;C;-25.00;9.00;1.40;-25.00;9.00;0;1;F" in build_oma(job)
+
+
+def test_bare_drille_count_is_preserved():
+    # "DRILLE=0" (no holes) is not a feature — keep it verbatim, no drills.
+    job = parse_oma("TRCFMT=1;3;E;R;F\r\nR=2000;2000;2000\r\nDRILLE=0\r\n")
+    assert job.drills == []
+    assert "DRILLE=0" in build_oma(job)
+
+
+def test_golden_silhouette_sample_if_present():
+    sample = pathlib.Path(__file__).resolve().parents[1] / "HEART_54_0.OMA"
+    if not sample.exists():
+        pytest.skip("HEART_54_0.OMA sample not present")
+    job = parse_oma(sample.read_text(encoding="ascii", errors="replace"))
+    assert len(job.drills) == 4
+    xs = sorted(round(d.x, 2) for d in job.drills)
+    assert xs == [-25.0, -22.0, 21.67, 24.67]
+    assert all(d.dia == pytest.approx(1.4) for d in job.drills)
+    # full round trip preserves all four DRILLE lines verbatim
+    rebuilt = build_oma(job)
+    for line in sample.read_text(encoding="ascii").splitlines():
+        if line.startswith("DRILLE=B"):
+            assert line in rebuilt
+
+
 def test_parse_golden_file():
     job = parse_oma(GOLDEN)
     assert set(job.traces) == {"R", "L"}

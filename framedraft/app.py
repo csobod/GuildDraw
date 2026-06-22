@@ -9,8 +9,8 @@ from pathlib import Path
 from . import __version__
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QToolBar, QStatusBar,
-    QGraphicsView, QDockWidget, QWidget, QVBoxLayout,
-    QFormLayout, QGroupBox, QPushButton, QSlider, QLabel,
+    QGraphicsView, QDockWidget, QWidget, QVBoxLayout, QGridLayout,
+    QFormLayout, QGroupBox, QPushButton, QSlider, QLabel, QToolButton,
     QDoubleSpinBox, QFileDialog, QComboBox, QMessageBox,
     QDialog, QCheckBox, QHBoxLayout, QInputDialog, QListWidget, QListWidgetItem,
     QScrollArea, QTabWidget, QLineEdit, QTreeWidget, QTreeWidgetItem,
@@ -33,6 +33,7 @@ from . import prefs as _prefs_mod
 from .document import (
     Layer, Calibration, MirrorAxis, FormingMetadata, MachinedBridge, FaceImage,
     Curve, SplineNode, ControlPoint, DimLine, WORKSPACE_LAYERS,
+    BevelSpec, BEVEL_PRESETS,
 )
 from .geometry import mirror_curve, circle_to_spline, arc_to_spline
 from .tools.draw import DrawTool
@@ -861,6 +862,9 @@ class WorkspaceState:
         # ── Guides ────────────────────────────────────────────────────────
         self.const_guides = ConstructionGuides(self.scene)
         self.boxing_guide = BoxingGuide(self.scene)
+        # Locked boxing derives its boxes from this workspace's live LENS curves.
+        self.boxing_guide.set_lens_provider(
+            lambda: [c for c in self.doc_curves if c.layer == Layer.LENS])
         self.stock_guide  = RectGuide(self.scene, "#27ae60", "#2ecc71")
         self.pad_guide    = RectGuide(self.scene, "#8e44ad", "#9b59b6",
                                       width_mm=45.0, height_mm=45.0)
@@ -888,6 +892,12 @@ class WorkspaceState:
         self.boxing_a:       float = 52.0
         self.boxing_b:       float = 30.0
         self.boxing_dbl:     float = 18.0
+        self.boxing_snapped: bool  = False       # boxing guide snapped to lens (M11/M12)
+        self.shape_locked:   bool  = False       # lens spline frozen; resize via A/B (M12)
+        self.boxing_chain:   bool  = False       # A/B resize proportionally (M12)
+        self.outline_locked: bool  = False       # OUTLINE co-resizes with the lens (M12)
+        self.bevel_preset:   str   = "acetate"   # flat|horn_metal|acetate|custom
+        self.bevel_depth:    float = BEVEL_PRESETS["acetate"]
         self.stock_w:        float = 170.0
         self.stock_h:        float = 85.0
         self.pad_w:          float = 45.0
@@ -902,6 +912,9 @@ class WorkspaceState:
         # Wire endpoint drag-snap using the workspace's own mutable list and view.
         # snap_enabled_fn is set by MainWindow after the toolbar is built.
         self.edit_tool.set_endpoint_snap_context(self.doc_curves, self.view)
+        # 'Lock lens shape' freezes LENS spline editing (still selectable/movable).
+        self.edit_tool.set_node_edit_blocked_fn(
+            lambda c: self.shape_locked and c.layer == Layer.LENS)
 
     # ------------------------------------------------------------------
     # Document mutation primitives
@@ -1662,6 +1675,8 @@ class MainWindow(QMainWindow):
             ws.scene.set_text_edit_callback(self._edit_text_object)
             ws.on_document_changed = (
                 lambda ws=ws: self._schedule_layer_panel_refresh(ws))
+            ws.scene.geometry_changed = (
+                lambda _curve=None, ws=ws: self._schedule_boxing_follow(ws))
 
         # ── Toggle actions wired to dispatch helpers (lambdas evaluate _active_ws) ─
         self._act_mirror.toggled.connect(self._on_mirror_toggled)
@@ -2268,32 +2283,110 @@ class MainWindow(QMainWindow):
         boxing_lay = QFormLayout(boxing_box)
         boxing_lay.setSpacing(6)
 
+        # A and B share a chain (aspect-link) toggle that spans both rows.
+        # keyboardTracking off → a typed value commits on Enter/blur (not every
+        # digit), and stepping commits instantly — so locked-resize fires once
+        # per real change instead of mid-typing.
         self._boxing_a_spin = QDoubleSpinBox()
-        self._boxing_a_spin.setRange(30.0, 80.0)
+        self._boxing_a_spin.setRange(20.0, 90.0)
         self._boxing_a_spin.setSuffix(" mm")
         self._boxing_a_spin.setSingleStep(0.5)
+        self._boxing_a_spin.setDecimals(1)
+        self._boxing_a_spin.setKeyboardTracking(False)
         self._boxing_a_spin.setValue(50.0)
-        self._boxing_a_spin.valueChanged.connect(
-            lambda v: self._boxing_guide.set_a(v))
-        boxing_lay.addRow("A (width):", self._boxing_a_spin)
+        self._boxing_a_spin.valueChanged.connect(self._on_boxing_a_value)
 
         self._boxing_b_spin = QDoubleSpinBox()
-        self._boxing_b_spin.setRange(15.0, 60.0)
+        self._boxing_b_spin.setRange(10.0, 70.0)
         self._boxing_b_spin.setSuffix(" mm")
         self._boxing_b_spin.setSingleStep(0.5)
+        self._boxing_b_spin.setDecimals(1)
+        self._boxing_b_spin.setKeyboardTracking(False)
         self._boxing_b_spin.setValue(30.0)
-        self._boxing_b_spin.valueChanged.connect(
-            lambda v: self._boxing_guide.set_b(v))
-        boxing_lay.addRow("B (height):", self._boxing_b_spin)
+        self._boxing_b_spin.valueChanged.connect(self._on_boxing_b_value)
+
+        self._chain_btn = QToolButton()
+        self._chain_btn.setCheckable(True)
+        self._chain_btn.setIcon(_make_icon("link-chain", "#1f1f1f", "#ffd580"))
+        self._chain_btn.setToolTip(
+            "Link A and B: while locked, resizing one scales the other to keep\n"
+            "the lens aspect ratio. Off = resize A and B independently.")
+        self._chain_btn.toggled.connect(self._on_chain_toggled)
+
+        ab_w = QWidget()
+        ab_grid = QGridLayout(ab_w)
+        ab_grid.setContentsMargins(0, 0, 0, 0)
+        ab_grid.setHorizontalSpacing(6)
+        ab_grid.setVerticalSpacing(6)
+        ab_grid.addWidget(QLabel("A (width):"), 0, 0)
+        ab_grid.addWidget(self._boxing_a_spin,  0, 1)
+        ab_grid.addWidget(QLabel("B (height):"), 1, 0)
+        ab_grid.addWidget(self._boxing_b_spin,  1, 1)
+        ab_grid.addWidget(self._chain_btn,      0, 2, 2, 1)
+        ab_grid.setColumnStretch(1, 1)
+        boxing_lay.addRow(ab_w)
 
         self._boxing_dbl_spin = QDoubleSpinBox()
-        self._boxing_dbl_spin.setRange(8.0, 40.0)
+        self._boxing_dbl_spin.setRange(5.0, 45.0)
         self._boxing_dbl_spin.setSuffix(" mm")
         self._boxing_dbl_spin.setSingleStep(0.5)
+        self._boxing_dbl_spin.setDecimals(1)
         self._boxing_dbl_spin.setValue(18.0)
-        self._boxing_dbl_spin.valueChanged.connect(
-            lambda v: self._boxing_guide.set_dbl(v))
+        self._boxing_dbl_spin.valueChanged.connect(self._on_boxing_dbl_value)
         boxing_lay.addRow("DBL:", self._boxing_dbl_spin)
+
+        # ── Snap / Lock to lens + bevel (M11/M12) ───────────────────────
+        self._boxing_snap_chk = QCheckBox("Snap to lens shape")
+        self._boxing_snap_chk.setToolTip(
+            "Fit the boxing box + bevel outline to the actual LENS path.\n"
+            "A/B/DBL then show the live finished-lens measurements; editing\n"
+            "or moving the lens updates them in real time.")
+        self._boxing_snap_chk.toggled.connect(self._on_boxing_snap_toggled)
+        boxing_lay.addRow(self._boxing_snap_chk)
+
+        self._lock_shape_chk = QCheckBox("Lock lens shape")
+        self._lock_shape_chk.setEnabled(False)   # only available once snapped
+        self._lock_shape_chk.setToolTip(
+            "Freeze the lens spline: it can still be moved (changing DBL), but\n"
+            "its size changes only by typing new A / B values, which restretch\n"
+            "the shape accurately. Draw once, offer many sizes.")
+        self._lock_shape_chk.toggled.connect(self._on_lock_shape_toggled)
+        boxing_lay.addRow(self._lock_shape_chk)
+
+        self._outline_lock_chk = QCheckBox("Lock outline to lens")
+        self._outline_lock_chk.setEnabled(False)   # only while the shape is locked
+        self._outline_lock_chk.setToolTip(
+            "Co-resize the frame OUTLINE with the lens, keeping a constant\n"
+            "eyewire wall (flats and corners preserved). Open outlines grow\n"
+            "from the bridge side; closed (finished) frames grow symmetrically.")
+        self._outline_lock_chk.toggled.connect(self._on_outline_lock_toggled)
+        boxing_lay.addRow(self._outline_lock_chk)
+
+        self._bevel_combo = QComboBox()
+        # (label, preset-key) — order matches the BEVEL_PRESETS intent
+        self._bevel_choices = [
+            ("Flat / Rimless", "flat"),
+            ("Horn / Metal",   "horn_metal"),
+            ("Acetate",        "acetate"),
+            ("Custom",         "custom"),
+        ]
+        for label, _key in self._bevel_choices:
+            self._bevel_combo.addItem(label)
+        self._bevel_combo.setCurrentIndex(2)   # Acetate
+        self._bevel_combo.currentIndexChanged.connect(self._on_bevel_preset_changed)
+        boxing_lay.addRow("Bevel:", self._bevel_combo)
+
+        self._bevel_depth_spin = QDoubleSpinBox()
+        self._bevel_depth_spin.setRange(0.0, 5.0)
+        self._bevel_depth_spin.setSuffix(" mm")
+        self._bevel_depth_spin.setSingleStep(0.1)
+        self._bevel_depth_spin.setDecimals(2)
+        self._bevel_depth_spin.setValue(BEVEL_PRESETS["acetate"])
+        self._bevel_depth_spin.setEnabled(False)   # only editable for Custom
+        self._bevel_depth_spin.setToolTip(
+            "Outward offset of the finished (beveled) lens beyond the lens shape.")
+        self._bevel_depth_spin.valueChanged.connect(self._on_bevel_depth_changed)
+        boxing_lay.addRow("Bevel depth:", self._bevel_depth_spin)
 
         guides_lay.addWidget(boxing_box)
         self._boxing_guide_box = boxing_box   # ref for section show/hide
@@ -2519,9 +2612,10 @@ class MainWindow(QMainWindow):
 
         tabs.addTab(history_w, "History")
 
-        # ── Tab 4: Hinge Library ──────────────────────────────────────────
-        lib_w   = QWidget()
-        lib_lay = QVBoxLayout(lib_w)
+        # ── Tab 4: Library (Pockets / Holes) ──────────────────────────────
+        lib_tabs = QTabWidget()
+        pockets_w = QWidget()
+        lib_lay = QVBoxLayout(pockets_w)
         lib_lay.setContentsMargins(8, 8, 8, 8)
         lib_lay.setSpacing(6)
 
@@ -2571,8 +2665,10 @@ class MainWindow(QMainWindow):
 
         lib_lay.addWidget(self._lib_hinge_actions)
         lib_lay.addStretch()
+        lib_tabs.addTab(pockets_w, "Pockets")
 
-        tabs.addTab(lib_w, "Library")
+        lib_tabs.addTab(self._build_holes_panel(), "Holes")
+        tabs.addTab(lib_tabs, "Library")
 
         self._side_tabs = tabs
         self._side_tabs.currentChanged.connect(
@@ -2596,6 +2692,11 @@ class MainWindow(QMainWindow):
         self._layer_refresh_pending = False
         self._refresh_layer_panel()
         self._update_readiness()
+        # A snapped boxing guide tracks the live lens geometry.
+        if self._active_ws.boxing_snapped:
+            self._active_ws.boxing_guide.refresh()
+            self._refresh_measurements()
+            self._sync_boxing_readouts()
 
     @staticmethod
     def _curve_label(c: Curve) -> str:
@@ -2898,6 +2999,8 @@ class MainWindow(QMainWindow):
         self._show_guide_sections(ws.workspace_type)
         self._refresh_timeline_list()
         self._refresh_measurements()
+        if ws.boxing_snapped:
+            self._sync_boxing_readouts()
         self._refresh_library_panel()
         self._refresh_layer_panel()
         self._refresh_mirror_icons()
@@ -2923,9 +3026,18 @@ class MainWindow(QMainWindow):
         ws.crest_height   = self._guide_crest_height_spin.value()
         ws.arm_spread     = self._guide_spread_spin.value()
         ws.arm_drop       = self._guide_drop_spin.value()
-        ws.boxing_a       = self._boxing_a_spin.value()
-        ws.boxing_b       = self._boxing_b_spin.value()
-        ws.boxing_dbl     = self._boxing_dbl_spin.value()
+        ws.boxing_snapped = self._boxing_snap_chk.isChecked()
+        ws.shape_locked   = self._lock_shape_chk.isChecked()
+        ws.boxing_chain   = self._chain_btn.isChecked()
+        ws.outline_locked = self._outline_lock_chk.isChecked()
+        # When snapped the A/B/DBL fields hold read-outs, not the free-box values
+        # — preserve the stored free-box targets so they return on un-snap.
+        if not ws.boxing_snapped:
+            ws.boxing_a   = self._boxing_a_spin.value()
+            ws.boxing_b   = self._boxing_b_spin.value()
+            ws.boxing_dbl = self._boxing_dbl_spin.value()
+        ws.bevel_preset   = self._bevel_choices[self._bevel_combo.currentIndex()][1]
+        ws.bevel_depth    = self._current_bevel_depth()
         ws.stock_w        = self._stock_w_spin.value()
         ws.stock_h        = self._stock_h_spin.value()
         ws.pad_w          = self._pad_w_spin.value()
@@ -2998,6 +3110,32 @@ class MainWindow(QMainWindow):
         ws.boxing_guide.set_a(ws.boxing_a)
         ws.boxing_guide.set_b(ws.boxing_b)
         ws.boxing_guide.set_dbl(ws.boxing_dbl)
+
+        # ── Bevel + snap/lock-to-lens (M11/M12) ─────────────────────────
+        self._bevel_depth_spin.blockSignals(True)
+        self._bevel_depth_spin.setValue(ws.bevel_depth)
+        self._bevel_depth_spin.setEnabled(ws.bevel_preset == "custom")
+        self._bevel_depth_spin.blockSignals(False)
+        idx = next((i for i, (_lbl, k) in enumerate(self._bevel_choices)
+                    if k == ws.bevel_preset), 2)
+        self._bevel_combo.blockSignals(True)
+        self._bevel_combo.setCurrentIndex(idx)
+        self._bevel_combo.blockSignals(False)
+        self._boxing_snap_chk.blockSignals(True)
+        self._boxing_snap_chk.setChecked(ws.boxing_snapped)
+        self._boxing_snap_chk.blockSignals(False)
+        self._lock_shape_chk.blockSignals(True)
+        self._lock_shape_chk.setChecked(ws.shape_locked)
+        self._lock_shape_chk.blockSignals(False)
+        self._chain_btn.blockSignals(True)
+        self._chain_btn.setChecked(ws.boxing_chain)
+        self._chain_btn.blockSignals(False)
+        self._outline_lock_chk.blockSignals(True)
+        self._outline_lock_chk.setChecked(ws.outline_locked)
+        self._outline_lock_chk.blockSignals(False)
+        ws.boxing_guide.set_bevel_depth(ws.bevel_depth)
+        ws.boxing_guide.set_locked(ws.boxing_snapped)
+        self._apply_boxing_field_modes(ws)
         ws.stock_guide.set_width(ws.stock_w)
         ws.stock_guide.set_height(ws.stock_h)
         ws.pad_guide.set_width(ws.pad_w)
@@ -3090,10 +3228,13 @@ class MainWindow(QMainWindow):
         self._lib_hinge_actions.setVisible(is_hinge)
 
     def _refresh_measurements(self):
-        """Recompute and display workspace measurements in the Properties tab."""
+        """Recompute and display workspace measurements in the Properties tab.
+        Also stashes the representative finished A/B/DBL for the snapped boxing
+        read-outs (_snap_a/_snap_b/_snap_dbl)."""
         ws = self._active_ws
         _FRONT_LAYERS  = {Layer.OUTLINE, Layer.LENS}
         _TEMPLE_LAYERS = {Layer.OUTLINE}
+        self._snap_a = self._snap_b = self._snap_dbl = None
 
         if ws.workspace_type == "front":
             # Front view: positive x = OS (patient's left), negative x = OD (patient's right).
@@ -3151,9 +3292,12 @@ class MainWindow(QMainWindow):
                 f"{fh_bb[3] - fh_bb[1]:.1f} mm" if fh_bb else "—")
 
             # ── Lens boxing: LENS layer ────────────────────────────────
+            # Use the SAMPLED bbox (same basis as the boxing guide + resizer) so
+            # the read-out, the drawn box, and the typed resize target all agree.
+            from .boxing import union_bbox
             os_len, od_len = _split(Layer.LENS)
-            os_lb = _curves_bbox(os_len) if os_len else None
-            od_lb = _curves_bbox(od_len) if od_len else None
+            os_lb = union_bbox(os_len) if os_len else None
+            od_lb = union_bbox(od_len) if od_len else None
 
             # A/B for each side; if only one side exists, both show the same value
             os_a = os_b = od_a = od_b = None
@@ -3165,6 +3309,15 @@ class MainWindow(QMainWindow):
                 od_a, od_b = os_a, os_b   # mirror — same shape
             elif od_lb and not os_lb:
                 os_a, os_b = od_a, od_b   # mirror — same shape
+
+            # Boxing measures the FINISHED (beveled) lens: grow A/B by the bevel.
+            bevel_d = max(0.0, ws.bevel_depth)
+            if bevel_d > 0:
+                from .boxing import finished_ab
+                if os_a is not None:
+                    os_a, os_b = finished_ab(os_a, os_b, bevel_d)
+                if od_a is not None:
+                    od_a, od_b = finished_ab(od_a, od_b, bevel_d)
 
             _set_lens(self._meas_os_a_lbl, self._meas_os_b_lbl, self._meas_os_ed_lbl, os_a, os_b)
             _set_lens(self._meas_od_a_lbl, self._meas_od_b_lbl, self._meas_od_ed_lbl, od_a, od_b)
@@ -3181,6 +3334,15 @@ class MainWindow(QMainWindow):
             elif od_lb:
                 dbl = 2.0 * (mirror_x - od_lb[2])
                 dbl_est = True
+            if dbl is not None and bevel_d > 0:
+                from .boxing import finished_dbl
+                dbl = finished_dbl(dbl, bevel_d)   # beveled nasal edges narrow DBL
+
+            # Stash representative finished A/B/DBL for the snapped boxing read-outs.
+            self._snap_a   = od_a if od_a is not None else os_a
+            self._snap_b   = od_b if od_b is not None else os_b
+            self._snap_dbl = dbl
+
             if dbl is not None:
                 suffix = " mm ~" if dbl_est else " mm"
                 self._meas_dbl_lbl.setText(f"{dbl:.1f}{suffix}")
@@ -3214,6 +3376,330 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Move gizmo + drag-to-move
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Boxing snap / lock + bevel (M11 / M12)
+    # ------------------------------------------------------------------
+
+    def _current_bevel_depth(self) -> float:
+        key = self._bevel_choices[self._bevel_combo.currentIndex()][1]
+        if key == "custom":
+            return self._bevel_depth_spin.value()
+        return BEVEL_PRESETS.get(key, 0.0)
+
+    def _apply_boxing_field_modes(self, ws=None):
+        """A/B/DBL editability per mode: free = inputs; snapped = read-outs;
+        locked = A/B inputs (resize) while DBL stays a read-out (set by moving)."""
+        ws = ws or self._active_ws
+        snapped, locked = ws.boxing_snapped, ws.shape_locked
+        self._boxing_a_spin.setEnabled((not snapped) or locked)
+        self._boxing_b_spin.setEnabled((not snapped) or locked)
+        self._boxing_dbl_spin.setEnabled((not snapped) or locked)
+        self._lock_shape_chk.setEnabled(snapped)
+        self._outline_lock_chk.setEnabled(locked)
+
+    # A/B fields: drive the free box when not snapped; live-resize the locked
+    # lens when locked (read-outs while snapped-but-unlocked never user-fire).
+    def _on_boxing_a_value(self, v: float):
+        ws = self._active_ws
+        if not ws.boxing_snapped:
+            self._boxing_guide.set_a(v)
+        elif ws.shape_locked:
+            self._locked_resize_from_field("a", v)
+
+    def _on_boxing_b_value(self, v: float):
+        ws = self._active_ws
+        if not ws.boxing_snapped:
+            self._boxing_guide.set_b(v)
+        elif ws.shape_locked:
+            self._locked_resize_from_field("b", v)
+
+    def _on_boxing_dbl_value(self, v: float):
+        ws = self._active_ws
+        if not ws.boxing_snapped:
+            self._boxing_guide.set_dbl(v)
+        elif ws.shape_locked:
+            self._set_dbl_by_move(v)
+
+    def _on_chain_toggled(self, on: bool):
+        self._active_ws.boxing_chain = on
+        self._mark_dirty()
+
+    def _on_outline_lock_toggled(self, on: bool):
+        self._active_ws.outline_locked = on
+        self._status.showMessage(
+            "Outline locked to lens — it co-resizes (constant wall)."
+            if on else "Outline unlocked.")
+        self._mark_dirty()
+
+    def _set_dbl_by_move(self, target_dbl: float):
+        """Locked-mode DBL edit → translate the lens(es) along X to hit the
+        target finished DBL.  Each lens moves away-from / toward the mirror axis
+        by half the delta; a locked OPEN (half) outline rides along to keep the
+        wall.  Closed (finished) frames are left in place (DBL is internal)."""
+        ws = self._active_ws
+        cur = self._finished_box_values()
+        if not cur or cur[2] is None:
+            return
+        delta = target_dbl - cur[2]
+        if abs(delta) < 0.02:
+            return
+        axis_x = ws.scene.mirror.x if ws.scene.mirror else 0.0
+        lenses = [c for c in ws.doc_curves
+                  if c.layer == Layer.LENS and not c.mirrored and c.nodes]
+        if not lenses:
+            return
+        out_curves = [c for c in ws.doc_curves
+                      if c.layer == Layer.OUTLINE and not c.mirrored and c.nodes]
+        move_outline = (ws.outline_locked and out_curves
+                        and self._outline_is_half(out_curves, axis_x))
+        self._push_undo_snapshot()
+        self._edit_tool.clear()
+        for c in lenses:
+            cx = sum(n.x for n in c.nodes) / len(c.nodes)
+            self._translate_curve(c, (1.0 if cx >= axis_x else -1.0) * delta / 2.0, 0.0)
+            self.scene.refresh_curve(c)
+        if move_outline:
+            ocx = (lambda b: (b[0] + b[2]) / 2)(_curves_bbox(out_curves))
+            for c in out_curves:
+                self._translate_curve(c, (1.0 if ocx >= axis_x else -1.0) * delta / 2.0, 0.0)
+                self.scene.refresh_curve(c)
+        ws.boxing_guide.refresh()
+        self._refresh_measurements()
+        self._sync_boxing_readouts()
+        self._mark_dirty()
+
+    @staticmethod
+    def _outline_is_half(out_curves, axis_x: float) -> bool:
+        """True if the outline is a single mirrored half (lies to one side of the
+        axis); False if it straddles the axis as a finished full frame."""
+        from .boxing import union_bbox
+        ob = union_bbox(out_curves)
+        if ob is None:
+            return False
+        w = ob[2] - ob[0]
+        if w <= 1e-9:
+            return False
+        left, right = axis_x - ob[0], ob[2] - axis_x
+        straddles = left > w * 0.25 and right > w * 0.25
+        return not straddles
+
+    def _outline_resize_plan(self, out_curves, axis_x, dW: float, dH: float):
+        """Affine-scale plan for the OUTLINE that grows the eyewire wall by the
+        same mm as the lens (constant wall), preserving flats/corners.  Open
+        halves anchor on the nasal (bridge) edge; closed full frames scale
+        symmetrically about the axis."""
+        from .boxing import union_bbox
+        from .resize import scale_curve_about
+        ob = union_bbox(out_curves)
+        if ob is None:
+            return []
+        out_w, out_h = ob[2] - ob[0], ob[3] - ob[1]
+        piv_y = (ob[1] + ob[3]) / 2
+        sy = (out_h + dH) / out_h if out_h > 1e-9 else 1.0
+        if self._outline_is_half(out_curves, axis_x):
+            out_cx = (ob[0] + ob[2]) / 2
+            piv_x = ob[0] if out_cx >= axis_x else ob[2]      # nasal (bridge) edge
+            sx = (out_w + dW) / out_w if out_w > 1e-9 else 1.0
+        else:
+            piv_x = axis_x                                     # symmetric full frame
+            sx = (out_w + 2 * dW) / out_w if out_w > 1e-9 else 1.0
+        if abs(sx - 1.0) < 1e-9 and abs(sy - 1.0) < 1e-9:
+            return []
+        out = []
+        for c in out_curves:
+            nc = scale_curve_about(c, piv_x, piv_y, sx, sy)
+            nc.layer = c.layer
+            nc.group_id = c.group_id
+            out.append((c, nc))
+        return out
+
+    def _locked_resize_from_field(self, changed: str, v: float):
+        """Live-resize the locked lens when A or B is edited.  Only the edited
+        axis is targeted (the other is left untouched) unless the chain is on,
+        in which case the other axis scales proportionally to keep the aspect."""
+        cur = self._finished_box_values()
+        if not cur or cur[0] is None or cur[1] is None:
+            return
+        cur_a, cur_b = cur[0], cur[1]
+        chained = self._chain_btn.isChecked()
+        if changed == "a":
+            if abs(v - cur_a) < 0.02:
+                return
+            target_a = v
+            target_b = cur_b * (v / cur_a) if (chained and cur_a) else None
+        else:
+            if abs(v - cur_b) < 0.02:
+                return
+            target_b = v
+            target_a = cur_a * (v / cur_b) if (chained and cur_b) else None
+        self._resize_locked_lens(target_a, target_b)
+
+    def _on_boxing_snap_toggled(self, on: bool):
+        ws = self._active_ws
+        ws.boxing_snapped = on
+        if not on and ws.shape_locked:
+            ws.shape_locked = False              # leaving snap releases the lock
+            self._lock_shape_chk.blockSignals(True)
+            self._lock_shape_chk.setChecked(False)
+            self._lock_shape_chk.blockSignals(False)
+            self._edit_tool.refresh_for_selection()
+        # Push the current bevel depth so the bevel outline appears immediately.
+        ws.bevel_depth = self._current_bevel_depth()
+        ws.boxing_guide.set_bevel_depth(ws.bevel_depth)
+        ws.boxing_guide.set_locked(on)
+        if on and not self._act_boxing.isChecked():
+            self._act_boxing.setChecked(True)    # snapping implies showing the guide
+        self._apply_boxing_field_modes()
+        if not on:
+            # Restore the free-box A/B/DBL targets the read-outs overwrote.
+            for spin, val in ((self._boxing_a_spin, ws.boxing_a),
+                              (self._boxing_b_spin, ws.boxing_b),
+                              (self._boxing_dbl_spin, ws.boxing_dbl)):
+                spin.blockSignals(True)
+                spin.setValue(max(spin.minimum(), min(spin.maximum(), val)))
+                spin.blockSignals(False)
+            ws.boxing_guide.set_a(ws.boxing_a)
+            ws.boxing_guide.set_b(ws.boxing_b)
+            ws.boxing_guide.set_dbl(ws.boxing_dbl)
+        ws.boxing_guide.refresh()
+        self._refresh_measurements()
+        if on:
+            self._sync_boxing_readouts()
+        self._mark_dirty()
+
+    def _on_lock_shape_toggled(self, on: bool):
+        ws = self._active_ws
+        if on and not ws.boxing_snapped:
+            return                               # lock only meaningful while snapped
+        ws.shape_locked = on
+        self._apply_boxing_field_modes()
+        self._edit_tool.refresh_for_selection()  # show/hide node dots for the lens
+        if on:
+            self._sync_boxing_readouts()
+        self._status.showMessage(
+            "Lens shape locked — type A/B to resize; drag to change DBL."
+            if on else "Lens shape unlocked — spline editing re-enabled.")
+        self._mark_dirty()
+
+    def _resize_locked_lens(self, target_a, target_b):
+        """Resize every LENS curve to the given finished target(s); a None target
+        leaves that axis untouched.  Pure-computes first so a no-op never pushes
+        an undo step."""
+        ws = self._active_ws
+        from .resize import size_to_finished_ab
+        from .boxing import lens_bbox
+        lenses = [c for c in ws.doc_curves
+                  if c.layer == Layer.LENS and not c.mirrored and c.nodes]
+        if not lenses:
+            return
+        axis_x = ws.scene.mirror.x if ws.scene.mirror else 0.0
+        depth = ws.bevel_depth
+
+        # Bare-shape width/height change of the representative lens — drives the
+        # outline's constant-wall co-resize.
+        rep_bb = lens_bbox(lenses[0])
+        dW = (target_a - 2 * depth - (rep_bb[2] - rep_bb[0])) if target_a is not None else 0.0
+        dH = (target_b - 2 * depth - (rep_bb[3] - rep_bb[1])) if target_b is not None else 0.0
+
+        plans = []
+        for c in lenses:
+            new_c = size_to_finished_ab(c, target_a, target_b, depth, axis_x)
+            if new_c is not None:
+                plans.append((c, new_c))
+
+        out_plans = []
+        if ws.outline_locked and (abs(dW) > 1e-9 or abs(dH) > 1e-9):
+            out_curves = [c for c in ws.doc_curves
+                          if c.layer == Layer.OUTLINE and not c.mirrored and c.nodes]
+            if out_curves:
+                out_plans = self._outline_resize_plan(out_curves, axis_x, dW, dH)
+
+        if not plans and not out_plans:
+            return
+        self._push_undo_snapshot()
+        self._edit_tool.clear()
+        new_sel = []
+        for old_c, new_c in plans:
+            new_c.layer    = old_c.layer
+            new_c.group_id = old_c.group_id
+            self._active_ws.remove_curve(old_c)
+            new_sel.append(self._active_ws.add_curve(new_c))
+        for old_c, new_c in out_plans:
+            self._active_ws.remove_curve(old_c)
+            self._active_ws.add_curve(new_c)
+        self.scene.clearSelection()
+        for it in new_sel:
+            it.setSelected(True)
+        ws.boxing_guide.refresh()
+        self._refresh_measurements()
+        self._sync_boxing_readouts()
+        self._mark_dirty()
+
+    def _finished_box_values(self):
+        """(A, B, DBL) finished values stashed by the last _refresh_measurements."""
+        a = getattr(self, "_snap_a", None)
+        if a is None:
+            return None
+        return (a, getattr(self, "_snap_b", None), getattr(self, "_snap_dbl", None))
+
+    def _sync_boxing_readouts(self):
+        """Push the stashed finished A/B/DBL into the spinboxes (read-out display).
+        Caller must have run _refresh_measurements first."""
+        vals = self._finished_box_values()
+        if vals is None:
+            return
+        for spin, val in zip(
+                (self._boxing_a_spin, self._boxing_b_spin, self._boxing_dbl_spin),
+                vals, strict=True):
+            if val is None:
+                continue
+            spin.blockSignals(True)
+            spin.setValue(max(spin.minimum(), min(spin.maximum(), val)))
+            spin.blockSignals(False)
+
+    def _schedule_boxing_follow(self, ws):
+        """Coalesce live geometry changes (node edits, moves) into one follow."""
+        if ws is not self._active_ws or not ws.boxing_snapped:
+            return
+        if not getattr(self, "_boxing_follow_pending", False):
+            self._boxing_follow_pending = True
+            QTimer.singleShot(0, self._do_boxing_follow)
+
+    def _do_boxing_follow(self):
+        self._boxing_follow_pending = False
+        ws = self._active_ws
+        if not ws.boxing_snapped:
+            return
+        ws.boxing_guide.refresh()
+        self._refresh_measurements()
+        self._sync_boxing_readouts()
+
+    def _on_bevel_preset_changed(self, idx: int):
+        ws = self._active_ws
+        key = self._bevel_choices[idx][1]
+        ws.bevel_preset = key
+        is_custom = (key == "custom")
+        self._bevel_depth_spin.setEnabled(is_custom)
+        if not is_custom:
+            self._bevel_depth_spin.blockSignals(True)
+            self._bevel_depth_spin.setValue(BEVEL_PRESETS.get(key, 0.0))
+            self._bevel_depth_spin.blockSignals(False)
+        ws.bevel_depth = self._current_bevel_depth()
+        ws.boxing_guide.set_bevel_depth(ws.bevel_depth)
+        self._refresh_measurements()
+        if ws.boxing_snapped:
+            self._sync_boxing_readouts()
+        self._mark_dirty()
+
+    def _on_bevel_depth_changed(self, v: float):
+        ws = self._active_ws
+        ws.bevel_depth = v
+        ws.boxing_guide.set_bevel_depth(v)
+        self._refresh_measurements()
+        if ws.boxing_snapped:
+            self._sync_boxing_readouts()
+        self._mark_dirty()
 
     def _translate_curve(self, curve, dx: float, dy: float):
         """Translate all nodes (and their control points) of *curve* by (dx, dy) mm."""
@@ -3446,6 +3932,8 @@ class MainWindow(QMainWindow):
             svg = _ICONS_DIR / f"{name}.svg"
             if svg.exists():
                 act.setIcon(_make_icon(name, normal_c, checked_c))
+        if hasattr(self, "_chain_btn") and (_ICONS_DIR / "link-chain.svg").exists():
+            self._chain_btn.setIcon(_make_icon("link-chain", normal_c, checked_c))
         self._refresh_mirror_icons()
 
     def _refresh_mirror_icons(self):
@@ -3482,6 +3970,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction("Add Reference Image…", self._add_face)
         file_menu.addSeparator()
         imp = file_menu.addMenu("Import")
+        imp.addAction("DXF…", self._import_dxf)
         imp.addAction("OMA Lens Trace…", self._import_oma)
         exp = file_menu.addMenu("Export")
         exp.addAction("Export DXF…", self._export_dxf)
@@ -4981,6 +5470,207 @@ class MainWindow(QMainWindow):
             self._refresh_library_panel()
 
     # ------------------------------------------------------------------
+    # Drill holes (DRILL layer + pattern library, M13)
+    # ------------------------------------------------------------------
+
+    def _build_holes_panel(self) -> QWidget:
+        """Drill-hole coordinate entry + pattern library (front workspace)."""
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+
+        hint = QLabel("Holes go on the DRILL layer, offset from the lens boxing "
+                      "centre (the OMA datum).")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        entry = QGroupBox("Place hole")
+        form = QFormLayout(entry)
+        form.setSpacing(6)
+        self._drill_x = QDoubleSpinBox()
+        self._drill_x.setRange(-60, 60); self._drill_x.setSuffix(" mm")
+        self._drill_x.setDecimals(2); self._drill_x.setSingleStep(0.5)
+        self._drill_y = QDoubleSpinBox()
+        self._drill_y.setRange(-40, 40); self._drill_y.setSuffix(" mm")
+        self._drill_y.setDecimals(2); self._drill_y.setSingleStep(0.5)
+        self._drill_dia = QDoubleSpinBox()
+        self._drill_dia.setRange(0.5, 6.0); self._drill_dia.setSuffix(" mm")
+        self._drill_dia.setDecimals(2); self._drill_dia.setSingleStep(0.1)
+        self._drill_dia.setValue(1.4)
+        form.addRow("X (from centre):", self._drill_x)
+        form.addRow("Y (from centre):", self._drill_y)
+        form.addRow("Diameter:", self._drill_dia)
+        btn_add = QPushButton("Add Hole")
+        btn_add.setToolTip("Place a hole at this offset from the lens boxing centre.")
+        btn_add.clicked.connect(self._add_drill_hole_from_fields)
+        form.addRow(btn_add)
+        lay.addWidget(entry)
+
+        lay.addWidget(QLabel("Saved patterns:"))
+        self._drill_list = QListWidget()
+        self._drill_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self._drill_list.setAlternatingRowColors(True)
+        self._drill_list.itemSelectionChanged.connect(self._on_drill_selection_changed)
+        self._drill_list.itemDoubleClicked.connect(lambda _: self._import_drill_pattern())
+        lay.addWidget(self._drill_list)
+
+        self._btn_drill_import = QPushButton("Import Pattern onto Lens")
+        self._btn_drill_import.setEnabled(False)
+        self._btn_drill_import.clicked.connect(self._import_drill_pattern)
+        lay.addWidget(self._btn_drill_import)
+
+        self._btn_drill_save = QPushButton("Save Current Holes as Pattern…")
+        self._btn_drill_save.clicked.connect(self._save_drill_pattern)
+        lay.addWidget(self._btn_drill_save)
+
+        drow = QHBoxLayout()
+        self._btn_drill_rename = QPushButton("Rename…")
+        self._btn_drill_rename.setEnabled(False)
+        self._btn_drill_rename.clicked.connect(self._rename_drill_pattern)
+        self._btn_drill_delete = QPushButton("Delete")
+        self._btn_drill_delete.setEnabled(False)
+        self._btn_drill_delete.clicked.connect(self._delete_drill_pattern)
+        drow.addWidget(self._btn_drill_rename)
+        drow.addWidget(self._btn_drill_delete)
+        lay.addLayout(drow)
+        lay.addStretch()
+
+        self._refresh_drill_library_panel()
+        return w
+
+    def _lens_boxing_center(self):
+        """(cx, cy) of the representative front LENS (sampled), or None."""
+        front = self._workspaces[0]
+        lenses = [c for c in front.doc_curves
+                  if c.layer == Layer.LENS and not c.mirrored and c.nodes]
+        if not lenses:
+            return None
+        from .boxing import lens_bbox
+        bb = lens_bbox(lenses[0])
+        if bb is None:
+            return None
+        return ((bb[0] + bb[2]) / 2.0, (bb[1] + bb[3]) / 2.0)
+
+    def _place_drill_holes(self, holes) -> bool:
+        """holes: list of (dx, dy, dia). Place DRILL circles relative to the lens
+        boxing centre on the front workspace; undo-safe + selected."""
+        center = self._lens_boxing_center()
+        if center is None:
+            QMessageBox.information(
+                self, "No lens",
+                "Draw a LENS shape first — drill holes are placed relative to the "
+                "lens boxing centre.")
+            return False
+        cx, cy = center
+        self._ws_tab_widget.setCurrentIndex(0)   # holes live on the front
+        self._push_undo_snapshot()
+        self.scene.clearSelection()
+        for dx, dy, dia in holes:
+            c = Curve(kind="circle", layer=Layer.DRILL,
+                      nodes=[SplineNode(cx + dx, cy + dy)],
+                      radius=max(0.05, dia / 2.0), closed=True)
+            self._active_ws.add_curve(c).setSelected(True)
+        return True
+
+    def _add_drill_hole_from_fields(self):
+        if self._place_drill_holes([(self._drill_x.value(), self._drill_y.value(),
+                                     self._drill_dia.value())]):
+            self._status.showMessage(
+                f"Placed a {self._drill_dia.value():.2f} mm hole at "
+                f"({self._drill_x.value():.2f}, {self._drill_y.value():.2f}) "
+                "from the lens centre.")
+
+    def _current_drill_holes_relative(self):
+        """Front DRILL circles → [(dx, dy, dia)] offsets from the boxing centre."""
+        center = self._lens_boxing_center()
+        if center is None:
+            return []
+        cx, cy = center
+        holes = []
+        for c in self._workspaces[0].doc_curves:
+            if (c.layer == Layer.DRILL and not c.mirrored
+                    and c.kind == "circle" and c.nodes):
+                holes.append((c.nodes[0].x - cx, c.nodes[0].y - cy,
+                              2.0 * (c.radius or 0.7)))
+        return holes
+
+    def _save_drill_pattern(self):
+        holes = self._current_drill_holes_relative()
+        if not holes:
+            QMessageBox.information(
+                self, "No holes",
+                "There are no DRILL holes on the front workspace to save.")
+            return
+        name, ok = QInputDialog.getText(self, "Save Drill Pattern",
+                                        "Name for this hole pattern:")
+        if not ok or not name.strip():
+            return
+        from .library import DrillLibrary
+        DrillLibrary().save_entry(
+            name.strip(),
+            [{"dx": h[0], "dy": h[1], "dia": h[2]} for h in holes])
+        self._refresh_drill_library_panel()
+        self._status.showMessage(
+            f"Saved drill pattern '{name.strip()}' ({len(holes)} hole(s)).")
+
+    def _import_drill_pattern(self):
+        item = self._drill_list.currentItem()
+        if item is None:
+            return
+        from .library import DrillLibrary
+        holes = DrillLibrary().load_entry(item.data(Qt.ItemDataRole.UserRole))
+        if holes and self._place_drill_holes(
+                [(h["dx"], h["dy"], h["dia"]) for h in holes]):
+            self._status.showMessage(
+                f"Imported {len(holes)} hole(s) from "
+                f"'{item.text().split('  ·')[0]}'.")
+
+    def _refresh_drill_library_panel(self):
+        from .library import DrillLibrary
+        self._drill_list.clear()
+        for e in DrillLibrary().list_entries():
+            it = QListWidgetItem(f"{e['name']}  ·  {e['date']}")
+            it.setData(Qt.ItemDataRole.UserRole, e["path"])
+            self._drill_list.addItem(it)
+        self._on_drill_selection_changed()
+
+    def _on_drill_selection_changed(self):
+        has = self._drill_list.currentItem() is not None
+        self._btn_drill_import.setEnabled(has)
+        self._btn_drill_rename.setEnabled(has)
+        self._btn_drill_delete.setEnabled(has)
+
+    def _rename_drill_pattern(self):
+        item = self._drill_list.currentItem()
+        if item is None:
+            return
+        new_name, ok = QInputDialog.getText(self, "Rename Pattern", "New name:")
+        if not ok or not new_name.strip():
+            return
+        from .library import DrillLibrary
+        try:
+            DrillLibrary().rename_entry(item.data(Qt.ItemDataRole.UserRole),
+                                        new_name.strip())
+        except ValueError as e:
+            QMessageBox.warning(self, "Rename failed", str(e))
+            return
+        self._refresh_drill_library_panel()
+
+    def _delete_drill_pattern(self):
+        item = self._drill_list.currentItem()
+        if item is None:
+            return
+        if QMessageBox.question(
+                self, "Delete Pattern",
+                f"Delete '{item.text().split('  ·')[0]}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes:
+            from .library import DrillLibrary
+            DrillLibrary().delete_entry(item.data(Qt.ItemDataRole.UserRole))
+            self._refresh_drill_library_panel()
+
+    # ------------------------------------------------------------------
     # Calibration
     # ------------------------------------------------------------------
 
@@ -5392,6 +6082,12 @@ class MainWindow(QMainWindow):
         ws.bridge_angle  = frm.bridge_angle_deg
         ws.apical_radius = frm.apical_radius_mm
 
+        bevel = data.get("bevel")
+        if bevel is not None:
+            ws.bevel_preset = bevel.preset
+            ws.bevel_depth  = bevel.depth_mm
+            ws.boxing_guide.set_bevel_depth(ws.bevel_depth)
+
         ws.scene.clear_faces()
         ws.face_image_paths.clear()
         ws.selected_face_idx = -1
@@ -5518,6 +6214,7 @@ class MainWindow(QMainWindow):
                                apical_radius_mm=ws.apical_radius,
                            ),
             "machined_bridge": MachinedBridge(),
+            "bevel": BevelSpec(preset=ws.bevel_preset, depth_mm=ws.bevel_depth),
             "face_images": [
                 FaceImage(
                     path     = ws.face_image_paths[i] if i < len(ws.face_image_paths) else "",
@@ -5557,6 +6254,7 @@ class MainWindow(QMainWindow):
             layers          = d["layers"],
             fill            = d["fill"],
             texts           = d["texts"],
+            bevel           = d["bevel"],
         )
 
     def _do_save_gdraw(self, path: str):
@@ -5724,6 +6422,40 @@ class MainWindow(QMainWindow):
     # OMA lens-trace interchange (M7)
     # ------------------------------------------------------------------
 
+    def _import_dxf(self):
+        """File > Import > DXF… — pour any DXF's geometry into the active
+        workspace.  Recognised GuildDraw layer names valid for this workspace
+        are kept; everything else lands on the active layer, ungrouped, so the
+        maker can drag each path to the right layer in the Layers panel."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import DXF", "", "DXF Files (*.dxf);;All Files (*)")
+        if not path:
+            return
+        ws = self._active_ws
+        try:
+            from .export.dxf_import import import_dxf
+            curves, notes = import_dxf(path, ws.active_layer, ws.workspace_type)
+        except Exception as e:
+            QMessageBox.critical(self, "DXF import failed", str(e))
+            return
+        if not curves:
+            extra = ("\n\n" + "\n".join(notes)) if notes else ""
+            QMessageBox.information(
+                self, "Nothing imported",
+                f"No supported geometry was found in this DXF.{extra}")
+            return
+
+        self._push_undo_snapshot()
+        self.scene.clearSelection()
+        for c in curves:
+            c.mirrored = False
+            self._active_ws.add_curve(c).setSelected(True)
+
+        msg = f"Imported {len(curves)} curve(s) from {os.path.basename(path)}."
+        if notes:
+            msg += "  " + "  ".join(notes)
+        self._status.showMessage(msg)
+
     def _import_oma(self):
         """File > Import > OMA Lens Trace… — traced lens shapes (from a frame
         tracer / lab DCS file) become editable LENS splines in Frame Front."""
@@ -5775,10 +6507,20 @@ class MainWindow(QMainWindow):
         for c in lenses.values():
             self._active_ws.add_curve(c)
 
+        # DRILLE holes → DRILL circles. OMA is y-up from the binocular frame
+        # centre, which the import places at the scene origin (0, 0).
+        for d in job.drills:
+            self._active_ws.add_curve(Curve(
+                kind="circle", layer=Layer.DRILL,
+                nodes=[SplineNode(d.x, -d.y)],
+                radius=max(0.05, d.dia / 2.0), closed=True))
+
         src = "file DBL" if dbl_vals else "boxing-guide DBL"
         msg = (f"Imported {len(lenses)} traced lens shape"
                f"{'s' if len(lenses) != 1 else ''} onto LENS "
                f"({src} {dbl:.1f} mm).")
+        if job.drills:
+            msg += f"  +{len(job.drills)} drill hole(s) on DRILL."
         if len(lenses) == 1:
             msg += " Single-side file — the mirror ghost previews the other side."
         self._status.showMessage(msg)
@@ -5841,6 +6583,23 @@ class MainWindow(QMainWindow):
         except ValueError as e:
             QMessageBox.critical(self, "OMA export failed", str(e))
             return
+
+        # Drill-mount holes (DRILL layer) → DRILLE features, in the binocular
+        # frame system: origin midway between the two lens centres, y-up.
+        from .export.oma import OmaDrill
+        origin_x = (boxing_center(od)[0] + boxing_center(os_lens)[0]) / 2.0
+        mirror_on = self._act_mirror.isChecked()
+        axis_x = (self.scene.mirror.x if (mirror_on and self.scene.mirror)
+                  else origin_x)
+        for c in self._doc_curves:
+            if (c.mirrored or c.layer != Layer.DRILL
+                    or c.kind != "circle" or not c.nodes):
+                continue
+            hx, hy = c.nodes[0].x, c.nodes[0].y
+            dia = 2.0 * (c.radius or 0.7)
+            job.drills.append(OmaDrill(hx - origin_x, -hy, dia))
+            if mirror_on:
+                job.drills.append(OmaDrill((2.0 * axis_x - hx) - origin_x, -hy, dia))
 
         path, _ = QFileDialog.getSaveFileName(
             self, "Export OMA Trace", "",

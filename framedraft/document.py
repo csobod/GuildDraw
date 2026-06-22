@@ -8,18 +8,19 @@ class Layer(str, Enum):
     LENS      = "LENS"
     BRIDGE    = "BRIDGE"
     HINGE     = "HINGE"
+    DRILL     = "DRILL"      # drill-mount holes (Frame Front; circles → DXF/OMA)
     REF       = "REF"
     SCULPT    = "SCULPT"     # back-surface scallop lines (Frame Front → GuildCAM)
     ENGRAVING = "ENGRAVING"  # engraving marks (Temple)
 
 
-MACHINED_LAYERS = {Layer.OUTLINE, Layer.LENS, Layer.BRIDGE, Layer.HINGE}
+MACHINED_LAYERS = {Layer.OUTLINE, Layer.LENS, Layer.BRIDGE, Layer.HINGE, Layer.DRILL}
 ALL_LAYER_NAMES = {l.value for l in Layer}
 
 # Layers available per workspace (strict — layer combo filtered to these).
 # BRIDGE exists in the enum for future GuildCAM bridge-path tooling (deferred).
 WORKSPACE_LAYERS: dict[str, list[Layer]] = {
-    "front":    [Layer.OUTLINE, Layer.LENS,      Layer.SCULPT, Layer.HINGE, Layer.REF],
+    "front":    [Layer.OUTLINE, Layer.LENS, Layer.DRILL, Layer.SCULPT, Layer.HINGE, Layer.REF],
     "temple_r": [Layer.OUTLINE, Layer.ENGRAVING, Layer.SCULPT, Layer.HINGE, Layer.REF],
     "temple_l": [Layer.OUTLINE, Layer.ENGRAVING, Layer.SCULPT, Layer.HINGE, Layer.REF],
     "hinge":    [Layer.HINGE,   Layer.REF],
@@ -54,6 +55,36 @@ class MirrorAxis:
 class FormingMetadata:
     bridge_angle_deg: float = 0.0
     apical_radius_mm: float = 0.0
+
+
+# Bevel-offset presets: preset key -> outward offset depth (mm) of the finished
+# (beveled) lens edge beyond the bare lens-material shape.  Drives the boxing
+# guide's finished-measurement outline and the A/B/DBL the boxing system reports.
+BEVEL_PRESETS: dict[str, float] = {
+    "flat":       0.0,   # flat / rimless (drill-mount lenses — no bevel)
+    "horn_metal": 0.5,
+    "acetate":    1.0,
+}
+
+
+@dataclass
+class BevelSpec:
+    """Lens bevel model.
+
+    *depth_mm* is how far the finished (beveled) lens sits proud of the bare
+    lens-material shape on every edge.  ``preset == "custom"`` keeps a
+    user-entered depth; the other presets derive their depth from
+    ``BEVEL_PRESETS``.  ``depth_mm == 0`` (flat/rimless) means no bevel outline
+    is drawn and the lens is drill-mount eligible.
+    """
+    preset:   str   = "acetate"
+    depth_mm: float = 1.0
+
+    @classmethod
+    def from_preset(cls, preset: str) -> "BevelSpec":
+        if preset in BEVEL_PRESETS:
+            return cls(preset=preset, depth_mm=BEVEL_PRESETS[preset])
+        return cls(preset=preset, depth_mm=0.0)
 
 
 @dataclass

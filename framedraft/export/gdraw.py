@@ -36,6 +36,7 @@ def _empty_ws_data() -> dict:
         "layers": {},
         "fill": None,
         "texts": [],
+        "bevel": None,
     }
 
 
@@ -72,6 +73,7 @@ def save_gdraw(workspace_data: dict, path: str, active_tab: str = "front") -> No
                     layers          = data.get("layers"),
                     fill            = data.get("fill"),
                     texts           = data.get("texts", []),
+                    bevel           = data.get("bevel"),
                 )
                 zf.write(tmp_path, f"{tab}.svg")
             finally:

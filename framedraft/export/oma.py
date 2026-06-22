@@ -62,10 +62,23 @@ class OmaTrace:
 
 
 @dataclass
+class OmaDrill:
+    """One DRILLE drill-hole feature. Position is mm from the binocular frame
+    centre (origin between the lenses), y-UP (OMA convention)."""
+    x:     float
+    y:     float
+    dia:   float
+    eye:   str = "B"               # B=binocular | R | L
+    ftype: str = "C"              # feature type (C = simple round hole)
+    raw:   Optional[List[str]] = None  # original fields, for faithful rebuild
+
+
+@dataclass
 class OmaJob:
     """All records of a DCS file: traces decoded, everything else preserved."""
     records: List[Tuple[str, str]]  = field(default_factory=list)  # (LABEL, raw value)
     traces:  Dict[str, OmaTrace]    = field(default_factory=dict)  # side -> trace
+    drills:  List[OmaDrill]         = field(default_factory=list)  # DRILLE features
 
     def values(self, label: str) -> Optional[List[str]]:
         """Fields of the first record with this label, split on ';'."""
@@ -163,6 +176,20 @@ def parse_oma(text: str) -> OmaJob:
                     raise ValueError(
                         f"Bad radius value in R record: {v!r}"
                     ) from None
+
+        elif label == "DRILLE":
+            # A populated DRILLE has >=5 fields (eye;type;x;y;dia;...). A bare
+            # count like "DRILLE=0" (no holes) is preserved verbatim instead.
+            vals = [v.strip() for v in value.split(";")]
+            if len(vals) >= 5:
+                try:
+                    job.drills.append(OmaDrill(
+                        x=float(vals[2]), y=float(vals[3]), dia=float(vals[4]),
+                        eye=vals[0] or "B", ftype=vals[1] or "C", raw=vals))
+                except ValueError as e:
+                    raise ValueError(f"Bad DRILLE record {value!r}: {e}") from None
+            else:
+                job.records.append((label, value))
 
         else:
             job.records.append((label, value))
@@ -313,10 +340,20 @@ def curve_to_trace(curve: Curve, n: int = 400) -> List[float]:
 # Building
 # ---------------------------------------------------------------------------
 
+def _drill_line(d: OmaDrill) -> str:
+    """DRILLE record for one hole. Rebuilds the original fields verbatim when
+    available (faithful round trip); otherwise emits a simple round through-hole:
+    eye;type;x;y;dia;x;y;0;1;F (point 2 = point 1 for a round hole)."""
+    if d.raw is not None:
+        return "DRILLE=" + ";".join(d.raw)
+    return (f"DRILLE={d.eye};{d.ftype};{d.x:.2f};{d.y:.2f};{d.dia:.2f};"
+            f"{d.x:.2f};{d.y:.2f};0;1;F")
+
+
 def build_oma(job: OmaJob) -> str:
     """Serialize an OmaJob to DCS text (CRLF, TRCFMT format 1, R records in
     chunks of 10). Non-trace records are emitted first, in their stored order;
-    traces follow in R, L order."""
+    traces follow in R, L order; DRILLE drill features come last."""
     lines = [f"{label}={value}" for label, value in job.records]
     for side in ("R", "L"):
         tr = job.traces.get(side)
@@ -326,4 +363,6 @@ def build_oma(job: OmaJob) -> str:
         lines.append(f"TRCFMT=1;{len(ints)};E;{side};{tr.ttype}")
         for i in range(0, len(ints), _R_PER_LINE):
             lines.append("R=" + ";".join(ints[i:i + _R_PER_LINE]))
+    for d in job.drills:
+        lines.append(_drill_line(d))
     return "\r\n".join(lines) + "\r\n"

@@ -12,7 +12,11 @@ and export clean DXF for GuildCAM — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-15, v1.0.0-rc1c — M1–M8 complete; M9 software side done; rc1c adds the "Ready for GuildCAM" readiness dot, a drafting round (zoom/pan-to-edge, box/Ctrl/tree multi-select with amber highlight halo, arc-to-line join, Start-End-Center arc + Fillet tools, Ctrl+B bookmark), and SVG-import/BRIDGE-layer proposals; 1.0 still gated on GuildCAM hardware round-trip)*
+## Status snapshot *(2026-06-21, v1.0.0-rc2.dev — M1–M9 complete (rc1c); building the **Road to rc2** (M10–M14): generic DXF import, bevel model + lens-locked boxing, auto-resize, drill holes, release engineering. **Road to rc2 (M10–M14) ✅ COMPLETE** (162 tests): M10 generic DXF import, M11
+bevel + lens-locked boxing, M12 snap/lock auto-resize (+ chain, DBL, outline-lock),
+M13 drill holes + Pockets/Holes library + OMA `DRILLE`, M14 release engineering +
+`v1.0.0-rc2` installer. **Uncommitted, pending user review/commit + tag.** 1.0
+still gated on GuildCAM hardware round-trip)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -482,6 +486,153 @@ and aren't copied by Ctrl+C/V — revisit on demand.
       a real tracer file should be confirmed when one is available)*
 - [x] Repository under git with tagged releases
 - [x] Packaged Windows build + written user guide
+
+---
+
+# Road to rc2 (M10–M14)
+
+> **2026-06-21 replan.** Maker feedback after rc1c converges on getting *real
+> measurement data* and *real existing work* in and out of the app. Five
+> milestones, each ending in a working app + version bump. Full detail and the
+> confirmed design decisions live in the approved plan; summarised here.
+
+## M10 — Generic DXF import — ✅ DONE (2026-06-21)
+
+The migration on-ramp: open any DXF and pour its geometry into the active
+workspace. New Qt-free `framedraft/export/dxf_import.py` (`import_dxf(path,
+active_layer, workspace_type) -> (curves, notes)`) inverts `export/dxf.py` —
+Y-negation undone, arc angles swapped+negated back, cubic SPLINE rebuilt exactly
+via `bezier_decomposition` (rational/non-cubic splines + ELLIPSE fall back to
+flatten→Catmull-Rom). LINE/LWPOLYLINE/POLYLINE → line curves (bulged polylines
+expanded via `virtual_entities`); CIRCLE/ARC native. **Layer policy:** a DXF
+layer name that is a recognised GuildDraw layer *valid for the target workspace*
+is kept; everything else lands on the active layer (ungrouped, so each path can
+be re-filed by dragging Layers-panel rows) and is reported in the status note.
+`File ▸ Import ▸ DXF…` wired in `app.py` (`_import_dxf`); undo-safe, selected,
+dirty. Tests: `tests/test_dxf_import.py` (11) — per-kind round-trips, layer
+keep/dump, bulge expansion, ellipse, unsupported-entity reporting. Suite: 133.
+
+## M11 — Bevel model + lens-locked boxing guide — ✅ DONE (2026-06-21)
+
+`document.BevelSpec(preset, depth_mm)` + `BEVEL_PRESETS` — preset dropdown
+**Flat/Rimless 0.0**, **Horn/Metal 0.5**, **Acetate 1.0**, **Custom** (free
+depth). New Qt-free `framedraft/boxing.py`: `curve_bbox`, `finished_box`
+(bare bbox grown by depth), `bevel_outline` (`offset_curve` outward, sign-robust
+to winding), `finished_ab`/`finished_dbl`. `BoxingGuide` (construction.py) gains
+`set_locked`/`set_lens_provider`/`set_bevel_depth`/`refresh`: in locked mode it
+boxes the real LENS curves (+ mirror) at their finished bbox with a centre cross
+and draws the bevel-offset "full lens depth" outline. Front guides panel adds
+**Lock to lens** + **Bevel** combo + **Bevel depth** spin (depth editable only
+for Custom); locking disables the A/B/DBL inputs and the Measurements panel
+reports finished (beveled) A/B/ED/DBL. Persisted under `"bevel"`
+(svg.py/gdraw.py/app save+load); a locked guide re-draws live on lens edits
+(`_do_layer_panel_refresh`). Tests: `tests/test_boxing.py` (8) +
+bevel SVG round-trip in `test_svg_roundtrip.py` (2). Suite: 143. Ruff clean.
+
+## M12 — Auto-resize from boxing measurements — ✅ DONE (2026-06-21)
+
+Three-state boxing workflow (per maker spec): **free** (A/B/DBL are inputs for
+the floating box) → **Snap to lens shape** (guide + bevel fit the real LENS;
+A/B/DBL become live read-outs of the finished measurements, updating in real time
+as the lens is edited or moved — move changes DBL) → **Lock lens shape** (spline
+node-editing frozen but the shape stays movable; size changes only by typing new
+A/B, which restretch it accurately — draw once, offer many sizes). New Qt-free
+`framedraft/resize.py` (`scale_curve_about`, `size_to_finished_ab` — scales about
+the **nasal edge** so DBL is preserved, targets the finished/beveled A/B,
+circle/arc→spline under non-uniform scale). Live-follow via a new
+`scene.geometry_changed` hook (fires on node edits + drag-moves) coalesced into
+one boxing refresh; node-editing frozen via an `EditTool` block predicate
+(selectable/movable, no dots — same idea as grouped curves). State
+(`boxing_snapped`/`shape_locked`) saved per workspace; A/B/DBL field tri-state
+managed in `_apply_boxing_field_modes`. Tests: `tests/test_resize.py` (5). Suite:
+148. Ruff clean. **Refinement (2026-06-21):** resize is now **live** (A/B
+`valueChanged` with `keyboardTracking` off → commits on Enter/step, not
+mid-typing; replaces the flaky editingFinished path) and a **chain toggle**
+(`link-chain.svg`, `boxing_chain`, between A and B) switches A/B between
+proportional (aspect-locked) and independent resizing. **Accuracy fix
+(2026-06-21):** the read-out, the drawn box, and the resizer now all use the
+**sampled** `lens_bbox` basis (`boxing.union_bbox` feeds `_refresh_measurements`)
+instead of the node+control-point `_curves_bbox` — so a typed A/B lands exactly
+on the number; and `size_to_finished_ab` takes **per-axis optional targets**
+(None = leave untouched), so changing A never perturbs B (the earlier
+"resizes both / lands close" drift, caused by passing the rounded other-axis
+read-out as a target on a different measurement basis, is gone).
+**DBL-by-typing + outline lock (2026-06-21):** DBL is editable while locked and
+translates the lens(es) along X to the target (`_set_dbl_by_move`); a new **Lock
+outline to lens** toggle (`outline_locked`) co-resizes the OUTLINE with a
+**constant eyewire wall** via an affine scale (`_outline_resize_plan` →
+`scale_curve_about`), so flats and corners are preserved (never an offset). It
+auto-detects the outline form by axis-straddle (`_outline_is_half`): an OPEN
+mirrored half anchors on the bridge edge; a CLOSED finished frame scales
+symmetrically about the axis — so archived finished frames resize without being
+re-opened. Verified: walls held at 2.00 mm through A-resize and DBL-move.
+Suite: 151.
+
+## M13 — Drill holes + Pockets/Holes library split — ✅ DONE (2026-06-21)
+
+`Layer.DRILL` added (enum + front `WORKSPACE_LAYERS` + `MACHINED_LAYERS` +
+dxf `_MIRROR_LAYERS` so holes mirror with the lens). A drill hole = a `circle`
+Curve on DRILL → exports as a DXF `CIRCLE` for free. `DrillLibrary`
+(`framedraft/library.py`, JSON patterns of `{dx,dy,dia}` offsets from the lens
+**boxing centre** = the OMA datum; per-hole diameter). The Library sidebar tab is
+now a **Pockets / Holes** `QTabWidget`: Holes page = coordinate entry (X/Y from
+centre + Ø → Add Hole) + saved-pattern list (Import re-centres the pattern on the
+current lens; Save/Rename/Delete). Tests: `tests/test_drill.py` (5). Suite: 156.
+Verified: place-by-coords, save, import onto a repositioned lens (re-centres),
+DXF mirror-doubles holes.
+
+**Datum decision:** user said base it on OMA → OMA locates holes in cartesian mm
+from the binocular frame centre, so the library stores boxing-centre offsets.
+
+**OMA `DRILLE` export/import ✅ DONE** — format reverse-engineered from a real
+Silhouette drilled file (`HEART_54_0.OMA`):
+`DRILLE=<eye B/R/L>;<type C>;x;y;dia;x2;y2;angle;n;flag` — one record per hole,
+decimal **mm**, y-UP, origin = binocular frame centre (between the lenses); for a
+simple round through-hole point 2 == point 1, e.g.
+`DRILLE=B;C;-25.00;9.00;1.40;-25.00;9.00;0;1;F`. `oma.py`: `OmaDrill` +
+`OmaJob.drills`; `parse_oma` reads populated DRILLE (≥5 fields) while preserving a
+bare `DRILLE=0` count; `build_oma` re-emits holes after the traces (raw fields
+kept for verbatim round trip). App: `_export_oma` gathers DRILL circles (+ mirror)
+into the binocular system; `_import_oma` drops them back onto DRILL. Tests:
+golden round trip of the real sample + canonical-format build (`test_oma.py`, 21).
+Suite: 161.
+
+## M14 — rc2 release engineering — ✅ DONE (2026-06-21, except tag/commit)
+
+- ✅ **Validator/readiness recognise DRILL** — `Layer.DRILL` is in the enum +
+  `MACHINED_LAYERS`, so `validate()` (and the readiness dot, which reuses it)
+  accept optional DRILL holes on the front with no error/warning (DRILL circles
+  are closed). Test in `tests/test_validate.py`.
+- ✅ **PyInstaller hidden-imports** — added `framedraft.boxing`,
+  `framedraft.resize`, `framedraft.export.dxf_import` to `build_common.py`
+  (shared by both specs).
+- ✅ **Docs** — README "New in rc2" section + USER-GUIDE (DXF import, boxing
+  snap/lock/resize + bevel, drill holes + OMA `DRILLE`).
+- ✅ **Version stamped `1.0.0-rc2`** — `framedraft/__init__.py` + `GuildDraw.iss`
+  fallback/comment.
+- ✅ **Installer built** via `scripts/build_release.ps1` (test gate → one-folder +
+  one-file PyInstaller → win64 zip → Inno Setup `GuildDraw-1.0.0-rc2-setup.exe`).
+- ⏳ **Tag `v1.0.0-rc2` + commit** — held for user review (rc2 work is
+  uncommitted by request).
+
+### Updates & distribution (2026-06-21 decision)
+
+**No separate "update build" is needed.** The Inno Setup installer has a fixed
+`AppId` GUID, so running a newer `GuildDraw-<ver>-setup.exe` **upgrades the
+existing install in place** (overwrites `{localappdata}\Programs\GuildDraw`,
+bumps the Add/Remove-Programs version; Inno 6 closes/relaunches a running app via
+the Restart Manager by default). **User data is preserved** — the installer never
+touches `~/.guilddraw/` (prefs, autosave, hinge/drill libraries, recent files),
+only program files + HKCU associations. Portable builds "update" by replacing the
+zip/exe; their data also lives in `~/.guilddraw/`.
+
+**No in-app auto-update.** GuildDraw is deliberately network-free (no
+QtNetwork/telemetry — a selling point for IT-wary makers; see Security
+hardening). An in-app updater would reintroduce network access and AV/EDR
+attention. Update channel stays: download the new installer (or portable) from
+Releases/website and run it. If an update *notice* is ever wanted, the lightest
+network-preserving option is a manual "Check for updates" menu item that opens
+the Releases URL in the browser — deferred, not required.
 
 ---
 

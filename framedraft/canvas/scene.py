@@ -115,6 +115,7 @@ class FrameScene(QGraphicsScene):
         self._text_edit_cb = None      # (TextObject) -> None; double-click re-edit
         self._mirror_display = True
         self._dim_drag_cb = None   # () -> None; pushed-undo hook for DimItem drags
+        self.geometry_changed = None   # (Curve) -> None; live-follow hook (M12)
         self._layer_visible: dict = {}   # Layer -> bool (default True)
         self._layer_locked:  dict = {}   # Layer -> bool (default False)
         # Frame fill overlay (display-only; never exported)
@@ -450,6 +451,11 @@ class FrameScene(QGraphicsScene):
             item.refresh()
         self._update_ghost_for(curve)
         self.rebuild_fill()
+        # Live-follow hook: fires on node/handle edits and drag-moves (both route
+        # through refresh_curve) so observers like the snapped boxing guide can
+        # track geometry without a full document-change notification.
+        if self.geometry_changed:
+            self.geometry_changed(curve)
 
     def remove_curve(self, curve: Curve):
         item = self._curve_items.pop(id(curve), None)

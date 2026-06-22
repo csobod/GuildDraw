@@ -8,10 +8,12 @@ nothing else.
 Built with Python + PySide6 (Qt 6). Scene units are true millimetres (1 scene
 unit = 1 mm) end to end: what you draw is what gets cut.
 
-**Status: v1.0.0-rc1 — release candidate.** All drafting features are
-complete and tested. Final 1.0 sign-off is gated on the GuildCAM hardware
-round-trip (cutting a physical frame from exported DXF), which is pending
-GuildCAM's redevelopment.
+**Status: v1.0.0-rc2 — release candidate.** All drafting features are
+complete and tested (161-test suite). rc2 adds generic DXF import, a bevel model
+with a lens-locked boxing guide and measurement-driven auto-resize, and
+drill-mount holes with OMA `DRILLE` interchange (see *New in rc2* below). Final
+1.0 sign-off is gated on the GuildCAM hardware round-trip (cutting a physical
+frame from exported DXF), which is pending GuildCAM's redevelopment.
 
 ## Highlights
 
@@ -37,6 +39,26 @@ GuildCAM's redevelopment.
 - **Clean DXF out**: R2000 SPLINE entities (exact Bézier → B-spline, never
   flattened), strict layer vocabulary, per-workspace validation, and batch
   export of all four workspaces in one go.
+
+## New in rc2
+
+- **Generic DXF import** (*File ▸ Import ▸ DXF…*) — bring in any existing DXF
+  library. Entities on recognised GuildDraw layers keep them; everything else
+  lands on the active layer for you to re-file by dragging rows in the Layers
+  panel. Handles lines, polylines (incl. bulge arcs), splines, circles, arcs,
+  and ellipses.
+- **Bevel model + lens-locked boxing** — a bevel preset (Flat/Rimless, Horn/Metal,
+  Acetate, or Custom depth) plus **Snap to lens shape**: the boxing box and a
+  bevel-offset "full lens depth" outline fit the real lens, and A/B/DBL read the
+  finished (beveled) measurements live.
+- **Measurement-driven auto-resize** — **Lock lens shape** to freeze the spline,
+  then type new A/B to restretch the lens to exact finished sizes (a chain toggle
+  links A/B proportionally), and DBL to slide it. **Lock outline to lens**
+  co-resizes the frame at a constant eyewire wall — preserving flats and corners —
+  and auto-detects open (mirrored half) vs closed (finished) outlines.
+- **Drill-mount holes** — a DRILL layer, a coordinate-entry and pattern library
+  (*Library ▸ Holes*, offsets from the lens boxing centre), and **OMA `DRILLE`
+  import/export** so drill-mount lens designs round-trip with labs.
 
 ## Download
 

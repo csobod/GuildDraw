@@ -122,6 +122,9 @@ class BoxingGuide:
         self._axis_x      = 0.0
         self._mirror_on   = True
         self._dark        = False
+        self._locked        = False   # lock-to-lens: derive boxes from geometry
+        self._bevel_depth   = 0.0     # finished-lens outline offset (mm)
+        self._lens_provider = None    # fn() -> list[Curve] (LENS curves)
 
     def set_visible(self, on: bool):
         self._visible = on
@@ -151,6 +154,22 @@ class BoxingGuide:
         self._dark = dark
         self._refresh()
 
+    def set_locked(self, on: bool):
+        self._locked = on
+        self._refresh()
+
+    def set_bevel_depth(self, mm: float):
+        self._bevel_depth = mm
+        self._refresh()
+
+    def set_lens_provider(self, fn):
+        """fn() -> list[Curve]; used in locked mode to box the real lenses."""
+        self._lens_provider = fn
+
+    def refresh(self):
+        """Public re-draw — call when the locked lens geometry changes."""
+        self._refresh()
+
     def _refresh(self):
         for item in self._items:
             self._scene.removeItem(item)
@@ -162,6 +181,13 @@ class BoxingGuide:
         pen = QPen(_boxing_color(self._dark), 0)
         pen.setStyle(Qt.PenStyle.DashDotLine)
 
+        if self._locked:
+            self._draw_locked(pen)
+        else:
+            self._draw_from_values(pen)
+
+    def _draw_from_values(self, pen):
+        """Free-floating A × B boxes at DBL separation (unlocked default)."""
         a        = self._a_mm        # mm = scene units
         b        = self._b_mm
         dbl_half = self._dbl_mm / 2
@@ -186,6 +212,54 @@ class BoxingGuide:
 
         _add_box(ax + dbl_half, a)
         _add_box(ax - dbl_half - a, a)
+
+    def _draw_locked(self, pen):
+        """Boxes derived from the real LENS geometry (+ bevel offset).  A box
+        and centre cross are drawn around each lens's finished bbox, plus the
+        bevel-offset 'full lens depth' outline (computed from the sampled shape
+        via Shapely so it stays clean on complex curves)."""
+        from .boxing import bevel_outline_points, finished_box
+        from .document import Layer
+        from .geometry import mirror_curve
+
+        lenses = []
+        if self._lens_provider:
+            lenses = [c for c in self._lens_provider()
+                      if c.layer == Layer.LENS and not c.mirrored and c.nodes]
+        draw_curves = list(lenses)
+        if self._mirror_on:
+            draw_curves += [mirror_curve(c, self._axis_x) for c in lenses]
+
+        depth = self._bevel_depth
+        out_pen = QPen(_boxing_color(self._dark), 0)
+        out_pen.setStyle(Qt.PenStyle.DashLine)
+
+        for c in draw_curves:
+            bb = finished_box(c, depth)
+            if bb is None:
+                continue
+            x0, y0, x1, y1 = bb
+            rect = QPainterPath()
+            rect.addRect(x0, y0, x1 - x0, y1 - y0)
+            ri = self._scene.addPath(rect, pen)
+            ri.setZValue(self._Z)
+            self._items.append(ri)
+            xm, ym = (x0 + x1) / 2, (y0 + y1) / 2
+            for li in (self._scene.addLine(x0, ym, x1, ym, pen),
+                       self._scene.addLine(xm, y0, xm, y1, pen)):
+                li.setZValue(self._Z)
+                self._items.append(li)
+            if depth > 0:
+                pts = bevel_outline_points(c, depth)
+                if pts:
+                    path = QPainterPath()
+                    path.moveTo(pts[0][0], pts[0][1])
+                    for px, py in pts[1:]:
+                        path.lineTo(px, py)
+                    path.closeSubpath()
+                    pi = self._scene.addPath(path, out_pen)
+                    pi.setZValue(self._Z)
+                    self._items.append(pi)
 
 
 class RectGuide:

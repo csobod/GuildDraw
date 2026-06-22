@@ -1,4 +1,4 @@
-# GuildDraw User Guide (v1.0.0-rc1)
+# GuildDraw User Guide (v1.0.0-rc2)
 
 GuildDraw drafts eyewear in true millimetres. Everything you draw is at 1:1
 scale; the DXF you export is what the CNC cuts.
@@ -98,7 +98,18 @@ symmetric contour (draw half, then Mirror Close or bake + join).
 - **Construction guides**: bridge angle, apical radius, crest height, temple
   spread/drop.
 - **Boxing guide**: A / B / DBL boxes per the boxing system — match these to
-  the customer's measurements before drawing lenses.
+  the customer's measurements before drawing lenses. Three modes:
+  - *Free* (default): A / B / DBL are inputs that size the floating box.
+  - **Snap to lens shape**: the box (and a dashed bevel-offset "full lens depth"
+    outline) fit the actual lens; pick a **Bevel** preset (Flat/Rimless 0,
+    Horn/Metal 0.5, Acetate 1.0, or Custom). A / B / DBL now read the *finished*
+    (beveled) measurements live as you edit or move the lens.
+  - **Lock lens shape**: the spline freezes (still movable). Type a new **A**/**B**
+    to restretch the lens to that exact finished size — the **chain** button
+    between them links A/B proportionally; type **DBL** to slide it. **Lock
+    outline to lens** co-resizes the frame outline at a constant eyewire wall
+    (flats and corners preserved; open mirrored halves grow from the bridge,
+    closed finished frames grow symmetrically).
 - **Stock / pad guides**: outlines of your acetate blank and pad block, for
   checking the design fits the material.
 - **Face photo**: File → Add Reference Image…, then calibrate px-per-mm by
@@ -107,14 +118,30 @@ symmetric contour (draw half, then Mirror Close or bake + join).
   sidebar. The **Frame Fill** overlay (Guides panel) renders the frame
   silhouette over the photo for a realistic preview.
 
-## 4. Lens traces (OMA/DCS)
+## 4. Importing & lens traces (DXF, OMA/DCS)
 
+- **File → Import → DXF…** brings any DXF into the active workspace. Entities on
+  recognised GuildDraw layers (OUTLINE/LENS/…) keep them; everything else lands
+  on the active layer, selected, so you can drag each path to the right layer in
+  the Layers panel. Use it to migrate an existing frame library.
 - **File → Import → OMA Lens Trace…** reads a frame-tracer / lab DCS file
   (TRCFMT format 1). Traces land in Frame Front as editable LENS splines,
   boxing centres on y=0, nasal edges separated by the file's DBL (or the
-  boxing guide's). Derive the frame around them.
+  boxing guide's). Any `DRILLE` drill holes in the file land on the DRILL layer.
 - **File → Export → OMA Trace…** (Frame Front) emits both lens contours plus
-  HBOX/VBOX/DBL/FED computed from the geometry, for labs and edgers.
+  HBOX/VBOX/DBL/FED computed from the geometry, and `DRILLE` records for any
+  DRILL holes (mirrored into symmetric pairs), for labs and edgers.
+
+### Drill-mount holes
+
+For rimless / drill-mount lenses (flat, no bevel), use the **DRILL** layer:
+
+- **Library ▸ Holes** — type a hole's X / Y offset from the lens boxing centre
+  plus a diameter, then **Add Hole**. Save a set as a named pattern; **Import
+  Pattern onto Lens** re-centres a saved pattern on the current lens, so one
+  drill spec re-applies to any size. Per-hole diameters are kept.
+- Holes export/import as OMA `DRILLE` records (see above) and as DXF `CIRCLE`s
+  on the DRILL layer.
 
 ## 5. Checking the design
 

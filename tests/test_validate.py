@@ -14,6 +14,16 @@ def test_valid_document_passes():
     assert errors == [] and warnings == []
 
 
+def test_drill_holes_on_front_are_accepted():
+    # Drill-mount holes (DRILL circles) are optional, recognised, and closed —
+    # they must not produce errors or warnings on a valid front.
+    curves = [outline(), circle(-15, 0, 10), circle(15, 0, 10),
+              circle(-20, 5, 0.7, layer=Layer.DRILL),
+              circle(20, 5, 0.7, layer=Layer.DRILL)]
+    errors, warnings = validate(curves, mirror_on=False)
+    assert errors == [] and warnings == []
+
+
 def test_mirror_doubles_lens_count():
     # One drawn lens + mirror ghost = a pair at export time; both the mirrored
     # and un-mirrored forms are valid now that any positive LENS count passes.

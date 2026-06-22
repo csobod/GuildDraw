@@ -24,7 +24,7 @@ from PySide6.QtGui import QPainterPath
 from ..document import (
     Curve, Layer, SplineNode, ControlPoint,
     FaceImage, Calibration, MirrorAxis, FormingMetadata, MachinedBridge, DimLine,
-    TextObject,
+    TextObject, BevelSpec,
 )
 from ..canvas.items import build_path
 
@@ -133,6 +133,7 @@ def save_svg(
     layers:           dict | None = None,   # {layer name: {"visible","locked"}}
     fill:             dict | None = None,   # {"visible","color","opacity"}
     texts:            list | None = None,   # list[TextObject]
+    bevel:            BevelSpec | None = None,
 ) -> None:
     ET.register_namespace("", _NS)
     root = ET.Element(f"{{{_NS}}}svg")
@@ -187,6 +188,8 @@ def save_svg(
         state["layers"] = layers
     if fill:
         state["fill"] = fill
+    if bevel:
+        state["bevel"] = {"preset": bevel.preset, "depth_mm": bevel.depth_mm}
     if texts:
         state["texts"] = [
             {"text": t.text, "family": t.family, "size_mm": t.size_mm,
@@ -360,6 +363,11 @@ def load_svg(path: str) -> dict:
         "bookmarks": bookmarks,
         "layers": state.get("layers", {}),
         "fill": state.get("fill"),   # None when absent (pre-0.9.8 files)
+        "bevel": (
+            BevelSpec(preset=state["bevel"].get("preset", "acetate"),
+                      depth_mm=state["bevel"].get("depth_mm", 1.0))
+            if isinstance(state.get("bevel"), dict) else None
+        ),   # None when absent (pre-rc2 files)
         "texts": [
             TextObject(
                 text        = t["text"],

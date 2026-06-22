@@ -26,6 +26,7 @@ class EditTool(QObject):
         self._line_data:   list[dict]      = []
         self._smooth_mode  = True
         self._selected_dot: NodeDot | None = None
+        self._node_edit_blocked_fn = None   # (Curve) -> bool; True suppresses node dots
         # Endpoint drag-snap context (set via set_endpoint_snap_context)
         self._ep_curves:      list | None  = None
         self._ep_view                      = None
@@ -60,6 +61,17 @@ class EditTool(QObject):
         self._ep_curves     = curves
         self._ep_view       = view
         self._ep_enabled_fn = snap_enabled_fn or (lambda: True)
+
+    def set_node_edit_blocked_fn(self, fn):
+        """fn(Curve) -> bool; when True the curve shows no node/handle dots (so it
+        can still be selected and moved as a rigid unit, but not node-edited).
+        Used by 'Lock lens shape' to freeze a locked lens's spline."""
+        self._node_edit_blocked_fn = fn
+
+    def refresh_for_selection(self):
+        """Re-evaluate node-dot display for the current selection (call after the
+        block predicate changes, e.g. toggling shape-lock)."""
+        self._on_selection()
 
     @property
     def selected_dot(self) -> "NodeDot | None":
@@ -327,6 +339,10 @@ class EditTool(QObject):
         # (This is what stops imported hinge groups from being distorted by
         # accidental node drags + endpoint snap onto frame geometry.)
         if curve.group_id:
+            return
+
+        # 'Lock lens shape' freezes the spline: selectable + movable, no dots.
+        if self._node_edit_blocked_fn and self._node_edit_blocked_fn(curve):
             return
 
         node_dots: dict[int, NodeDot] = {}

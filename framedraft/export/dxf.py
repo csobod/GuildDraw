@@ -99,7 +99,8 @@ def _add_curve(msp, curve: Curve):
 # Layers that get a mirrored OS copy when mirror is on.
 # OUTLINE and BRIDGE span the full frame (drawn symmetric) — never mirrored.
 # SCULPT is back-surface geometry, symmetric like LENS — gets mirrored.
-_MIRROR_LAYERS = {Layer.LENS, Layer.HINGE, Layer.SCULPT}
+# DRILL holes belong to a lens, so they mirror with it.
+_MIRROR_LAYERS = {Layer.LENS, Layer.HINGE, Layer.SCULPT, Layer.DRILL}
 
 
 def export_dxf(
