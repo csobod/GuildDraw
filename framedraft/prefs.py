@@ -18,6 +18,8 @@ DEFAULTS: dict = {
     "recent_files":         [],
     # Drawing
     "default_line_weight":  1.5,
+    # Toolbar overflow ("⋯") pop-out pinned open across operations
+    "toolbar_pinned":       False,
     # Startup toggle states for toolbar buttons
     "mirror_on_startup":    True,
     "guides_on_startup":    True,

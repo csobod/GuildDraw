@@ -213,7 +213,6 @@ class NodeDot(QGraphicsEllipseItem):
         self._node_selected  = False
         self.setFlag(self.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, False)
-        self.setFlag(self.GraphicsItemFlag.ItemSendsGeometryChanges, True)
         self.setFlag(self.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.setAcceptHoverEvents(True)
         self.setZValue(20)
@@ -221,6 +220,12 @@ class NodeDot(QGraphicsEllipseItem):
         self.setBrush(QBrush(_node_fill()))
         node = curve.nodes[index]
         self.setPos(node.x, node.y)
+        # Enable geometry-change notifications only AFTER the initial placement.
+        # Otherwise this constructor setPos fires itemChange(ItemPositionChange)
+        # → the endpoint-snap callback, which would yank the freshly-shown node
+        # onto a nearby endpoint the moment the curve is selected (and off the
+        # undo stack, since no drag began). Snap must only run during a real drag.
+        self.setFlag(self.GraphicsItemFlag.ItemSendsGeometryChanges, True)
 
     @property
     def node_index(self) -> int:
@@ -310,7 +315,6 @@ class HandleDot(QGraphicsEllipseItem):
         self._smooth        = True         # symmetric mode by default
         self.setFlag(self.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, False)
-        self.setFlag(self.GraphicsItemFlag.ItemSendsGeometryChanges, True)
         self.setFlag(self.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.setAcceptHoverEvents(True)
         self.setZValue(19)
@@ -319,6 +323,10 @@ class HandleDot(QGraphicsEllipseItem):
         cp = getattr(curve.nodes[node_index], which)
         if cp:
             self.setPos(cp.x, cp.y)
+        # Enable change notifications only after the initial placement so this
+        # constructor setPos doesn't fire itemChange → a redundant model write
+        # and refresh at selection time (mirrors NodeDot above).
+        self.setFlag(self.GraphicsItemFlag.ItemSendsGeometryChanges, True)
 
     def refresh_theme(self):
         self.setPen(QPen(_handle_color(), 1))

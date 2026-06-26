@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from . import __version__
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QToolBar, QStatusBar,
+    QApplication, QMainWindow, QStatusBar,
     QGraphicsView, QDockWidget, QWidget, QVBoxLayout, QGridLayout,
     QFormLayout, QGroupBox, QPushButton, QSlider, QLabel, QToolButton,
     QDoubleSpinBox, QFileDialog, QComboBox, QMessageBox,
@@ -46,6 +46,7 @@ from .tools.split import SplitTool
 from .tools.offset import OffsetTool
 from .tools.point_move import PointMoveTool
 from .tools.text import TextTool, TextDialog
+from .pinnable_toolbar import PinnableToolBar
 
 _ICONS_DIR = Path(__file__).parent / "resources" / "icons"
 
@@ -1646,6 +1647,11 @@ class MainWindow(QMainWindow):
         self._apply_toolbar_visibility(self._toolbar_prefs)
         self._apply_hotkeys(self._hotkey_prefs)
 
+        # Pinned toolbar overflow pop-out (durable, global) — restore + persist.
+        self._toolbar.set_pinned(
+            bool(self._prefs.get("toolbar_pinned", False)), persist=False)
+        self._toolbar.pin_changed.connect(self._on_toolbar_pin_changed)
+
         # ── Per-workspace post-toolbar wiring ─────────────────────────────
         snap_fn = lambda: self._act_snap.isChecked()
         for ws in self._workspaces:
@@ -1825,7 +1831,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_toolbar(self):
-        tb = QToolBar("Tools")
+        tb = PinnableToolBar("Tools")
         self._toolbar = tb
         tb.setMovable(False)
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
@@ -2692,10 +2698,12 @@ class MainWindow(QMainWindow):
         self._layer_refresh_pending = False
         self._refresh_layer_panel()
         self._update_readiness()
-        # A snapped boxing guide tracks the live lens geometry.
+        # Live measurements in the Properties tab track the geometry on every
+        # document change (add/remove/undo/load) — no manual Refresh needed.
+        self._refresh_measurements()
+        # A snapped boxing guide also tracks the live lens geometry.
         if self._active_ws.boxing_snapped:
             self._active_ws.boxing_guide.refresh()
-            self._refresh_measurements()
             self._sync_boxing_readouts()
 
     @staticmethod
@@ -3659,8 +3667,11 @@ class MainWindow(QMainWindow):
             spin.blockSignals(False)
 
     def _schedule_boxing_follow(self, ws):
-        """Coalesce live geometry changes (node edits, moves) into one follow."""
-        if ws is not self._active_ws or not ws.boxing_snapped:
+        """Coalesce live geometry changes (node edits, moves) into one update.
+
+        Drives the live Properties-tab measurements on every edit, and — when
+        boxing is snapped — also the guide that follows the lens geometry."""
+        if ws is not self._active_ws:
             return
         if not getattr(self, "_boxing_follow_pending", False):
             self._boxing_follow_pending = True
@@ -3669,11 +3680,11 @@ class MainWindow(QMainWindow):
     def _do_boxing_follow(self):
         self._boxing_follow_pending = False
         ws = self._active_ws
-        if not ws.boxing_snapped:
-            return
-        ws.boxing_guide.refresh()
+        # Live measurements track node drags / moves regardless of snap state.
         self._refresh_measurements()
-        self._sync_boxing_readouts()
+        if ws.boxing_snapped:
+            ws.boxing_guide.refresh()
+            self._sync_boxing_readouts()
 
     def _on_bevel_preset_changed(self, idx: int):
         ws = self._active_ws
@@ -6732,9 +6743,14 @@ class MainWindow(QMainWindow):
         """
         self._prefs["dark_mode"]           = self._dark_mode
         self._prefs["default_line_weight"] = self._default_line_weight
+        self._prefs["toolbar_pinned"]      = self._toolbar.is_pinned()
         self._prefs["toolbar"]             = dict(self._toolbar_prefs)
         self._prefs["hotkeys"]             = dict(self._hotkey_prefs)
         _prefs_mod.save(self._prefs)
+
+    def _on_toolbar_pin_changed(self, pinned: bool):
+        """User toggled the toolbar overflow pin — persist the choice."""
+        self._save_prefs()
 
     # ------------------------------------------------------------------
     # Dark mode
@@ -6754,6 +6770,7 @@ class MainWindow(QMainWindow):
             ws.pad_guide.set_dark_mode(dark)
             ws.edit_tool.refresh_theme()
         self._apply_toolbar_icons(dark)
+        self._toolbar.set_dark(dark)  # overflow pop-out panel matches theme
         self._refresh_layer_panel()   # eye/padlock icons are theme-colored
         self._update_readiness()      # dot colours are theme-aware
         self._save_prefs()
