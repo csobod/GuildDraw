@@ -242,6 +242,19 @@ def test_file_new_resets_calibration_and_boxing_lock(fresh):
     assert not ws.outline_locked
 
 
+def test_save_actions_have_shortcuts(fresh):
+    # Extract plain strings while iterating — stashing QAction/QMenu wrappers
+    # from a discarded generator trips shiboken wrapper invalidation.
+    win = fresh
+    shortcuts = {}
+    for top in win.menuBar().actions():
+        if top.text() == "File" and top.menu() is not None:
+            for act in top.menu().actions():
+                shortcuts[act.text()] = act.shortcut().toString()
+    assert shortcuts["Save"] == "Ctrl+S"
+    assert shortcuts["Save As…"] == "Ctrl+Shift+S"
+
+
 def test_failed_insert_keeps_redo_stack(fresh):
     win = fresh
     ws = win._active_ws

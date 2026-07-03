@@ -1287,6 +1287,7 @@ class SettingsDialog(QDialog):
 
         non_reassignable = QLabel(
             "Non-reassignable (hardcoded):\n"
+            "  Ctrl+S  Save    Ctrl+Shift+S  Save As\n"
             "  Ctrl+Z  Undo    Ctrl+Y / Ctrl+Shift+Z  Redo\n"
             "  Ctrl+G  Group   Ctrl+Shift+G  Ungroup\n"
             "  Del / Backspace  Delete     Esc  Cancel"
@@ -3979,8 +3980,13 @@ class MainWindow(QMainWindow):
         self._recent_menu.setToolTipsVisible(True)
         self._rebuild_recent_menu()
         file_menu.addSeparator()
-        file_menu.addAction("Save",             self._save)
-        file_menu.addAction("Save As…",         self._save_as)
+        from PySide6.QtGui import QKeySequence
+        # Real shortcuts (not tab-text like Undo/Redo) so the menu shows the
+        # key AND the binding works window-wide through Qt's action system.
+        act_save = file_menu.addAction("Save", self._save)
+        act_save.setShortcut(QKeySequence("Ctrl+S"))
+        act_save_as = file_menu.addAction("Save As…", self._save_as)
+        act_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
         file_menu.addSeparator()
         file_menu.addAction("Add Reference Image…", self._add_face)
         file_menu.addSeparator()
