@@ -5,57 +5,46 @@ from PySide6.QtGui import QPen, QBrush, QColor, QPainterPath, QPainterPathStroke
 from PySide6.QtCore import Qt
 
 from ..document import Curve, Layer, ControlPoint
+from .. import theme
 
-# ---------- theme flag + colour functions ----------
-
-_DARK: bool = False
+# ---------- theme colour functions ----------
+# All colors resolve through framedraft.theme (the single palette source);
+# these wrappers just add the QColor and keep call sites short.
 
 
 def set_dark_mode(dark: bool) -> None:
-    global _DARK
-    _DARK = dark
+    theme.set_dark(dark)
 
 
 def _geometry_color() -> QColor:
-    return QColor("#d4cfc0") if _DARK else QColor("#1f1f1f")
+    return QColor(theme.color("geometry.ink"))
 
 def _handle_color() -> QColor:
-    return QColor("#4ab8d8") if _DARK else QColor("#2a7f9e")
+    return QColor(theme.color("geometry.handle"))
 
 def _handle_fill() -> QColor:
-    return QColor("#1a3040") if _DARK else QColor("#dff0f7")
+    return QColor(theme.color("geometry.handle_fill"))
 
 def _handle_hover() -> QColor:
-    return QColor("#4ab8d8") if _DARK else QColor("#2a7f9e")
+    return QColor(theme.color("geometry.handle"))
 
 def _node_fill() -> QColor:
-    return QColor("#3a3020") if _DARK else QColor("#fce9c2")
+    return QColor(theme.color("geometry.node_fill"))
 
 def _node_hover() -> QColor:
-    return QColor("#4aca7a") if _DARK else QColor("#2e8b57")
+    return QColor(theme.color("geometry.node_hover"))
 
 def _selection_halo_color() -> QColor:
-    # Bright, semi-transparent amber glow drawn behind a selected curve.
-    return QColor(255, 170, 60, 150) if _DARK else QColor(255, 140, 0, 130)
+    # Bright, semi-transparent glow drawn behind a selected curve (#AARRGGBB).
+    return QColor(theme.color("canvas.selection_halo"))
 
 
 # ---------- per-layer pen factory ----------
 # All pens are cosmetic (constant screen width regardless of zoom).
 
-_LAYER_COLORS_LIGHT = {
-    Layer.SCULPT:    QColor("#8e44ad"),  # purple  — back-surface geometry
-    Layer.ENGRAVING: QColor("#16a085"),  # teal    — engraving marks
-}
-_LAYER_COLORS_DARK = {
-    Layer.SCULPT:    QColor("#c39bd3"),  # light purple
-    Layer.ENGRAVING: QColor("#48c9b0"),  # light teal
-}
-
 
 def _layer_pen(layer: Layer, line_weight: float | None = None) -> QPen:
-    palette = _LAYER_COLORS_DARK if _DARK else _LAYER_COLORS_LIGHT
-    color   = palette.get(layer, _geometry_color())
-    pen = QPen(color)
+    pen = QPen(QColor(theme.layer_color(layer)))
     pen.setCosmetic(True)
     w = line_weight if line_weight is not None else (
         1.5 if layer in (Layer.OUTLINE, Layer.LENS) else
@@ -186,23 +175,24 @@ class CurveItem(QGraphicsPathItem):
 
 # ---------- NodeDot ----------
 
-_R = 4
-
 def _node_selected() -> QColor:
-    return QColor("#e74c3c")
+    return QColor(theme.color("geometry.node_selected"))
 
 
 class NodeDot(QGraphicsEllipseItem):
     """Movable on-curve node shown when a CurveItem is selected.
 
     Uses ItemIgnoresTransformations so it stays a constant screen size
-    regardless of zoom level.
+    regardless of zoom level. Size comes from theme.dot_radius() at
+    construction (dots rebuild on selection, so a changed preference
+    applies the next time a curve is selected).
     """
 
     def __init__(self, curve: Curve, index: int, on_moved,
                  on_drag_start=None, on_clicked=None,
                  on_snap=None, on_drag_end=None):
-        super().__init__(-_R, -_R, 2 * _R, 2 * _R)
+        R = theme.dot_radius()
+        super().__init__(-R, -R, 2 * R, 2 * R)
         self._curve          = curve
         self._index          = index
         self._on_moved       = on_moved
@@ -291,20 +281,20 @@ class NodeDot(QGraphicsEllipseItem):
 
 # ---------- HandleDot ----------
 
-_HR = 3
-
 
 class HandleDot(QGraphicsEllipseItem):
     """Movable Bézier control-point handle shown when a spline is selected.
 
     smooth=True (default): moving this handle also moves the sibling handle
     symmetrically through the node — Fusion 360 "tangent lock" behaviour.
-    Uses ItemIgnoresTransformations so it stays a constant screen size.
+    Uses ItemIgnoresTransformations so it stays a constant screen size;
+    drawn one px smaller than node dots so the two read differently.
     """
 
     def __init__(self, curve: Curve, node_index: int, which: str, on_moved,
                  on_drag_start=None):
-        super().__init__(-_HR, -_HR, 2 * _HR, 2 * _HR)
+        HR = max(2, theme.dot_radius() - 1)
+        super().__init__(-HR, -HR, 2 * HR, 2 * HR)
         self._curve         = curve
         self._node_index    = node_index
         self._which         = which        # "cp_in" or "cp_out"

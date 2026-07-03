@@ -40,7 +40,8 @@ def _seg_dist(pt: QPointF, p0: QPointF, p1: QPointF) -> float:
 
 
 def _dim_color(selected: bool = False) -> QColor:
-    return QColor("#e67e22") if selected else QColor("#7a5c2e")
+    from .. import theme
+    return QColor(theme.color("guide.dim_selected" if selected else "guide.dim"))
 
 
 _DRAG_THRESHOLD_PX = 4   # screen pixels of travel before an offset-drag starts

@@ -89,7 +89,8 @@ _DEFAULT_IMG_HEIGHT_MM = 150.0
 
 
 def _cross_color() -> QColor:
-    return QColor("#554433") if _items._DARK else QColor("#ccbbaa")
+    from .. import theme
+    return QColor(theme.color("canvas.cross"))
 
 
 def _mirror_path(curve: Curve, mirror) -> QPainterPath:

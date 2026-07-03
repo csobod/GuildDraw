@@ -69,6 +69,9 @@ DEFAULTS: dict = {
         "explode":      True,
         "fit":          True,
     },
+    # Theme color overrides — {"light": {token: "#rrggbb"}, "dark": {...}};
+    # tokens resolve via framedraft.theme (absent tokens use its defaults)
+    "theme": {},
     # User-assignable hotkeys (empty string = no hotkey)
     "hotkeys": {
         "line":         "L",
@@ -97,8 +100,10 @@ def load() -> dict:
         if _FILE.exists():
             data = json.loads(_FILE.read_text(encoding="utf-8"))
             merged = {**DEFAULTS, **data}
-            # Deep-merge nested dicts so new default keys survive old prefs files
-            for key in ("toolbar", "hotkeys"):
+            # Deep-merge nested dicts so new default keys survive old prefs
+            # files. EVERY nested dict pref must be listed here — a missing
+            # entry means old files silently clobber new defaults.
+            for key in ("toolbar", "hotkeys", "theme"):
                 if isinstance(data.get(key), dict):
                     merged[key] = {**DEFAULTS[key], **data[key]}
                 else:

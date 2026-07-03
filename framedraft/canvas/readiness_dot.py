@@ -27,8 +27,9 @@ OFF = "off"
 AMBER = "amber"
 GREEN = "green"
 
-# Dot fill colours per theme: (light, dark). Kept local — GuildDraw has no
-# central theme palette module.
+# Dot fill colours per theme: (light, dark). Deliberately NOT theme tokens —
+# these are status semantics (off/amber/green), not decor, and must stay
+# recognisable regardless of how a user retints the palette.
 _COLORS = {
     OFF:   ("#b8b2a3", "#5a564d"),
     AMBER: ("#e0a52e", "#e0a52e"),

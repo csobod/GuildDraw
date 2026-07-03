@@ -16,11 +16,6 @@ from PySide6.QtCore import Qt, QEvent, QPoint, QTimer, Signal
 from PySide6.QtWidgets import QToolBar, QToolButton, QFrame, QGridLayout
 
 
-_PANEL_QSS = {
-    # (background, border) per theme — matches the QToolBar styling in app.py
-    False: ("#ffd580", "#d4a840"),
-    True:  ("#1a1a1a", "#554433"),
-}
 
 
 class _OverflowPanel(QFrame):
@@ -43,7 +38,8 @@ class _OverflowPanel(QFrame):
         self.apply_theme(False)
 
     def apply_theme(self, dark: bool):
-        bg, border = _PANEL_QSS[bool(dark)]
+        from . import theme
+        bg, border = theme.color("chrome.bg"), theme.color("chrome.border")
         self.setStyleSheet(
             f"#overflowPanel {{ background-color: {bg}; "
             f"border: 1px solid {border}; border-radius: 4px; }}"

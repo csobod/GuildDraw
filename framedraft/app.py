@@ -21,6 +21,7 @@ from PySide6.QtGui import (
     QAction, QActionGroup, QColor, QBrush, QIcon, QPainter, QPen, QPixmap,
 )
 
+from . import theme
 from .canvas.items import CurveItem
 from .canvas.dim import DimItem
 from .canvas.measure_bar import MeasureBar
@@ -119,194 +120,9 @@ def _curves_bbox(curves, layers=None, x_lo=None, x_hi=None):
     return (min(xs), min(ys), max(xs), max(ys)) if xs else None
 
 
-QSS = """
-QMainWindow, QWidget {
-    background-color: #ffd580;
-    color: #1f1f1f;
-    font-family: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-    font-size: 13px;
-}
-QToolBar {
-    background-color: #ffd580;
-    border: none;
-    spacing: 2px;
-    padding: 4px;
-}
-QToolButton, QPushButton {
-    background-color: #fce9c2;
-    border: 1px solid #1f1f1f;
-    border-radius: 4px;
-}
-QToolButton { padding: 5px; min-width: 30px; }
-QPushButton { padding: 4px 10px; min-width: 54px; }
-QToolButton:hover, QPushButton:hover { background-color: #ffe9b8; }
-QToolButton:checked, QPushButton:checked { background-color: #1f1f1f; color: #ffd580; }
-QToolBar::separator { background: #d4a840; width: 1px; margin: 4px 3px; }
-QStatusBar {
-    background-color: #ffd580;
-    border-top: 1px solid #d4a840;
-}
-QMenuBar { background-color: #ffd580; color: #1f1f1f; }
-QMenuBar::item:selected { background-color: #fce9c2; }
-QMenu { background-color: #fce9c2; color: #1f1f1f; border: 1px solid #1f1f1f; }
-QMenu::item:selected { background-color: #1f1f1f; color: #ffd580; }
-QMenu::separator { height: 1px; background: #d4a840; margin: 2px 6px; }
-QDockWidget { background-color: #ffd580; }
-QDockWidget::title {
-    background-color: #d4a840;
-    padding: 4px 6px;
-    font-weight: bold;
-}
-QGroupBox {
-    border: 1px solid #d4a840;
-    border-radius: 4px;
-    margin-top: 8px;
-    padding-top: 6px;
-    font-weight: bold;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    padding: 0 4px;
-    background-color: #ffd580;
-}
-QDoubleSpinBox, QSpinBox, QLineEdit, QComboBox {
-    background-color: #fce9c2;
-    border: 1px solid #d4a840;
-    border-radius: 3px;
-    padding: 2px 4px;
-}
-QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus { border-color: #1f1f1f; }
-QComboBox::drop-down { border: none; }
-QComboBox QAbstractItemView {
-    background-color: #fce9c2;
-    border: 1px solid #1f1f1f;
-    selection-background-color: #1f1f1f;
-    selection-color: #ffd580;
-}
-QSlider::groove:horizontal {
-    border: 1px solid #d4a840;
-    height: 4px;
-    background: #fce9c2;
-    border-radius: 2px;
-}
-QSlider::handle:horizontal {
-    background: #1f1f1f;
-    border: 1px solid #1f1f1f;
-    width: 12px;
-    margin: -5px 0;
-    border-radius: 6px;
-}
-QSlider::handle:horizontal:hover { background: #555; }
-QTabWidget::pane { border-top: 1px solid #d4a840; }
-QTabBar::tab {
-    background: #fce9c2;
-    color: #1f1f1f;
-    border: 1px solid #d4a840;
-    border-bottom: none;
-    padding: 5px 8px;
-    min-width: 40px;
-}
-QTabBar::tab:selected { background: #ffd580; font-weight: bold; }
-QTabBar::tab:hover:!selected { background: #ffe9b8; }
-"""
-
-QSS_DARK = """
-QMainWindow, QWidget {
-    background-color: #1a1a1a;
-    color: #d4cfc0;
-    font-family: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-    font-size: 13px;
-}
-QToolBar {
-    background-color: #1a1a1a;
-    border: none;
-    spacing: 2px;
-    padding: 4px;
-}
-QToolButton, QPushButton {
-    background-color: #2a2a2a;
-    border: 1px solid #554433;
-    border-radius: 4px;
-    color: #d4cfc0;
-}
-QToolButton { padding: 5px; min-width: 30px; }
-QPushButton { padding: 4px 10px; min-width: 54px; }
-QToolButton:hover, QPushButton:hover { background-color: #3a3a3a; }
-QToolButton:checked, QPushButton:checked { background-color: #d4cfc0; color: #1a1a1a; }
-QToolBar::separator { background: #554433; width: 1px; margin: 4px 3px; }
-QStatusBar {
-    background-color: #1a1a1a;
-    border-top: 1px solid #554433;
-}
-QMenuBar { background-color: #1a1a1a; color: #d4cfc0; }
-QMenuBar::item:selected { background-color: #2a2a2a; }
-QMenu { background-color: #2a2a2a; color: #d4cfc0; border: 1px solid #554433; }
-QMenu::item:selected { background-color: #d4cfc0; color: #1a1a1a; }
-QMenu::separator { height: 1px; background: #554433; margin: 2px 6px; }
-QDockWidget { background-color: #1a1a1a; }
-QDockWidget::title {
-    background-color: #2a2a2a;
-    padding: 4px 6px;
-    font-weight: bold;
-}
-QGroupBox {
-    border: 1px solid #554433;
-    border-radius: 4px;
-    margin-top: 8px;
-    padding-top: 6px;
-    font-weight: bold;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    padding: 0 4px;
-    background-color: #1a1a1a;
-}
-QDoubleSpinBox, QSpinBox, QLineEdit, QComboBox {
-    background-color: #2a2a2a;
-    border: 1px solid #554433;
-    border-radius: 3px;
-    padding: 2px 4px;
-    color: #d4cfc0;
-}
-QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus { border-color: #d4cfc0; }
-QComboBox::drop-down { border: none; }
-QComboBox QAbstractItemView {
-    background-color: #2a2a2a;
-    border: 1px solid #554433;
-    selection-background-color: #d4cfc0;
-    selection-color: #1a1a1a;
-}
-QSlider::groove:horizontal {
-    border: 1px solid #554433;
-    height: 4px;
-    background: #2a2a2a;
-    border-radius: 2px;
-}
-QSlider::handle:horizontal {
-    background: #d4cfc0;
-    border: 1px solid #d4cfc0;
-    width: 12px;
-    margin: -5px 0;
-    border-radius: 6px;
-}
-QSlider::handle:horizontal:hover { background: #e8e0d0; }
-QTabWidget::pane { border-top: 1px solid #554433; }
-QTabBar::tab {
-    background: #2a2a2a;
-    color: #d4cfc0;
-    border: 1px solid #554433;
-    border-bottom: none;
-    padding: 5px 8px;
-    min-width: 40px;
-}
-QTabBar::tab:selected { background: #1a1a1a; font-weight: bold; }
-QTabBar::tab:hover:!selected { background: #3a3a3a; }
-"""
-
-_CANVAS_BG_LIGHT = "#faf6ee"
-_CANVAS_BG_DARK  = "#1e1e1e"
+# Application stylesheet + canvas colors come from framedraft.theme
+# (single palette source; the old hardcoded QSS / QSS_DARK pair lives there
+# as one token-driven template).
 
 _DOCK_WIDTH = 270
 
@@ -405,7 +221,7 @@ class CanvasView(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-        self.setBackgroundBrush(QBrush(QColor("#faf6ee")))
+        self.setBackgroundBrush(QBrush(QColor(theme.color("canvas.bg"))))
 
         self.measure_bar = MeasureBar(self)
         QTimer.singleShot(0, self._reposition_measure_bar)
@@ -859,8 +675,8 @@ class WorkspaceState:
         # Locked boxing derives its boxes from this workspace's live LENS curves.
         self.boxing_guide.set_lens_provider(
             lambda: [c for c in self.doc_curves if c.layer == Layer.LENS])
-        self.stock_guide  = RectGuide(self.scene, "#27ae60", "#2ecc71")
-        self.pad_guide    = RectGuide(self.scene, "#8e44ad", "#9b59b6",
+        self.stock_guide  = RectGuide(self.scene, "guide.stock")
+        self.pad_guide    = RectGuide(self.scene, "guide.pad",
                                       width_mm=45.0, height_mm=45.0)
 
         # ── Move gizmo state ──────────────────────────────────────────────
@@ -1533,6 +1349,11 @@ class MainWindow(QMainWindow):
 
         # Load persistent preferences first
         self._prefs = _prefs_mod.load()
+        # Theme overrides must land before any workspace/canvas is built so
+        # every painter resolves user colors from the start; re-render the
+        # chrome in case saved overrides retint it (main() styled defaults).
+        theme.set_overrides(self._prefs.get("theme"))
+        QApplication.instance().setStyleSheet(theme.build_qss())
 
         # ── Global (non-workspace) state ──────────────────────────────────
         self._dark_mode            = self._prefs["dark_mode"]
@@ -2318,7 +2139,9 @@ class MainWindow(QMainWindow):
 
         self._chain_btn = QToolButton()
         self._chain_btn.setCheckable(True)
-        self._chain_btn.setIcon(_make_icon("link-chain", "#1f1f1f", "#ffd580"))
+        self._chain_btn.setIcon(_make_icon(
+            "link-chain", theme.color("chrome.ink"),
+            theme.color("chrome.checked_ink")))
         self._chain_btn.setToolTip(
             "Link A and B: while locked, resizing one scales the other to keep\n"
             "the lens aspect ratio. Off = resize A and B independently.")
@@ -2732,7 +2555,7 @@ class MainWindow(QMainWindow):
 
     def _layer_icon(self, name: str) -> QIcon:
         """Theme-aware cached icon for the eye/padlock tree cells."""
-        color = "#d4cfc0" if self._dark_mode else "#1f1f1f"
+        color = theme.color("chrome.ink")
         cache = getattr(self, "_layer_icon_cache", None)
         if cache is None:
             cache = self._layer_icon_cache = {}
@@ -3911,8 +3734,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _apply_toolbar_icons(self, dark: bool):
-        normal_c  = "#d4cfc0" if dark else "#1f1f1f"
-        checked_c = "#1a1a1a" if dark else "#ffd580"
+        normal_c  = theme.color("chrome.ink")
+        checked_c = theme.color("chrome.checked_ink")
         pairs = [
             (self._act_select,       "tool-select"),
             (self._act_line,         "tool-line"),
@@ -3955,8 +3778,8 @@ class MainWindow(QMainWindow):
     def _refresh_mirror_icons(self):
         """Re-render ghost and mirror-close icons rotated 90° for temple workspaces."""
         dark = self._dark_mode
-        normal_c  = "#d4cfc0" if dark else "#1f1f1f"
-        checked_c = "#1a1a1a" if dark else "#ffd580"
+        normal_c  = theme.color("chrome.ink")
+        checked_c = theme.color("chrome.checked_ink")
         ws_type = self._active_ws.workspace_type if self._workspaces else "front"
         rot = 90 if ws_type in ("temple_r", "temple_l") else 0
         if (_ICONS_DIR / "toggle-mirror.svg").exists():
@@ -6842,8 +6665,9 @@ class MainWindow(QMainWindow):
     def _toggle_dark_mode(self, dark: bool):
         self._dark_mode = dark
         app = QApplication.instance()
-        app.setStyleSheet(QSS_DARK if dark else QSS)
-        bg = _CANVAS_BG_DARK if dark else _CANVAS_BG_LIGHT
+        theme.set_dark(dark)
+        app.setStyleSheet(theme.build_qss())
+        bg = theme.color("canvas.bg")
         for ws in self._workspaces:
             ws.view.setBackgroundBrush(QBrush(QColor(bg)))
             ws.scene.set_dark_mode(dark)
@@ -6876,7 +6700,7 @@ def main():
     app.setApplicationName("GuildDraw")
     app.setApplicationDisplayName("GuildDraw")
     app.setOrganizationName("Guild of American Spectacle Makers")
-    app.setStyleSheet(QSS)
+    app.setStyleSheet(theme.build_qss())
 
     # Show the loading splash before building the (slower) main window, so the
     # maker sees the app is starting and doesn't re-launch a second copy.

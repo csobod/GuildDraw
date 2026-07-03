@@ -191,19 +191,18 @@ class SnapEngine:
     # Indicator — ItemIgnoresTransformations keeps it constant screen size
     # ------------------------------------------------------------------
 
-    _COLORS = {
-        "node":     "#2e8b57",  # green
-        "handle":   "#2a7f9e",  # blue
-        "mirror":   "#c0392b",  # red
-        "axis":     "#7b5ea7",  # purple — scene origin (0, 0)
-        "midpoint": "#e67e22",  # orange — segment midpoint
-        "curve":    "#5d8aa8",  # steel blue — nearest point on curve (diamond)
-    }
+    def _indicator_color(self, snap_type: str) -> QColor:
+        """Per-type indicator color from the theme (snap.<type> tokens)."""
+        from .. import theme
+        try:
+            return QColor(theme.color(f"snap.{snap_type}"))
+        except KeyError:
+            return QColor(theme.color("snap.node"))
 
     def _show(self, pos: QPointF, snap_type: str):
         self._hide()
         R   = _INDICATOR_R
-        pen = QPen(QColor(self._COLORS.get(snap_type, "#2e8b57")), 1.5)
+        pen = QPen(self._indicator_color(snap_type), 1.5)
         pen.setCosmetic(True)
         if snap_type == "curve":
             # Hollow diamond distinguishes "somewhere on the curve" from

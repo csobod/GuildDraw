@@ -11,15 +11,17 @@ import math
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPen, QColor, QPainterPath
 
+from . import theme
+
 
 _Z = 4   # z-value: above face image, below geometry
 
 
 def _guide_color(dark: bool) -> QColor:
-    return QColor("#4ab8d8") if dark else QColor("#2a7f9e")
+    return QColor(theme.color("guide.construction"))
 
 def _boxing_color(dark: bool) -> QColor:
-    return QColor("#e8730a") if dark else QColor("#d35400")
+    return QColor(theme.color("guide.boxing"))
 
 
 class ConstructionGuides:
@@ -265,16 +267,14 @@ class RectGuide:
 
     _Z = 5
 
-    def __init__(self, scene, color_light: str, color_dark: str,
+    def __init__(self, scene, color_token: str,
                  width_mm: float = 170.0, height_mm: float = 85.0):
         self._scene       = scene
         self._items: list = []
         self._visible     = False
         self._width_mm    = width_mm
         self._height_mm   = height_mm
-        self._dark        = False
-        self._col_light   = color_light
-        self._col_dark    = color_dark
+        self._color_token = color_token   # theme token, e.g. "guide.stock"
 
     def set_visible(self, on: bool):
         self._visible = on
@@ -289,7 +289,7 @@ class RectGuide:
         self._refresh()
 
     def set_dark_mode(self, dark: bool):
-        self._dark = dark
+        # Mode lives in the theme module; just redraw with resolved colors.
         self._refresh()
 
     def _refresh(self):
@@ -300,7 +300,7 @@ class RectGuide:
         if not self._visible:
             return
 
-        pen = QPen(QColor(self._col_dark if self._dark else self._col_light), 0)
+        pen = QPen(QColor(theme.color(self._color_token)), 0)
         pen.setStyle(Qt.PenStyle.DashLine)
 
         w, h = self._width_mm, self._height_mm

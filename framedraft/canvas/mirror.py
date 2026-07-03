@@ -4,7 +4,8 @@ from PySide6.QtGui import QPen, QColor, Qt
 
 
 def _mirror_axis_color(dark: bool) -> QColor:
-    return QColor("#e05555") if dark else QColor("#c0392b")
+    from .. import theme
+    return QColor(theme.color("canvas.mirror_axis"))
 
 
 class MirrorAxis:
