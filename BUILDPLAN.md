@@ -636,6 +636,132 @@ the Releases URL in the browser — deferred, not required.
 
 ---
 
+# Road to RC3a (M15–M21)
+
+> **2026-07-03.** RC3 itself = the full-codebase audit batch (committed
+> `82adb44`, + Ctrl+S/Ctrl+Shift+S save shortcuts `80eca14`; 184 tests). **RC3
+> is NOT pre-released on GitHub** — the community drop waits for **RC3a**,
+> whose theme is *"overall improving on what we have"*: a snap palette and
+> real appearance customization. Plan agreed with the user 2026-07-03.
+
+## M15 — RC3 audit fixes — ✅ DONE (2026-07-03, commits `82adb44` + `80eca14`)
+
+- Split-at-node aliasing (deepcopy memoized the seam node), OMA export now
+  traces the **finished (beveled) lens** (`boxing.finished_geometry` +
+  `oma.points_to_trace`; HBOX/VBOX/DBL/FED agree with the boxing panel),
+  batched split undo, redo-preserving node insert, Mirror-Close preserves
+  hand-tuned handles, Fit reaches off-scene geometry, File▸New resets
+  calibration/boxing locks, texts in box-select/Ctrl+A, mirror state restores
+  on load, hidden layers aren't cutting edges, bookmark dims/texts round-trip,
+  arc None-safety, fill-rebuild coalescing, single-buffer boxing guide,
+  dead-code removal (MeasureBar line mode, etc.). Ctrl+S/Ctrl+Shift+S shortcuts.
+- **Open question (deliberate):** OMA *import* still places the trace directly
+  on LENS with no bevel shrink, so export→import grows by 2·depth. Decide
+  whether import should shrink by the current bevel preset (or ask the maker).
+
+## M16 — Central theme module (enabler for M17/M18)
+
+Colors currently live hardcoded in ~8 places (QSS strings in `app.py`,
+`_DARK` palettes in `canvas/items.py`, guides, mirror axis, dim, scene cross,
+snap indicator colors). Build **`framedraft/theme.py`** — the single source of
+truth every painter queries at refresh time:
+
+- Named tokens with (light, dark) defaults: `chrome.*` (bg/panel/ink/border/
+  hover/checked), `canvas.*` (bg/cross/mirror_axis/selection_halo),
+  `geometry.*` (ink/node_fill/node_hover/node_selected/handle/handle_fill),
+  `layer.<NAME>` (SCULPT/ENGRAVING keep their colors; others fall back to
+  `geometry.ink`), `guide.*` (construction/boxing/stock/pad/dim/dim_selected),
+  `snap.*` (indicator colors per snap type).
+- `set_dark()`, `color(token)`, `layer_color(layer)`, `set_overrides(prefs)`;
+  QSS becomes ONE template rendered from chrome tokens (`build_qss()`).
+- User overrides persist as `prefs["theme"] = {"light": {...}, "dark": {...}}`.
+  ⚠ `prefs.load()` deep-merges only listed nested keys — every new nested
+  pref (`theme`, `viewport`, `snap_types`) must be added to that list.
+- Node/handle dot radius becomes a theme value (default 4 px) read at dot
+  construction time (4K/accessibility; exposed in M17).
+- Behavior-identical by default: same rendered colors, all tests green.
+
+## M17 — Appearance preferences (viewport themes + vignette + dot size)
+
+New **Appearance** tab in Preferences (dark-mode checkbox moves here):
+
+- **Viewport presets**: Follow UI theme (default) / Parchment / Blueprint /
+  Matte Dark / Plain White (+ custom canvas color picker). A preset is just a
+  set of theme-token overrides (canvas.bg, geometry.ink, canvas.cross), so
+  e.g. Blueprint = deep blue canvas + light ink under either UI mode.
+- **Vignette** with an intensity slider (0–100): `CanvasView.drawForeground`
+  paints a radial gradient (transparent centre → tinted edges); gradient
+  cached per resize so it's one blit per paint. Intensity = edge alpha.
+- **Node/handle dot size** slider (3–8 px) → theme dot radius (applies on next
+  selection rebuild).
+- Persist as `prefs["viewport"]` (preset/custom color/vignette) + dot radius.
+
+## M18 — Layers & Colors preferences
+
+- Per-layer color swatches (light + dark columns) driving `layer.<NAME>`
+  overrides; Reset-to-default per row and for the whole tab.
+- Layer tree, canvas pens, and ghost pens all read the same tokens (they do
+  after M16), so one change recolors everything consistently.
+- Later (backlog): per-layer default line weight + dash pattern.
+
+## M19 — Snap palette v1
+
+**UI:** keep the Snap toolbar button as the master toggle (Ctrl still
+suspends). Add a `snap_palette` action beside it that opens a **pinnable
+palette** of per-type icon toggles (same non-auto-hiding panel pattern as
+`pinnable_toolbar._OverflowPanel`). Per-type states persist in
+`prefs["snap_types"]`; master toggle stays per-workspace session state.
+
+**Engine (`canvas/snapping.py`):**
+- Split the current monolithic "node" tag into real types: **Endpoint**
+  (open-curve ends + arc ends), **Node** (interior/closed nodes), **Center**,
+  **Quadrant**, plus existing Handle / Midpoint / On-curve / Mirror / Origin.
+  Each `candidate()` gated by an `enabled_types` set; indicator colors/glyphs
+  per type.
+- **NEW: Intersection snap** — shapely intersections of curve pairs whose
+  padded bboxes contain the cursor; cache per (curve-pair, scene revision)
+  with a revision counter bumped on add/remove/refresh. "×" indicator glyph.
+- **Snap radius (px)** preference.
+- **Single-snap override** (AutoCAD-style): a hotkey forces one snap type for
+  the next click regardless of palette state — slots into the Hotkeys tab.
+
+## M20 — Context snaps: Tangent + Perpendicular (stretch)
+
+Drawing-context snaps: the snap point depends on the segment being drawn
+(anchor = last placed node, already passed into `snap()` via
+`drawing_nodes`). For circles/arcs near the cursor, compute tangent (or
+perpendicular-foot) points from the anchor; snap within radius; distinct
+indicator glyphs. Only active mid-draw; palette toggles grey out otherwise.
+If it slips, RC3a ships without it and it heads RC4.
+
+## M21 — Grid overlay + grid snap (follow-on)
+
+mm grid with major/minor divisions (spacing + color in Appearance), plus a
+Grid snap type in the palette. Natural companion for drill-pattern layout.
+
+### Customization backlog (agreed candidates beyond M16–M21)
+
+- Autosave interval (currently hardcoded 3 min `_AUTOSAVE_MS`).
+- Ghost (mirror) line color/opacity.
+- UI accent retint (cheap once QSS is tokenized — M16).
+- Measurement display precision (0.1 vs 0.01 mm) for panel + dims.
+- **Theme import/export as `.gtheme`** — members share themes like hinge
+  libraries (very Guild). Cheap once themes are token dicts.
+- Colorblind-safe preset (red/green gizmo arrows + readiness dot).
+- Per-layer default line weight + dash pattern (M18 follow-on).
+- Decided AGAINST: inch display (eyewear is mm-native end-to-end), paper
+  texture backdrops (fights reference photos).
+
+### RC3a release checklist
+
+- [ ] M16–M19 landed (M20 stretch, M21 optional), tests green per milestone
+- [ ] README/USER-GUIDE "New in RC3a" (snap palette, themes, vignette, Ctrl+S)
+- [ ] Version stamp `1.0.0-rc3a`, installer rebuild via
+      `scripts/build_release.ps1`, user test-install
+- [ ] Tag + GitHub pre-release (first community drop since rc2)
+
+---
+
 # Security hardening
 
 > **2026-06-17.** Prompted by makers relaying that their IT/AV tools flag "funny
