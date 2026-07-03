@@ -90,6 +90,19 @@ def _seg_nodes(curve: Curve, seg: int):
     return nodes[seg], nodes[(seg + 1) % len(nodes)]
 
 
+def _arc_sweep_deg(curve: Curve) -> float:
+    """Positive sweep of an arc in degrees, None-safe.
+
+    A zero sweep (equal start/end angles) means a full circle — the same rule
+    build_path and arc_bbox use — so every parameterisation helper agrees with
+    what is drawn on screen.
+    """
+    sweep = ((curve.end_angle or 0.0) - (curve.start_angle or 0.0)) % 360
+    if sweep < 1e-9:
+        sweep = 360.0
+    return sweep
+
+
 def point_at_t(curve: Curve, t: float) -> Tuple[float, float]:
     """Evaluate the curve exactly at parameter t in [0, 1] (no sampling)."""
     t = max(0.0, min(1.0, t))
@@ -103,7 +116,7 @@ def point_at_t(curve: Curve, t: float) -> Tuple[float, float]:
     if curve.kind == "arc":
         cx, cy, r = nodes[0].x, nodes[0].y, curve.radius or 0.0
         sa = math.radians(curve.start_angle or 0.0)
-        sw = math.radians(((curve.end_angle or 0.0) - (curve.start_angle or 0.0)) % 360)
+        sw = math.radians(_arc_sweep_deg(curve))
         a  = sa + sw * t
         return (cx + r * math.cos(a), cy + r * math.sin(a))
 
@@ -300,7 +313,7 @@ def sample_curve(curve: Curve,
     if curve.kind == "arc":
         cx, cy, r = nodes[0].x, nodes[0].y, curve.radius or 0.0
         sa  = math.radians(curve.start_angle or 0.0)
-        sw  = math.radians((curve.end_angle - curve.start_angle) % 360)
+        sw  = math.radians(_arc_sweep_deg(curve))
         n   = max(n_per_seg, int(math.degrees(abs(sw)) / 5))
         for i in range(n + 1):
             a = sa + sw * i / n
@@ -406,13 +419,24 @@ def intersect_curve_params(target: Curve, other: Curve,
         sx, sy = point_at_t(target, 0.0)
         ex, ey = point_at_t(target, 1.0)
 
+    # Sample the target once; t_nearest would re-sample it per point.
+    samples = sample_curve(target, n_per_seg=_SAMPLES_PER_SEG * 2)
+
+    def nearest_t(px: float, py: float) -> float:
+        best_t, best_d2 = 0.0, float("inf")
+        for x, y, t in samples:
+            d2 = (x - px) ** 2 + (y - py) ** 2
+            if d2 < best_d2:
+                best_d2, best_t = d2, t
+        return best_t
+
     ts = []
     for pt in _iter_shapely_pts(inter):
         if not is_closed:
             if (math.hypot(pt.x - sx, pt.y - sy) <= end_tol_mm
                     or math.hypot(pt.x - ex, pt.y - ey) <= end_tol_mm):
                 continue
-        ts.append(t_nearest(target, pt.x, pt.y))
+        ts.append(nearest_t(pt.x, pt.y))
     return ts
 
 
@@ -594,9 +618,9 @@ def extract_open_segment(curve: Curve,
                      line_weight=curve.line_weight)
 
     if curve.kind == "arc":
-        sweep = (curve.end_angle - curve.start_angle) % 360
-        sa = curve.start_angle + t_start * sweep
-        ea = curve.start_angle + t_end   * sweep
+        sweep = _arc_sweep_deg(curve)
+        sa = (curve.start_angle or 0.0) + t_start * sweep
+        ea = (curve.start_angle or 0.0) + t_end   * sweep
         cx, cy = curve.nodes[0].x, curve.nodes[0].y
         return Curve(kind="arc", layer=curve.layer,
                      nodes=[SplineNode(x=cx, y=cy)], closed=False,
@@ -760,16 +784,7 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
                 ny /= L
         new_nodes.append(SplineNode(x=nd.x + nx * d_mm, y=nd.y + ny * d_mm))
 
-    # Centripetal Catmull-Rom handles (mirrors compute_catmull_handles in tools/draw.py)
-    def _p(i: int) -> SplineNode:
-        return new_nodes[i % n] if closed else new_nodes[max(0, min(i, n - 1))]
-
-    for i, node in enumerate(new_nodes):
-        prv, nxt = _p(i - 1), _p(i + 1)
-        tx = (nxt.x - prv.x) / 6
-        ty = (nxt.y - prv.y) / 6
-        node.cp_out = ControlPoint(node.x + tx, node.y + ty)
-        node.cp_in  = ControlPoint(node.x - tx, node.y - ty)
+    compute_catmull_handles(new_nodes, closed)
 
     return Curve(kind="spline", layer=curve.layer, nodes=new_nodes,
                  closed=closed, line_weight=curve.line_weight)

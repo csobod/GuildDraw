@@ -113,7 +113,9 @@ class Curve:
     layer: Layer
     nodes: List      # List[SplineNode]; for circle/arc, nodes[0] = center
     closed: bool = False
-    mirrored: bool = False
+    mirrored: bool = False   # legacy: nothing sets this anymore (mirror copies
+                             # are plain geometry since M-era Mirror rework);
+                             # kept because old saved files may still carry it
     line_weight: float = 1.5
     radius: Optional[float] = None       # circle / arc radius (mm)
     start_angle: Optional[float] = None  # arc start angle (degrees; 0=right, 90=down-screen)

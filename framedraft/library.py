@@ -98,65 +98,6 @@ class HingeLibrary:
         pathlib.Path(old_path).rename(new_path)
         return str(new_path)
 
-    # ------------------------------------------------------------------
-    # Thumbnail
-    # ------------------------------------------------------------------
-
-    def thumbnail_pixmap(self, curves: list, size: int = 64):
-        """Render a *size*×*size* QPixmap preview of *curves*."""
-        from PySide6.QtGui import QImage, QPainter, QPen, QColor, QPixmap
-        from .canvas.items import build_path
-
-        # Bounding box over all curve nodes
-        from .geometry import arc_bbox
-        xs: list[float] = []
-        ys: list[float] = []
-        for c in curves:
-            if c.mirrored:
-                continue
-            if (c.kind == "arc" and c.radius and c.nodes
-                    and c.start_angle is not None and c.end_angle is not None):
-                bx0, by0, bx1, by1 = arc_bbox(c.nodes[0].x, c.nodes[0].y,
-                                              c.radius, c.start_angle, c.end_angle)
-                xs.extend([bx0, bx1])
-                ys.extend([by0, by1])
-            elif c.kind in ("circle", "arc") and c.radius and c.nodes:
-                cx, cy, r = c.nodes[0].x, c.nodes[0].y, c.radius
-                xs.extend([cx - r, cx + r])
-                ys.extend([cy - r, cy + r])
-            else:
-                for n in c.nodes:
-                    xs.append(n.x)
-                    ys.append(n.y)
-
-        img = QImage(size, size, QImage.Format.Format_ARGB32)
-        img.fill(0xFFFAF6EE)
-
-        if xs:
-            margin = max((max(xs) - min(xs)) * 0.12, 2.0)
-            x0, y0 = min(xs) - margin, min(ys) - margin
-            x1, y1 = max(xs) + margin, max(ys) + margin
-            w, h   = x1 - x0, y1 - y0
-
-            p = QPainter(img)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            if w > 0 and h > 0:
-                scale = min(size / w, size / h) * 0.88
-                p.translate((size - w * scale) / 2, (size - h * scale) / 2)
-                p.scale(scale, scale)
-                p.translate(-x0, -y0)
-
-            pen = QPen(QColor("#1f1f1f"), 1.5)
-            pen.setCosmetic(True)
-            p.setPen(pen)
-            for c in curves:
-                if not c.mirrored:
-                    p.drawPath(build_path(c))
-            p.end()
-
-        return QPixmap.fromImage(img)
-
-
 class DrillLibrary:
     """Local drill-hole-pattern library backed by JSON files in
     ~/.guilddraw/library/drills/.

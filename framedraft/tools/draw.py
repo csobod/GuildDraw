@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QLabel
 
 from ..document import Curve, Layer, SplineNode
 from ..canvas.items import build_path
-from ..geometry import mirror_curve, compute_catmull_handles  # noqa: F401 — re-exported for app.py
+from ..geometry import mirror_curve, compute_catmull_handles
 
 # Layers that show a live mirror ghost while drawing
 _MIRROR_GHOST_LAYERS = {Layer.LENS, Layer.HINGE, Layer.OUTLINE}

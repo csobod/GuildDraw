@@ -93,12 +93,4 @@ def validate(
                     f"within {_CLOSURE_TOL_MM} mm — GuildCAM will auto-close."
                 )
 
-    known = {l.value for l in Layer}
-    used = {c.layer.value for c in export}
-    unknown = used - known
-    if unknown:
-        warnings.append(
-            f"Curves on unrecognised layers {unknown} will be ignored by GuildCAM."
-        )
-
     return errors, warnings

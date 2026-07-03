@@ -1,26 +1,17 @@
 """
 MeasureBar — exact-measurement input overlay.
 
-Shown at the bottom of CanvasView when a draw tool is active and at least
-one node has been placed.  Allows the user to type an exact length + angle
-(line mode) or an exact radius (circle / arc mode) and press Enter to
-place the next geometry without lifting the mouse.
+Shown at the bottom of CanvasView while the circle/arc tool wants a radius.
+The user types an exact radius (or diameter) in mm and presses Enter to
+confirm the circle radius or lock the arc radius without lifting the mouse.
 
-Two modes
----------
-  show_line()   — Length (mm) + Angle (°) fields; Enter places the next node.
-  show_radius() — Radius or Diameter (mm) field; Enter confirms the circle
-                  radius (circle) or locks the radius for arc placement.
+(The old line mode — Length/Angle fields — was superseded by DrawTool's
+cursor HUD with type-to-lock input and has been removed.)
 
 Keyboard
 --------
-  Typing digits while canvas has focus redirects to the Length field via
-  DrawTool.handle_key → MeasureBar.start_length_input().
-  Tab  in Length  → focus Angle.
-  Enter in Length → focus Angle (if empty), else commit.
-  Enter in Angle  → commit line placement.
   Enter in Radius → commit radius.
-  Esc  in any field → return focus to canvas.
+  Esc  in the field → return focus to canvas.
 """
 
 import math
@@ -74,11 +65,9 @@ class MeasureBar(QWidget):
 
     Signals
     -------
-    commit_line(float, float)  — (length_mm, angle_deg) ready to place
-    commit_radius(float)       — radius_mm ready to confirm
+    commit_radius(float) — radius_mm ready to confirm
     """
 
-    commit_line   = Signal(float, float)
     commit_radius = Signal(float)
 
     _STYLE_BG = (
@@ -114,37 +103,6 @@ class MeasureBar(QWidget):
         layout.setContentsMargins(10, 5, 10, 5)
         layout.setSpacing(6)
 
-        # ── Line mode ──────────────────────────────────────────────────
-        self._lbl_len   = QLabel("Length:")
-        self._lbl_len.setStyleSheet(self._STYLE_LABEL)
-
-        self._len_edit  = _NumEdit(90)
-        self._len_edit.setStyleSheet(self._STYLE_EDIT)
-        self._len_edit.setPlaceholderText("—")
-        self._len_edit.setToolTip(
-            "Exact segment length (mm). Press Tab to move to Angle field.")
-
-        self._lbl_mm    = QLabel("mm")
-        self._lbl_mm.setStyleSheet(self._STYLE_LABEL)
-
-        self._lbl_angle = QLabel("Angle:")
-        self._lbl_angle.setStyleSheet(self._STYLE_LABEL)
-
-        self._angle_edit = _NumEdit(75)
-        self._angle_edit.setStyleSheet(self._STYLE_EDIT)
-        self._angle_edit.setPlaceholderText("—")
-        self._angle_edit.setToolTip(
-            "Segment angle in degrees (0°=right, CCW+). Press Enter to place node.")
-
-        self._lbl_deg   = QLabel("°")
-        self._lbl_deg.setStyleSheet(self._STYLE_LABEL)
-
-        self._line_widgets = [
-            self._lbl_len, self._len_edit, self._lbl_mm,
-            self._lbl_angle, self._angle_edit, self._lbl_deg,
-        ]
-
-        # ── Radius mode ────────────────────────────────────────────────
         self._lbl_rad   = QLabel("Radius:")
         self._lbl_rad.setStyleSheet(self._STYLE_LABEL)
 
@@ -163,26 +121,14 @@ class MeasureBar(QWidget):
         self._diam_btn.setToolTip("Toggle Radius ↔ Diameter display.")
         self._diam_btn.toggled.connect(self._on_diam_toggled)
 
-        self._radius_widgets = [
-            self._lbl_rad, self._rad_edit, self._lbl_rad_mm, self._diam_btn,
-        ]
-
-        # ── Shared hint ────────────────────────────────────────────────
         self._hint = QLabel("↵ place  |  Esc = back to canvas")
         self._hint.setStyleSheet(self._STYLE_HINT)
 
-        for w in self._line_widgets + self._radius_widgets + [self._hint]:
+        for w in (self._lbl_rad, self._rad_edit, self._lbl_rad_mm,
+                  self._diam_btn, self._hint):
             layout.addWidget(w)
         layout.addStretch()
 
-        # Tab order: Length → Angle
-        self.setTabOrder(self._len_edit, self._angle_edit)
-
-        # Enter / Esc wiring
-        self._len_edit.confirmed.connect(self._on_len_confirmed)
-        self._len_edit.escaped.connect(self._return_focus_to_canvas)
-        self._angle_edit.confirmed.connect(self._commit_line)
-        self._angle_edit.escaped.connect(self._return_focus_to_canvas)
         self._rad_edit.confirmed.connect(self._commit_radius)
         self._rad_edit.escaped.connect(self._return_focus_to_canvas)
 
@@ -192,35 +138,17 @@ class MeasureBar(QWidget):
         self.hide()
 
     # ------------------------------------------------------------------
-    # Mode switching
+    # Show / hide
     # ------------------------------------------------------------------
 
-    def show_line(self):
-        """Switch to line mode and show the bar."""
-        for w in self._radius_widgets:
-            w.hide()
-        for w in self._line_widgets:
-            w.show()
-        self._hint.show()
-        self._reposition()
-        self.show()
-        self.raise_()
-
     def show_radius(self):
-        """Switch to radius mode and show the bar."""
-        for w in self._line_widgets:
-            w.hide()
-        for w in self._radius_widgets:
-            w.show()
-        self._hint.show()
+        """Show the bar (radius entry)."""
         self._reposition()
         self.show()
         self.raise_()
 
     def hide_bar(self):
-        """Hide the bar and clear all fields."""
-        self._len_edit.clear()
-        self._angle_edit.clear()
+        """Hide the bar and clear the field."""
         self._rad_edit.clear()
         self._diam_btn.setChecked(False)
         self.hide()
@@ -229,13 +157,6 @@ class MeasureBar(QWidget):
     # Live updates (called from tools on mouse move)
     # ------------------------------------------------------------------
 
-    def update_line(self, length_mm: float, angle_deg: float):
-        """Refresh Length and Angle fields when they are not user-focused."""
-        if not self._len_edit.hasFocus():
-            self._len_edit.setText(f"{length_mm:.2f}")
-        if not self._angle_edit.hasFocus():
-            self._angle_edit.setText(f"{angle_deg:.1f}")
-
     def update_radius(self, radius_mm: float):
         """Refresh Radius field when it is not user-focused."""
         self._last_radius = radius_mm
@@ -243,47 +164,9 @@ class MeasureBar(QWidget):
             display = radius_mm * 2.0 if self._use_diameter else radius_mm
             self._rad_edit.setText(f"{display:.2f}")
 
-    def clear_inputs(self):
-        """Clear user-typed locks; live updates resume for unfocused fields."""
-        if not self._len_edit.hasFocus():
-            self._len_edit.clear()
-        if not self._angle_edit.hasFocus():
-            self._angle_edit.clear()
-        if not self._rad_edit.hasFocus():
-            self._rad_edit.clear()
-
-    # ------------------------------------------------------------------
-    # Programmatic focus (called from DrawTool.handle_key)
-    # ------------------------------------------------------------------
-
-    def start_length_input(self, char: str):
-        """Focus the Length field and seed it with *char* (from canvas key press)."""
-        if not self.isVisible():
-            return
-        self._len_edit.clear()
-        self._len_edit.setText(char)
-        self._len_edit.setFocus()
-        self._len_edit.setCursorPosition(len(char))
-
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-
-    def _on_len_confirmed(self):
-        """Enter in Length field: go to Angle field if empty, else commit."""
-        if not self._angle_edit.text().strip():
-            self._angle_edit.setFocus()
-        else:
-            self._commit_line()
-
-    def _commit_line(self):
-        length = _parse_float(self._len_edit.text())
-        angle  = _parse_float(self._angle_edit.text())
-        if length is None or angle is None:
-            return
-        if length <= 0:
-            return
-        self.commit_line.emit(length, angle)
 
     def _commit_radius(self):
         val = _parse_float(self._rad_edit.text())

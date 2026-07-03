@@ -218,7 +218,7 @@ class BoxingGuide:
         and centre cross are drawn around each lens's finished bbox, plus the
         bevel-offset 'full lens depth' outline (computed from the sampled shape
         via Shapely so it stays clean on complex curves)."""
-        from .boxing import bevel_outline_points, finished_box
+        from .boxing import finished_geometry
         from .document import Layer
         from .geometry import mirror_curve
 
@@ -235,7 +235,7 @@ class BoxingGuide:
         out_pen.setStyle(Qt.PenStyle.DashLine)
 
         for c in draw_curves:
-            bb = finished_box(c, depth)
+            bb, pts = finished_geometry(c, depth)
             if bb is None:
                 continue
             x0, y0, x1, y1 = bb
@@ -249,17 +249,15 @@ class BoxingGuide:
                        self._scene.addLine(xm, y0, xm, y1, pen)):
                 li.setZValue(self._Z)
                 self._items.append(li)
-            if depth > 0:
-                pts = bevel_outline_points(c, depth)
-                if pts:
-                    path = QPainterPath()
-                    path.moveTo(pts[0][0], pts[0][1])
-                    for px, py in pts[1:]:
-                        path.lineTo(px, py)
-                    path.closeSubpath()
-                    pi = self._scene.addPath(path, out_pen)
-                    pi.setZValue(self._Z)
-                    self._items.append(pi)
+            if pts:
+                path = QPainterPath()
+                path.moveTo(pts[0][0], pts[0][1])
+                for px, py in pts[1:]:
+                    path.lineTo(px, py)
+                path.closeSubpath()
+                pi = self._scene.addPath(path, out_pen)
+                pi.setZValue(self._Z)
+                self._items.append(pi)
 
 
 class RectGuide:

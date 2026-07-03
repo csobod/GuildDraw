@@ -731,7 +731,7 @@ class CanvasView(QGraphicsView):
 
     @staticmethod
     def _rb_selectable(it) -> bool:
-        if not isinstance(it, (CurveItem, DimItem)):
+        if not isinstance(it, (CurveItem, DimItem, TextItem)):
             return False
         return bool(it.flags() & it.GraphicsItemFlag.ItemIsSelectable)
 
@@ -812,13 +812,6 @@ class WorkspaceState:
     MainWindow holds a list[WorkspaceState] and exposes the active one via
     proxy properties so existing methods need no rewriting.
     """
-
-    _LABELS = {
-        "front":    "Frame Front",
-        "temple_r": "Temple R",
-        "temple_l": "Temple L",
-        "hinge":    "Hinge Pocket",
-    }
 
     def __init__(self, workspace_type: str, status_bar, parent_win):
         self.workspace_type = workspace_type
@@ -946,7 +939,15 @@ class WorkspaceState:
 
     def push_undo_snapshot(self):
         """Push current state; wipes the redo future. Call BEFORE mutating."""
-        self.undo_stack.append(self.take_snapshot())
+        self.push_undo_state(self.take_snapshot())
+
+    def push_undo_state(self, snapshot: dict):
+        """Push a previously-taken snapshot; wipes the redo future.
+
+        For operations that may turn out to be no-ops: take the snapshot,
+        attempt the mutation, and push only on success — pushing eagerly and
+        popping on failure would still have destroyed the redo stack."""
+        self.undo_stack.append(snapshot)
         self.redo_stack.clear()
         if len(self.undo_stack) > self.MAX_UNDO:
             self.undo_stack.pop(0)
@@ -2109,6 +2110,9 @@ class MainWindow(QMainWindow):
         self._weight_spin.setDecimals(2)
         self._weight_spin.setSingleStep(0.25)
         self._weight_spin.setValue(1.5)
+        # Commit on Enter/blur, not per keystroke — each change pushes an
+        # undo snapshot, so typing "2.5" must not create three undo steps.
+        self._weight_spin.setKeyboardTracking(False)
         self._weight_spin.setToolTip(
             "Line weight (screen pixels, cosmetic).\n"
             "Applies to selected curve(s) in Select mode, or to new curves in draw mode."
@@ -4187,13 +4191,16 @@ class MainWindow(QMainWindow):
         for c in remaining:
             self._active_ws.add_curve(c)
 
-    def _on_split_applied(self, original, parts: list):
+    def _on_split_applied(self, pairs: list):
+        """Apply all splits from one click — [(original, [parts]), ...] —
+        as a single undo step (an intersection split breaks several curves)."""
         self._push_undo_snapshot()
         self._edit_tool.clear()
         self.scene.clearSelection()
-        self._active_ws.remove_curve(original)
-        for c in parts:
-            self._active_ws.add_curve(c)
+        for original, parts in pairs:
+            self._active_ws.remove_curve(original)
+            for c in parts:
+                self._active_ws.add_curve(c)
 
     def _on_fillet_applied(self, line1, line2, new_curves: list):
         self._push_undo_snapshot()
@@ -4526,8 +4533,13 @@ class MainWindow(QMainWindow):
             self._status.showMessage(
                 "Curve is grouped — Ctrl+Shift+G to ungroup before editing nodes")
             return
-        self._push_undo_snapshot()
+        snapshot = self._active_ws.take_snapshot()
         if self._edit_tool.insert_node_at(curve, scene_pos):
+            # Push only now that something changed — pushing before the
+            # attempt would wipe the redo stack even on a failed insert.
+            self._active_ws.push_undo_state(snapshot)
+            self._update_undo_actions()
+            self._mark_dirty()
             self.scene.refresh_curve(curve)
             # Rebuild edit handles so the new dot appears
             items = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
@@ -4536,9 +4548,6 @@ class MainWindow(QMainWindow):
                 self._edit_tool._add_curve_items(it)
             self._status.showMessage(
                 f"Inserted node — {len(curve.nodes)} nodes total")
-        else:
-            self._undo_stack.pop()   # nothing changed, discard snapshot
-            self._update_undo_actions()
 
     # ------------------------------------------------------------------
     # Copy / Paste / Duplicate / Select All
@@ -4624,6 +4633,11 @@ class MainWindow(QMainWindow):
                 n += 1
         for it in self.scene._dim_items.values():
             if it.isVisible():
+                it.setSelected(True)
+                n += 1
+        for it in self.scene._text_items.values():
+            if it.isVisible() and bool(
+                    it.flags() & it.GraphicsItemFlag.ItemIsSelectable):
                 it.setSelected(True)
                 n += 1
         self._status.showMessage(f"Selected {n} object(s)")
@@ -4753,9 +4767,12 @@ class MainWindow(QMainWindow):
         """Combine a selected open half-curve with its mirror image into one
         closed curve.  The two endpoints are snapped to the mirror axis before
         combining, so the halves join cleanly even if they were placed slightly
-        off-axis."""
-        from .tools.draw import compute_catmull_handles
+        off-axis.
 
+        Every hand-tuned Bézier handle is preserved: the kept half keeps its
+        handles verbatim and the mirrored half gets their exact reflections
+        (handles were previously recomputed wholesale, which discarded the
+        maker's shaping)."""
         selected = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
         if len(selected) != 1:
             self._status.showMessage("Mirror Close: select exactly one open curve first")
@@ -4773,35 +4790,53 @@ class MainWindow(QMainWindow):
         self._push_undo_snapshot()
 
         is_horiz = bool(self.scene.mirror and getattr(self.scene.mirror, '_horizontal', False))
+        axis_x   = self.scene.mirror.x if self.scene.mirror else 0.0
 
-        if is_horiz:
-            axis_y = 0.0  # horizontal axis always at y=0
+        def mp(x: float, y: float) -> tuple:
+            return (x, -y) if is_horiz else (2.0 * axis_x - x, y)
 
-            def reflect(n):
-                return SplineNode(x=n.x, y=-n.y)
+        def copy_node(n: SplineNode) -> SplineNode:
+            nn = SplineNode(x=n.x, y=n.y)
+            if n.cp_in:
+                nn.cp_in  = ControlPoint(n.cp_in.x,  n.cp_in.y)
+            if n.cp_out:
+                nn.cp_out = ControlPoint(n.cp_out.x, n.cp_out.y)
+            return nn
 
-            # Snap first and last y to the axis so halves join cleanly
-            original = list(curve.nodes)
-            original[0]  = SplineNode(x=original[0].x,  y=axis_y)
-            original[-1] = SplineNode(x=original[-1].x, y=axis_y)
+        def mirror_node(n: SplineNode) -> SplineNode:
+            """Reflected copy traversed in REVERSE order: cp_in/cp_out swap."""
+            nn = SplineNode(*mp(n.x, n.y))
+            if n.cp_out:
+                nn.cp_in  = ControlPoint(*mp(n.cp_out.x, n.cp_out.y))
+            if n.cp_in:
+                nn.cp_out = ControlPoint(*mp(n.cp_in.x, n.cp_in.y))
+            return nn
 
-            new_nodes = [SplineNode(x=n.x, y=n.y) for n in original]
-            for n in reversed(original[1:-1]):
-                new_nodes.append(reflect(n))
-        else:
-            axis_x = self.scene.mirror.x if self.scene.mirror else 0.0
+        # Kept half: snap the two end nodes onto the axis, translating their
+        # handles with the node (exactly what dragging the node would do).
+        original = [copy_node(n) for n in curve.nodes]
+        for end in (0, -1):
+            n = original[end]
+            dx, dy = (0.0, -n.y) if is_horiz else (axis_x - n.x, 0.0)
+            n.x += dx
+            n.y += dy
+            if n.cp_in:
+                n.cp_in  = ControlPoint(n.cp_in.x + dx,  n.cp_in.y + dy)
+            if n.cp_out:
+                n.cp_out = ControlPoint(n.cp_out.x + dx, n.cp_out.y + dy)
 
-            def reflect(n):
-                return SplineNode(x=2.0 * axis_x - n.x, y=n.y)
+        # Traversal: A (=original[0]) → kept half → B (=original[-1]) →
+        # mirrored interior (reversed) → back to A.
+        new_nodes = original + [mirror_node(n) for n in reversed(original[1:-1])]
 
-            # Snap first and last x to the axis so halves join cleanly
-            original = list(curve.nodes)
-            original[0]  = SplineNode(x=axis_x, y=original[0].y)
-            original[-1] = SplineNode(x=axis_x, y=original[-1].y)
-
-            new_nodes = [SplineNode(x=n.x, y=n.y) for n in original]
-            for n in reversed(original[1:-1]):
-                new_nodes.append(reflect(n))
+        # Seam handles: A and B sit on the axis; the closed loop enters/leaves
+        # them from the mirrored half, so the handle on that side is the exact
+        # reflection of the kept-side handle — a mirror-symmetric join.
+        node_a, node_b = original[0], original[-1]
+        if node_a.cp_out:
+            node_a.cp_in  = ControlPoint(*mp(node_a.cp_out.x, node_a.cp_out.y))
+        if node_b.cp_in:
+            node_b.cp_out = ControlPoint(*mp(node_b.cp_in.x, node_b.cp_in.y))
 
         new_curve = Curve(
             kind        = curve.kind,
@@ -4810,8 +4845,6 @@ class MainWindow(QMainWindow):
             closed      = True,
             line_weight = curve.line_weight,
         )
-        if curve.kind == "spline":
-            compute_catmull_handles(new_curve.nodes, closed=True)
 
         # Replace the open half with the new closed shape
         self.scene.clearSelection()
@@ -5148,8 +5181,13 @@ class MainWindow(QMainWindow):
         self.scene.clearSelection()
 
         if curve.closed:
-            # Rotate node list so idx is both first and last → one open curve
-            rotated = copy.deepcopy(curve.nodes[idx:] + curve.nodes[:idx + 1])
+            # Rotate node list so idx is both first and last → one open curve.
+            # The seam node appears twice; deepcopy the slices SEPARATELY so
+            # its two copies are independent objects (one deepcopy of the
+            # combined list memoizes them into a single shared node, and
+            # dragging one endpoint would silently move the other).
+            rotated = (copy.deepcopy(curve.nodes[idx:])
+                       + copy.deepcopy(curve.nodes[:idx + 1]))
             results = [
                 Curve(kind=curve.kind, layer=curve.layer,
                       nodes=rotated, closed=False, line_weight=curve.line_weight)
@@ -5972,6 +6010,11 @@ class MainWindow(QMainWindow):
             ws.scene.clear_faces()
             ws.face_image_paths.clear()
             ws.selected_face_idx = -1
+            ws.image_px_per_mm = None        # calibration belongs to the document
+            ws.boxing_snapped  = False       # snap/lock state derives from the
+            ws.shape_locked    = False       # (now empty) lens geometry
+            ws.outline_locked  = False
+            ws.boxing_guide.set_locked(False)
             ws.fill_visible = False          # fill resets with the document
             ws.fill_color   = "#2a6099"
             ws.fill_opacity = 0.50
@@ -6085,6 +6128,22 @@ class MainWindow(QMainWindow):
                 continue   # unknown layer name from a future version
             ws.scene.set_layer_visible(layer, flags.get("visible", True))
             ws.scene.set_layer_locked(layer, flags.get("locked", False))
+
+        # Mirror ghost state is saved per workspace — restore it (before the
+        # curves are added, so ghosts aren't built and immediately removed).
+        mir = data.get("mirror")
+        if mir is not None:
+            ws.mirror_enabled = bool(getattr(mir, "enabled", True))
+            horizontal = ws.workspace_type in ("temple_r", "temple_l")
+            if ws.scene.mirror:
+                ws.scene.mirror.set_enabled(ws.mirror_enabled)
+            ws.scene.set_mirror_display(ws.mirror_enabled)
+            ws.snap.set_mirror(0.0, ws.mirror_enabled, horizontal=horizontal)
+            ws.boxing_guide.set_mirror(ws.mirror_enabled)
+            if ws is self._active_ws:
+                self._act_mirror.blockSignals(True)
+                self._act_mirror.setChecked(ws.mirror_enabled)
+                self._act_mirror.blockSignals(False)
 
         for curve in data.get("curves", []):
             ws.add_curve(curve)
@@ -6498,8 +6557,13 @@ class MainWindow(QMainWindow):
         # Place each lens: boxing centres on y = 0, nasal edges DBL apart.
         # Side R (OD) sits at negative x — viewer's left, same convention as
         # the measurement panel's OD/OS split about the mirror axis.
+        # Sampled bbox (lens_bbox) so placement uses the same boxing basis as
+        # the measurements panel, not the control-point extents.
+        from .boxing import lens_bbox
         for side, c in lenses.items():
-            bb = _curves_bbox([c])
+            bb = lens_bbox(c)
+            if bb is None:
+                continue
             w  = bb[2] - bb[0]
             tx = (-(dbl / 2 + w / 2) if side == "R" else (dbl / 2 + w / 2)) \
                  - (bb[0] + bb[2]) / 2
@@ -6538,7 +6602,13 @@ class MainWindow(QMainWindow):
 
     def _export_oma(self):
         """File > Export > OMA Trace… — write the two LENS contours as a
-        TRCFMT format-1 DCS file for labs and edgers."""
+        TRCFMT format-1 DCS file for labs and edgers.
+
+        The trace describes the FINISHED lens: the drawn LENS shape grown
+        outward by the bevel depth (a frame trace follows the bevel groove,
+        not the lens opening). Flat/rimless (depth 0) traces the drawn shape
+        itself. HBOX/VBOX/DBL come from the same finished geometry, so the
+        file agrees with the boxing panel's finished A/B/DBL read-outs."""
         if self._active_ws.workspace_type != "front":
             QMessageBox.information(
                 self, "OMA export",
@@ -6546,8 +6616,10 @@ class MainWindow(QMainWindow):
             return
 
         from .export.oma import (
-            OmaJob, OmaTrace, build_oma, curve_to_trace, boxing_center,
+            OmaJob, OmaTrace, build_oma, curve_to_trace, points_to_trace,
+            boxing_center,
         )
+        from .boxing import finished_geometry
         lenses = [c for c in self._doc_curves
                   if not c.mirrored and c.layer == Layer.LENS]
         if self._act_mirror.isChecked():
@@ -6575,15 +6647,20 @@ class MainWindow(QMainWindow):
         lenses.sort(key=lambda c: boxing_center(c)[0])
         od, os_lens = lenses
 
-        # Build the job before asking for a filename — curve_to_trace
-        # rejects non-star-shaped contours and we want that error first.
+        # Build the job before asking for a filename — the tracer rejects
+        # non-star-shaped contours and we want that error first.
+        depth = max(0.0, self._active_ws.bevel_depth)
         try:
             job = OmaJob()
             boxes = {}
             for side, c in (("R", od), ("L", os_lens)):
-                job.traces[side] = OmaTrace(side=side,
-                                            radii_mm=curve_to_trace(c))
-                boxes[side] = _curves_bbox([c])
+                bb, outline = finished_geometry(c, depth)
+                if bb is None:
+                    raise ValueError("A LENS contour has no area — cannot trace.")
+                radii = (points_to_trace(outline) if outline is not None
+                         else curve_to_trace(c))
+                job.traces[side] = OmaTrace(side=side, radii_mm=radii)
+                boxes[side] = bb
             job.set_record("HBOX", ";".join(
                 f"{boxes[s][2] - boxes[s][0]:.2f}" for s in ("R", "L")))
             job.set_record("VBOX", ";".join(
@@ -6778,8 +6855,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _fit_view(self):
-        self.view.fitInView(self.scene.sceneRect(),
-                            Qt.AspectRatioMode.KeepAspectRatio)
+        # Include geometry drawn/imported beyond the pinned scene rect —
+        # fitting sceneRect alone left far-from-origin DXF imports off-screen.
+        rect = self.scene.sceneRect()
+        content = self.scene.geometry_rect()
+        if not content.isNull():
+            rect = rect.united(content)
+        self.view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
         self._update_info_label()
 
 

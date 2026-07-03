@@ -83,6 +83,30 @@ def bevel_outline_points(curve: Curve, depth_mm: float) -> list[tuple[float, flo
     return [(float(x), float(y)) for x, y in buf.exterior.coords]
 
 
+def finished_geometry(curve: Curve, depth_mm: float
+                      ) -> tuple[tuple[float, float, float, float] | None,
+                                 list[tuple[float, float]] | None]:
+    """(finished bbox, bevel outline points) in ONE buffer pass.
+
+    Equivalent to ``(finished_box(c, d), bevel_outline_points(c, d))`` but
+    builds the sampled polygon and its outward buffer once — the snapped
+    boxing guide calls this per lens on every live geometry change.
+    The outline is None when depth <= 0 (no bevel to draw).
+    """
+    poly = lens_polygon(curve)
+    if poly.is_empty:
+        return None, None
+    if not depth_mm or depth_mm <= 0:
+        return poly.bounds, None
+    buf = poly.buffer(depth_mm, join_style=_JOIN_ROUND)
+    if buf.is_empty:
+        return None, None
+    bounds = buf.bounds
+    if buf.geom_type == "MultiPolygon":
+        buf = max(buf.geoms, key=lambda g: g.area)
+    return bounds, [(float(x), float(y)) for x, y in buf.exterior.coords]
+
+
 def finished_ab(shape_a: float, shape_b: float, depth_mm: float) -> tuple[float, float]:
     """Finished A/B = bare-shape A/B grown by 2·depth (depth on each side)."""
     d = max(0.0, depth_mm)

@@ -35,6 +35,15 @@ _HOVER_WIDTH  = 2.5
 _HIT_TOL_PX   = 8         # viewport-pixel tolerance for curve hit-testing
 
 
+def _visible_curves(scene, curves: list) -> list:
+    """Drop curves on hidden layers — invisible geometry must not act as a
+    cutting edge (locked layers still cut: they remain a visible reference)."""
+    is_visible = getattr(scene, "is_layer_visible", None)
+    if is_visible is None:
+        return curves
+    return [c for c in curves if is_visible(c.layer)]
+
+
 class TrimTool(QObject):
     """Persistent cursor tool that trims curves at their intersections."""
 
@@ -96,7 +105,7 @@ class TrimTool(QObject):
             return True
 
         target     = target_item.curve
-        all_curves = self._curves_fn()
+        all_curves = _visible_curves(self._scene, self._curves_fn())
 
         # Gather all intersection t-values on target with every other curve
         raw_ts: list[float] = []

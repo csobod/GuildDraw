@@ -26,6 +26,7 @@ from ..geometry import (
     intersect_curve_params, dedup_ts_mm, t_nearest,
     split_curve_at_t, point_at_t,
 )
+from .trim import _visible_curves
 
 
 _HOVER_COLOR    = "#ffd580"
@@ -37,7 +38,10 @@ _ISECT_SNAP_MM  = 1.5    # within this many mm of an intersection → snap to it
 class SplitTool(QObject):
     """Persistent cursor tool that splits a curve at the clicked point."""
 
-    split_applied  = Signal(object, list)   # (original_curve, [left, right])
+    # One emission per user click: [(original_curve, [left, right]), ...].
+    # An intersection split breaks several curves at once — batching them into
+    # a single signal lets the app record ONE undo step for the whole click.
+    split_applied  = Signal(list)
     status_message = Signal(str)
     cancelled      = Signal()
 
@@ -89,7 +93,7 @@ class SplitTool(QObject):
             return True
 
         target     = target_item.curve
-        all_curves = self._curves_fn()
+        all_curves = _visible_curves(self._scene, self._curves_fn())
         px, py     = pos.x(), pos.y()
 
         # Find the split t, snapping to a nearby intersection if one exists
@@ -122,12 +126,8 @@ class SplitTool(QObject):
 
         self._clear_hover()
 
-        # Emit primary split
-        self.split_applied.emit(target, results)
-
-        # Emit each secondary split
-        for orig, parts in extra_pairs:
-            self.split_applied.emit(orig, parts)
+        # All splits from this click in ONE emission = one undo step.
+        self.split_applied.emit([(target, results)] + extra_pairs)
 
         n_extra = len(extra_pairs)
         msg = "Split → 2 curves"

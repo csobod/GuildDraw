@@ -120,6 +120,35 @@ def _curve_to_dict(curve: Curve) -> dict:
     return d
 
 
+def _dim_to_dict(d: DimLine) -> dict:
+    return {"x0": d.x0, "y0": d.y0, "x1": d.x1, "y1": d.y1, "offset": d.offset}
+
+
+def _dim_from_dict(d: dict) -> DimLine:
+    return DimLine(x0=d["x0"], y0=d["y0"], x1=d["x1"], y1=d["y1"],
+                   offset=d.get("offset", 0.0))
+
+
+def _text_to_dict(t: TextObject) -> dict:
+    return {"text": t.text, "family": t.family, "size_mm": t.size_mm,
+            "rotation": t.rotation, "anchor_x": t.anchor_x,
+            "anchor_y": t.anchor_y, "layer": t.layer.value,
+            "line_weight": t.line_weight}
+
+
+def _text_from_dict(t: dict) -> TextObject:
+    return TextObject(
+        text        = t["text"],
+        family      = t.get("family", "Arial"),
+        size_mm     = t.get("size_mm", 5.0),
+        rotation    = t.get("rotation", 0.0),
+        anchor_x    = t.get("anchor_x", 0.0),
+        anchor_y    = t.get("anchor_y", 0.0),
+        layer       = Layer(t.get("layer", "ENGRAVING")),
+        line_weight = t.get("line_weight", 1.0),
+    )
+
+
 def save_svg(
     curves:           list,
     path:             str,
@@ -176,14 +205,17 @@ def save_svg(
                 "name":      bm["name"],
                 "timestamp": bm["timestamp"],
                 "curves":    [_curve_to_dict(c) for c in bm["snapshot"]["curves"]],
+                # dims/texts are part of the snapshot too — dropping them here
+                # silently truncated bookmarks on a save/reload round trip.
+                "dims":      [_dim_to_dict(d)
+                              for d in bm["snapshot"].get("dims", [])],
+                "texts":     [_text_to_dict(t)
+                              for t in bm["snapshot"].get("texts", [])],
             }
             for bm in bookmarks
         ]
     if dims:
-        state["dims"] = [
-            {"x0": d.x0, "y0": d.y0, "x1": d.x1, "y1": d.y1, "offset": d.offset}
-            for d in dims
-        ]
+        state["dims"] = [_dim_to_dict(d) for d in dims]
     if layers:
         state["layers"] = layers
     if fill:
@@ -191,13 +223,7 @@ def save_svg(
     if bevel:
         state["bevel"] = {"preset": bevel.preset, "depth_mm": bevel.depth_mm}
     if texts:
-        state["texts"] = [
-            {"text": t.text, "family": t.family, "size_mm": t.size_mm,
-             "rotation": t.rotation, "anchor_x": t.anchor_x,
-             "anchor_y": t.anchor_y, "layer": t.layer.value,
-             "line_weight": t.line_weight}
-            for t in texts
-        ]
+        state["texts"] = [_text_to_dict(t) for t in texts]
     meta_el.text = json.dumps(state, indent=2)
 
     for curve in non_mirrored:
@@ -331,17 +357,14 @@ def load_svg(path: str) -> dict:
             "timestamp": bm.get("timestamp", ""),
             "snapshot":  {
                 "curves": [_curve_from_dict(c) for c in bm.get("curves", [])],
-                "dims":   [],
+                "dims":   [_dim_from_dict(d) for d in bm.get("dims", [])],
+                "texts":  [_text_from_dict(t) for t in bm.get("texts", [])],
             },
         }
         for bm in state.get("bookmarks", [])
     ]
 
-    dims = [
-        DimLine(x0=d["x0"], y0=d["y0"], x1=d["x1"], y1=d["y1"],
-                offset=d.get("offset", 0.0))
-        for d in state.get("dims", [])
-    ]
+    dims = [_dim_from_dict(d) for d in state.get("dims", [])]
 
     return {
         "curves": [_curve_from_dict(c) for c in state.get("curves", [])],
@@ -368,17 +391,5 @@ def load_svg(path: str) -> dict:
                       depth_mm=state["bevel"].get("depth_mm", 1.0))
             if isinstance(state.get("bevel"), dict) else None
         ),   # None when absent (pre-rc2 files)
-        "texts": [
-            TextObject(
-                text        = t["text"],
-                family      = t.get("family", "Arial"),
-                size_mm     = t.get("size_mm", 5.0),
-                rotation    = t.get("rotation", 0.0),
-                anchor_x    = t.get("anchor_x", 0.0),
-                anchor_y    = t.get("anchor_y", 0.0),
-                layer       = Layer(t.get("layer", "ENGRAVING")),
-                line_weight = t.get("line_weight", 1.0),
-            )
-            for t in state.get("texts", [])
-        ],
+        "texts": [_text_from_dict(t) for t in state.get("texts", [])],
     }

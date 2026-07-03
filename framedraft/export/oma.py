@@ -263,13 +263,27 @@ def curve_to_trace(curve: Curve, n: int = 400) -> List[float]:
     centre — radial sampling cannot represent such a shape.
     """
     samples = sample_curve(curve, n_per_seg=_SAMPLES_PER_SEG)
-    if len(samples) < 3:
+    return points_to_trace([(x, y) for x, y, _t in samples], n=n)
+
+
+def points_to_trace(points: List[Tuple[float, float]], n: int = 400) -> List[float]:
+    """Radially resample a closed contour polyline (scene coords, y-down) at
+    n equal angles about its bbox centre — the core of curve_to_trace, split
+    out so a *finished* (bevel-offset) outline can be traced directly.
+
+    Same contract as curve_to_trace: radii in mm, point i at angle 360*i/n CCW
+    in the y-up OMA frame; raises ValueError on non-star-shaped contours.
+    """
+    if len(points) < 3:
         raise ValueError("Contour has too few points to trace.")
-    cx, cy = boxing_center(curve)
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    cx = (min(xs) + max(xs)) / 2.0
+    cy = (min(ys) + max(ys)) / 2.0
 
     # Scene (y-down) -> OMA frame (y-up) about the boxing centre, deduped.
     pp: List[Tuple[float, float]] = []
-    for x, y, _t in samples:
+    for x, y in points:
         dx, dy = x - cx, -(y - cy)
         if pp and abs(dx - pp[-1][0]) < 1e-9 and abs(dy - pp[-1][1]) < 1e-9:
             continue

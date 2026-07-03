@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsPixmapItem, QGraphicsPathItem
-from PySide6.QtCore import QRectF, Qt, QPointF
+from PySide6.QtCore import QRectF, Qt, QPointF, QTimer
 from PySide6.QtGui import QBrush, QColor, QPen, QPixmap, QPainterPath
 
 from ..document import Curve, Layer
@@ -123,6 +123,13 @@ class FrameScene(QGraphicsScene):
         self._fill_color = QColor("#2a6099")
         self._fill_opacity: float = 0.50
         self._fill_item: QGraphicsPathItem | None = None
+        # Coalesces hot-path fill rebuilds (add/remove/refresh fire per mouse
+        # move during drags) into one boolean-ops pass per event-loop tick.
+        # Child timer so a pending tick dies with the scene.
+        self._fill_timer = QTimer(self)
+        self._fill_timer.setSingleShot(True)
+        self._fill_timer.setInterval(0)
+        self._fill_timer.timeout.connect(self.rebuild_fill)
         # Store the cross extents so set_dark_mode can redraw them correctly
         self._cross_hw: float = 150.0
         self._cross_hh: float = 100.0
@@ -161,11 +168,6 @@ class FrameScene(QGraphicsScene):
         if idx == 0:
             self._update_scene_rect_for_face()
         return idx
-
-    def load_face(self, path: str) -> bool:
-        """Replace all images with a single new one (backward-compat wrapper)."""
-        self.clear_faces()
-        return self.add_face(path) is not None
 
     def clear_faces(self):
         for item in self._face_items:
@@ -385,6 +387,11 @@ class FrameScene(QGraphicsScene):
                 "color":   self._fill_color.name(),
                 "opacity": self._fill_opacity}
 
+    def _schedule_fill_rebuild(self):
+        """Deferred rebuild_fill for the hot paths (curve add/remove/refresh)."""
+        if self._fill_visible:
+            self._fill_timer.start()
+
     def rebuild_fill(self):
         """Recompute the frame interior: union of OUTLINE (real + ghost)
         minus LENS apertures (real + ghost). No-op while hidden so the
@@ -442,7 +449,7 @@ class FrameScene(QGraphicsScene):
         self._curve_items[id(curve)] = item
         self._apply_layer_state_to_item(item)
         self._update_ghost_for(curve)
-        self.rebuild_fill()
+        self._schedule_fill_rebuild()
         return item
 
     def refresh_curve(self, curve: Curve):
@@ -450,7 +457,7 @@ class FrameScene(QGraphicsScene):
         if item:
             item.refresh()
         self._update_ghost_for(curve)
-        self.rebuild_fill()
+        self._schedule_fill_rebuild()
         # Live-follow hook: fires on node/handle edits and drag-moves (both route
         # through refresh_curve) so observers like the snapped boxing guide can
         # track geometry without a full document-change notification.
@@ -464,7 +471,7 @@ class FrameScene(QGraphicsScene):
         ghost = self._ghost_items.pop(id(curve), None)
         if ghost:
             self.removeItem(ghost)
-        self.rebuild_fill()
+        self._schedule_fill_rebuild()
 
     # ------------------------------------------------------------------
     # Mirror ghost display
@@ -578,15 +585,6 @@ class FrameScene(QGraphicsScene):
         item = self._dim_items.pop(id(dim), None)
         if item:
             self.removeItem(item)
-
-    def dim_for_item(self, scene_item):
-        """Return the DimLine whose DimItem is *scene_item*, or None."""
-        for it in self._dim_items.values():
-            if it is scene_item:
-                # find the DimLine by id — caller passes dim list; we just
-                # return the item's .dim attribute
-                return it.dim
-        return None
 
     # ------------------------------------------------------------------
     # Printing support (M8 — 1:1 print / PDF)
