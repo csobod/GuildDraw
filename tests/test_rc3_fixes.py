@@ -275,6 +275,29 @@ def test_settings_dialog_round_trips_appearance(fresh):
     assert out["dot_radius_px"] == 6
 
 
+def test_settings_dialog_layer_color_overrides(fresh):
+    from framedraft.app import SettingsDialog
+    prefs = dict(fresh._prefs)
+    prefs["theme"] = {"light": {"layer.LENS": "#112233",
+                                "chrome.bg": "#eeeeee"},   # non-layer preserved
+                      "dark": {}}
+    dlg = SettingsDialog(prefs, fresh)
+
+    # Existing override shows on the button; defaults show as "default".
+    assert dlg._layer_btns[("LENS", "light")].text() == "#112233"
+    assert dlg._layer_btns[("OUTLINE", "light")].text() == "default"
+
+    # Simulate a pick + a reset without the color dialog.
+    dlg._layer_over["dark"]["layer.SCULPT"] = "#445566"
+    dlg._refresh_layer_btn("SCULPT")
+    dlg._reset_layer_color("LENS")
+
+    out = dlg.to_prefs()["theme"]
+    assert out["light"]["chrome.bg"] == "#eeeeee"      # non-layer token kept
+    assert "layer.LENS" not in out["light"]            # reset cleared it
+    assert out["dark"]["layer.SCULPT"] == "#445566"
+
+
 def test_failed_insert_keeps_redo_stack(fresh):
     win = fresh
     ws = win._active_ws

@@ -1153,7 +1153,76 @@ class SettingsDialog(QDialog):
         ap_lay.addStretch()
 
         # ═══════════════════════════════════════════════════════════════════
-        # Tab 2 — Toolbar visibility
+        # Tab 2 — Layers & Colors (per-layer light/dark overrides)
+        # ═══════════════════════════════════════════════════════════════════
+        lc_scroll = QScrollArea()
+        lc_scroll.setWidgetResizable(True)
+        lc_scroll.setFrameShape(lc_scroll.Shape.NoFrame)
+        lc_inner  = QWidget()
+        lc_lay    = QVBoxLayout(lc_inner)
+        lc_lay.setSpacing(10)
+        lc_lay.setContentsMargins(16, 16, 16, 8)
+        lc_scroll.setWidget(lc_inner)
+        tabs.addTab(lc_scroll, "Layers")
+
+        lc_note = QLabel(
+            "Drawing colour per layer, for each UI mode. Plain layers follow\n"
+            "the shared ink colour until you override them; SCULPT and\n"
+            "ENGRAVING carry their own defaults.")
+        lc_note.setWordWrap(True)
+        lc_lay.addWidget(lc_note)
+
+        # Only layer.* overrides are edited here; _collect_theme preserves
+        # any other tokens already present in the prefs["theme"] dicts.
+        base_theme = prefs.get("theme") or {}
+        self._base_theme = {
+            "light": dict(base_theme.get("light") or {}),
+            "dark":  dict(base_theme.get("dark") or {}),
+        }
+        self._layer_over = {
+            mode: {tok: v for tok, v in self._base_theme[mode].items()
+                   if tok.startswith("layer.")}
+            for mode in ("light", "dark")
+        }
+
+        lc_grid = QGridLayout()
+        lc_grid.setHorizontalSpacing(8)
+        lc_grid.setVerticalSpacing(6)
+        for col, title in ((0, "Layer"), (1, "Light"), (2, "Dark")):
+            hdr = QLabel(title)
+            f = hdr.font()
+            f.setBold(True)
+            hdr.setFont(f)
+            lc_grid.addWidget(hdr, 0, col)
+
+        self._layer_btns: dict = {}   # (layer name, mode) -> QPushButton
+        for row, layer in enumerate(Layer, start=1):
+            name = layer.value
+            lc_grid.addWidget(QLabel(name), row, 0)
+            for col, mode in ((1, "light"), (2, "dark")):
+                btn = QPushButton()
+                btn.setFixedWidth(96)
+                btn.clicked.connect(
+                    lambda _=False, n=name, m=mode: self._pick_layer_color(n, m))
+                self._layer_btns[(name, mode)] = btn
+                lc_grid.addWidget(btn, row, col)
+            rst = QToolButton()
+            rst.setText("↺")
+            rst.setToolTip(f"Reset {name} to its default colours")
+            rst.clicked.connect(
+                lambda _=False, n=name: self._reset_layer_color(n))
+            lc_grid.addWidget(rst, row, 3)
+            self._refresh_layer_btn(name)
+        lc_grid.setColumnStretch(4, 1)
+        lc_lay.addLayout(lc_grid)
+
+        lc_reset_all = QPushButton("Reset all layer colours")
+        lc_reset_all.clicked.connect(self._reset_all_layer_colors)
+        lc_lay.addWidget(lc_reset_all)
+        lc_lay.addStretch()
+
+        # ═══════════════════════════════════════════════════════════════════
+        # Tab 3 — Toolbar visibility
         # ═══════════════════════════════════════════════════════════════════
         tb_scroll = QScrollArea()
         tb_scroll.setWidgetResizable(True)
@@ -1184,7 +1253,7 @@ class SettingsDialog(QDialog):
         tb_lay.addStretch()
 
         # ═══════════════════════════════════════════════════════════════════
-        # Tab 2 — Hotkeys
+        # Tab 4 — Hotkeys
         # ═══════════════════════════════════════════════════════════════════
         hk_outer  = QWidget()
         hk_lay    = QVBoxLayout(hk_outer)
@@ -1233,6 +1302,56 @@ class SettingsDialog(QDialog):
         hk_lay.addStretch()
 
         self._check_conflicts()
+
+    # ------------------------------------------------------------------
+    # Layers & Colors helpers
+    # ------------------------------------------------------------------
+
+    def _layer_resolved(self, name: str, mode: str) -> tuple[str, bool]:
+        """(hex, is_override) for a layer's colour in one mode."""
+        ov = self._layer_over[mode].get(f"layer.{name}")
+        if ov:
+            return ov, True
+        return theme.default_layer_color(name, mode == "dark"), False
+
+    def _refresh_layer_btn(self, name: str):
+        for mode in ("light", "dark"):
+            hexv, overridden = self._layer_resolved(name, mode)
+            btn = self._layer_btns[(name, mode)]
+            pm = QPixmap(14, 14)
+            pm.fill(QColor(hexv))
+            btn.setIcon(QIcon(pm))
+            btn.setText(hexv if overridden else "default")
+
+    def _pick_layer_color(self, name: str, mode: str):
+        cur, _ = self._layer_resolved(name, mode)
+        c = QColorDialog.getColor(QColor(cur), self,
+                                  f"{name} colour ({mode} mode)")
+        if c.isValid():
+            self._layer_over[mode][f"layer.{name}"] = c.name()
+            self._refresh_layer_btn(name)
+
+    def _reset_layer_color(self, name: str):
+        for mode in ("light", "dark"):
+            self._layer_over[mode].pop(f"layer.{name}", None)
+        self._refresh_layer_btn(name)
+
+    def _reset_all_layer_colors(self):
+        for mode in ("light", "dark"):
+            self._layer_over[mode].clear()
+        for layer in Layer:
+            self._refresh_layer_btn(layer.value)
+
+    def _collect_theme(self) -> dict:
+        """prefs["theme"] value: non-layer tokens preserved from the incoming
+        prefs, layer.* tokens replaced by this dialog's state."""
+        out = {"light": {}, "dark": {}}
+        for mode in ("light", "dark"):
+            for tok, v in self._base_theme[mode].items():
+                if not tok.startswith("layer."):
+                    out[mode][tok] = v
+            out[mode].update(self._layer_over[mode])
+        return out
 
     # ------------------------------------------------------------------
     # Appearance-tab helpers
@@ -1285,6 +1404,7 @@ class SettingsDialog(QDialog):
         }
         return {
             "dark_mode":            self._dark_check.isChecked(),
+            "theme":                self._collect_theme(),
             "viewport": {
                 "preset":    self._vp_choices[self._vp_combo.currentIndex()][0],
                 "custom_bg": self._vp_custom_color,
@@ -5246,8 +5366,11 @@ class MainWindow(QMainWindow):
         p = dlg.to_prefs()
         self._prefs.update(p)   # dialog is the sole writer of startup defaults
 
-        # Appearance: viewport preset + dots first, so a mode toggle (or the
-        # explicit refresh below) repaints with the new tokens in one pass.
+        # Theme + appearance first, so a mode toggle (or the explicit refresh
+        # below) repaints with the new tokens in one pass. set_overrides
+        # replaces the whole override set, so the viewport overlay must be
+        # re-applied on top (same order as startup).
+        theme.set_overrides(p["theme"])
         vp = p["viewport"]
         theme.apply_viewport(vp["preset"], vp.get("custom_bg"))
         theme.set_dot_radius(p["dot_radius_px"])
