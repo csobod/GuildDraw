@@ -160,6 +160,72 @@ def default_layer_color(layer, dark: bool) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Viewport presets (Preferences ▸ Appearance)
+#
+# A preset overlays the three viewport tokens in BOTH modes, so the canvas
+# looks the same whichever UI mode is active; "auto" clears the overlay and
+# the canvas follows the UI theme again. "custom" derives a legible ink and
+# cross from the chosen background's luminance.
+# ---------------------------------------------------------------------------
+
+_VIEWPORT_TOKENS = ("canvas.bg", "geometry.ink", "canvas.cross")
+
+VIEWPORT_PRESETS: dict[str, dict[str, str]] = {
+    "parchment": {"canvas.bg": "#faf6ee", "geometry.ink": "#1f1f1f",
+                  "canvas.cross": "#ccbbaa"},
+    "blueprint": {"canvas.bg": "#16324f", "geometry.ink": "#dce8f2",
+                  "canvas.cross": "#3a5a78"},
+    "matte":     {"canvas.bg": "#1e1e1e", "geometry.ink": "#d4cfc0",
+                  "canvas.cross": "#554433"},
+    "white":     {"canvas.bg": "#ffffff", "geometry.ink": "#1f1f1f",
+                  "canvas.cross": "#d8d8d8"},
+}
+
+
+def _rgb(hex_color: str) -> tuple[int, int, int]:
+    h = hex_color.lstrip("#")
+    if len(h) == 8:          # #AARRGGBB
+        h = h[2:]
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _luminance(hex_color: str) -> float:
+    r, g, b = _rgb(hex_color)
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+
+
+def _mix(a: str, b: str, t: float) -> str:
+    """Blend color *a* toward *b* by t in [0, 1]."""
+    ar, ag, ab_ = _rgb(a)
+    br, bg, bb = _rgb(b)
+    return "#{:02x}{:02x}{:02x}".format(
+        round(ar + (br - ar) * t),
+        round(ag + (bg - ag) * t),
+        round(ab_ + (bb - ab_) * t))
+
+
+def apply_viewport(preset: str | None, custom_bg: str | None = None) -> None:
+    """Overlay (or clear, for "auto") the viewport tokens in both modes."""
+    for dark in (False, True):
+        for tok in _VIEWPORT_TOKENS:
+            set_override(tok, None, dark=dark)
+    if preset in (None, "", "auto"):
+        return
+    if preset == "custom":
+        bg = custom_bg or default_color("canvas.bg", False)
+        ink = "#d4cfc0" if _luminance(bg) < 0.5 else "#1f1f1f"
+        vals = {"canvas.bg": bg, "geometry.ink": ink,
+                "canvas.cross": _mix(bg, ink, 0.25)}
+    else:
+        vals = VIEWPORT_PRESETS.get(preset)
+        if vals is None:
+            return
+    for dark in (False, True):
+        for tok, v in vals.items():
+            set_override(tok, v, dark=dark)
+
+
+# ---------------------------------------------------------------------------
 # Editing-dot size (4K/accessibility; exposed in Preferences ▸ Appearance)
 # ---------------------------------------------------------------------------
 

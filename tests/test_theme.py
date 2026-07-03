@@ -77,6 +77,31 @@ def test_build_qss_embeds_current_chrome():
     assert "#abcdef" in theme.build_qss()
 
 
+def test_viewport_preset_overlays_both_modes():
+    theme.apply_viewport("blueprint")
+    assert theme.color("canvas.bg") == "#16324f"
+    assert theme.color("geometry.ink") == "#dce8f2"
+    theme.set_dark(True)
+    assert theme.color("canvas.bg") == "#16324f"   # same canvas either mode
+    theme.set_dark(False)
+    theme.apply_viewport("auto")                    # clears the overlay
+    assert theme.color("canvas.bg") == "#faf6ee"
+
+
+def test_viewport_preset_recolors_plain_layers():
+    from framedraft.document import Layer
+    theme.apply_viewport("blueprint")
+    # Plain layers follow geometry.ink, so they turn legible on the blue.
+    assert theme.layer_color(Layer.OUTLINE) == "#dce8f2"
+
+
+def test_viewport_custom_derives_legible_ink():
+    theme.apply_viewport("custom", "#101820")       # near-black canvas
+    assert theme.color("geometry.ink") == "#d4cfc0" # light ink
+    theme.apply_viewport("custom", "#f0ead2")       # pale canvas
+    assert theme.color("geometry.ink") == "#1f1f1f" # dark ink
+
+
 def test_dot_radius_clamped():
     theme.set_dot_radius(50)
     assert theme.dot_radius() == 10

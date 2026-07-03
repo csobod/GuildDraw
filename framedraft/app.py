@@ -222,9 +222,49 @@ class CanvasView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setBackgroundBrush(QBrush(QColor(theme.color("canvas.bg"))))
+        # Vignette overlay (Preferences ▸ Appearance): 0 = off; the gradient
+        # pixmap is cached per viewport size so painting is one blit.
+        self._vignette: int = 0
+        self._vignette_pm: QPixmap | None = None
 
         self.measure_bar = MeasureBar(self)
         QTimer.singleShot(0, self._reposition_measure_bar)
+
+    # ------------------------------------------------------------------
+    # Vignette (viewport-space radial darkening, intensity 0–100)
+    # ------------------------------------------------------------------
+
+    def set_vignette(self, intensity: int):
+        self._vignette = max(0, min(100, int(intensity)))
+        self._vignette_pm = None
+        self.viewport().update()
+
+    def _render_vignette(self) -> QPixmap:
+        from PySide6.QtGui import QRadialGradient
+        size = self.viewport().size()
+        pm = QPixmap(size)
+        pm.fill(Qt.GlobalColor.transparent)
+        w, h = size.width(), size.height()
+        g = QRadialGradient(w / 2.0, h / 2.0, math.hypot(w, h) / 2.0)
+        g.setColorAt(0.0, QColor(0, 0, 0, 0))
+        g.setColorAt(0.55, QColor(0, 0, 0, 0))
+        g.setColorAt(1.0, QColor(0, 0, 0, round(self._vignette / 100.0 * 140)))
+        p = QPainter(pm)
+        p.fillRect(0, 0, w, h, QBrush(g))
+        p.end()
+        return pm
+
+    def drawForeground(self, painter, rect):
+        super().drawForeground(painter, rect)
+        if self._vignette <= 0:
+            return
+        if (self._vignette_pm is None
+                or self._vignette_pm.size() != self.viewport().size()):
+            self._vignette_pm = self._render_vignette()
+        painter.save()
+        painter.resetTransform()
+        painter.drawPixmap(0, 0, self._vignette_pm)
+        painter.restore()
 
     def set_delete_callback(self, cb):
         self._delete_callback = cb
@@ -969,14 +1009,6 @@ class SettingsDialog(QDialog):
         gen_scroll.setWidget(gen_inner)
         tabs.addTab(gen_scroll, "General")
 
-        # Appearance
-        app_box  = QGroupBox("Appearance")
-        app_form = QFormLayout(app_box)
-        self._dark_check = QCheckBox("Enable dark mode")
-        self._dark_check.setChecked(prefs["dark_mode"])
-        app_form.addRow(self._dark_check)
-        gen_lay.addWidget(app_box)
-
         # Drawing
         draw_box  = QGroupBox("Drawing")
         draw_form = QFormLayout(draw_box)
@@ -1033,7 +1065,95 @@ class SettingsDialog(QDialog):
         gen_lay.addStretch()
 
         # ═══════════════════════════════════════════════════════════════════
-        # Tab 1 — Toolbar visibility
+        # Tab 1 — Appearance (mode / viewport theme / vignette / dots)
+        # ═══════════════════════════════════════════════════════════════════
+        ap_scroll = QScrollArea()
+        ap_scroll.setWidgetResizable(True)
+        ap_scroll.setFrameShape(ap_scroll.Shape.NoFrame)
+        ap_inner  = QWidget()
+        ap_lay    = QVBoxLayout(ap_inner)
+        ap_lay.setSpacing(12)
+        ap_lay.setContentsMargins(16, 16, 16, 8)
+        ap_scroll.setWidget(ap_inner)
+        tabs.addTab(ap_scroll, "Appearance")
+
+        mode_box  = QGroupBox("Mode")
+        mode_form = QFormLayout(mode_box)
+        self._dark_check = QCheckBox("Enable dark mode")
+        self._dark_check.setChecked(prefs["dark_mode"])
+        mode_form.addRow(self._dark_check)
+        ap_lay.addWidget(mode_box)
+
+        vp = prefs.get("viewport") or {}
+        vp_box  = QGroupBox("Viewport")
+        vp_form = QFormLayout(vp_box)
+        vp_form.setSpacing(6)
+
+        # (key, label) — a preset overlays the canvas tokens in BOTH UI modes;
+        # "auto" follows the UI theme as before.
+        self._vp_choices = [
+            ("auto",      "Follow UI theme"),
+            ("parchment", "Parchment"),
+            ("blueprint", "Blueprint"),
+            ("matte",     "Matte Dark"),
+            ("white",     "Plain White"),
+            ("custom",    "Custom…"),
+        ]
+        self._vp_combo = QComboBox()
+        for _key, label in self._vp_choices:
+            self._vp_combo.addItem(label)
+        cur_preset = vp.get("preset", "auto")
+        self._vp_combo.setCurrentIndex(next(
+            (i for i, (k, _l) in enumerate(self._vp_choices) if k == cur_preset),
+            0))
+        self._vp_combo.setToolTip(
+            "Canvas backdrop + drawing ink, independent of the UI mode.\n"
+            "Follow UI theme = parchment in light mode, matte in dark mode.")
+        self._vp_combo.currentIndexChanged.connect(self._on_vp_preset_changed)
+        vp_form.addRow("Canvas preset:", self._vp_combo)
+
+        self._vp_custom_color = vp.get("custom_bg", "#faf6ee")
+        self._vp_color_btn = QPushButton("Canvas colour…")
+        self._vp_color_btn.setToolTip(
+            "Custom canvas colour; drawing ink is derived automatically.")
+        self._vp_color_btn.clicked.connect(self._pick_vp_color)
+        self._vp_color_btn.setEnabled(cur_preset == "custom")
+        self._update_vp_swatch()
+        vp_form.addRow("Custom:", self._vp_color_btn)
+
+        vig_row = QWidget()
+        vig_lay = QHBoxLayout(vig_row)
+        vig_lay.setContentsMargins(0, 0, 0, 0)
+        vig_lay.setSpacing(8)
+        self._vignette_slider = QSlider(Qt.Orientation.Horizontal)
+        self._vignette_slider.setRange(0, 100)
+        self._vignette_slider.setValue(int(vp.get("vignette", 0)))
+        self._vignette_slider.setToolTip(
+            "Darkens the viewport edges to focus the eye on the work.\n"
+            "0 = off. Display-only — never printed or exported.")
+        self._vignette_lbl = QLabel(f"{self._vignette_slider.value()}%")
+        self._vignette_slider.valueChanged.connect(
+            lambda v: self._vignette_lbl.setText(f"{v}%"))
+        vig_lay.addWidget(self._vignette_slider, 1)
+        vig_lay.addWidget(self._vignette_lbl)
+        vp_form.addRow("Vignette:", vig_row)
+        ap_lay.addWidget(vp_box)
+
+        dots_box  = QGroupBox("Editing dots")
+        dots_form = QFormLayout(dots_box)
+        self._dot_spin = _spinbox(2, 10, 1, float(prefs.get("dot_radius_px", 4)),
+                                  suffix=" px", decimals=0)
+        self._dot_spin.setToolTip(
+            "Radius of the node dots shown on a selected curve (handles draw\n"
+            "one px smaller). Larger helps on high-DPI displays. Applies the\n"
+            "next time a curve is selected.")
+        dots_form.addRow("Node dot radius:", self._dot_spin)
+        ap_lay.addWidget(dots_box)
+
+        ap_lay.addStretch()
+
+        # ═══════════════════════════════════════════════════════════════════
+        # Tab 2 — Toolbar visibility
         # ═══════════════════════════════════════════════════════════════════
         tb_scroll = QScrollArea()
         tb_scroll.setWidgetResizable(True)
@@ -1115,6 +1235,25 @@ class SettingsDialog(QDialog):
         self._check_conflicts()
 
     # ------------------------------------------------------------------
+    # Appearance-tab helpers
+    # ------------------------------------------------------------------
+
+    def _on_vp_preset_changed(self, idx: int):
+        self._vp_color_btn.setEnabled(self._vp_choices[idx][0] == "custom")
+
+    def _pick_vp_color(self):
+        c = QColorDialog.getColor(QColor(self._vp_custom_color), self,
+                                  "Canvas colour")
+        if c.isValid():
+            self._vp_custom_color = c.name()
+            self._update_vp_swatch()
+
+    def _update_vp_swatch(self):
+        pm = QPixmap(16, 16)
+        pm.fill(QColor(self._vp_custom_color))
+        self._vp_color_btn.setIcon(QIcon(pm))
+
+    # ------------------------------------------------------------------
 
     def _check_conflicts(self):
         texts = [e.text().strip() for e in self._key_edits]
@@ -1146,6 +1285,12 @@ class SettingsDialog(QDialog):
         }
         return {
             "dark_mode":            self._dark_check.isChecked(),
+            "viewport": {
+                "preset":    self._vp_choices[self._vp_combo.currentIndex()][0],
+                "custom_bg": self._vp_custom_color,
+                "vignette":  self._vignette_slider.value(),
+            },
+            "dot_radius_px":        int(self._dot_spin.value()),
             "default_line_weight":  self._weight_spin.value(),
             "mirror_on_startup":    self._mirror_chk.isChecked(),
             "guides_on_startup":    self._guides_chk.isChecked(),
@@ -1349,10 +1494,15 @@ class MainWindow(QMainWindow):
 
         # Load persistent preferences first
         self._prefs = _prefs_mod.load()
-        # Theme overrides must land before any workspace/canvas is built so
-        # every painter resolves user colors from the start; re-render the
-        # chrome in case saved overrides retint it (main() styled defaults).
+        # Theme overrides + viewport preset must land before any workspace/
+        # canvas is built so every painter resolves user colors from the
+        # start; re-render the chrome in case saved overrides retint it
+        # (main() styled defaults).
         theme.set_overrides(self._prefs.get("theme"))
+        _vp_prefs = self._prefs.get("viewport") or {}
+        theme.apply_viewport(_vp_prefs.get("preset", "auto"),
+                             _vp_prefs.get("custom_bg"))
+        theme.set_dot_radius(self._prefs.get("dot_radius_px", 4))
         QApplication.instance().setStyleSheet(theme.build_qss())
 
         # ── Global (non-workspace) state ──────────────────────────────────
@@ -1403,7 +1553,9 @@ class MainWindow(QMainWindow):
         # resolve to _workspaces[0] (Frame Front) since the tab widget starts at 0.
 
         # Connect the calib tool for each workspace
+        _vign = int(_vp_prefs.get("vignette", 0))
         for ws in self._workspaces:
+            ws.view.set_vignette(_vign)
             ws.view.set_calib_tool(ws.calib_tool)
             ws.calib_tool.calibrated.connect(self._apply_calibration)
             ws.calib_tool.status_message.connect(self._status.showMessage)
@@ -5094,10 +5246,18 @@ class MainWindow(QMainWindow):
         p = dlg.to_prefs()
         self._prefs.update(p)   # dialog is the sole writer of startup defaults
 
-        # Appearance
+        # Appearance: viewport preset + dots first, so a mode toggle (or the
+        # explicit refresh below) repaints with the new tokens in one pass.
+        vp = p["viewport"]
+        theme.apply_viewport(vp["preset"], vp.get("custom_bg"))
+        theme.set_dot_radius(p["dot_radius_px"])
+        for ws in self._workspaces:
+            ws.view.set_vignette(vp.get("vignette", 0))
         if p["dark_mode"] != self._dark_mode:
             self._act_dark.setChecked(p["dark_mode"])
             self._toggle_dark_mode(p["dark_mode"])
+        else:
+            self._refresh_theme_dependents()
 
         # Drawing
         self._default_line_weight = p["default_line_weight"]
@@ -6662,11 +6822,11 @@ class MainWindow(QMainWindow):
     # Dark mode
     # ------------------------------------------------------------------
 
-    def _toggle_dark_mode(self, dark: bool):
-        self._dark_mode = dark
-        app = QApplication.instance()
-        theme.set_dark(dark)
-        app.setStyleSheet(theme.build_qss())
+    def _refresh_theme_dependents(self):
+        """Re-render everything that resolves theme colors — call after the
+        mode, a viewport preset, or any token override changes."""
+        dark = self._dark_mode
+        QApplication.instance().setStyleSheet(theme.build_qss())
         bg = theme.color("canvas.bg")
         for ws in self._workspaces:
             ws.view.setBackgroundBrush(QBrush(QColor(bg)))
@@ -6680,6 +6840,11 @@ class MainWindow(QMainWindow):
         self._toolbar.set_dark(dark)  # overflow pop-out panel matches theme
         self._refresh_layer_panel()   # eye/padlock icons are theme-colored
         self._update_readiness()      # dot colours are theme-aware
+
+    def _toggle_dark_mode(self, dark: bool):
+        self._dark_mode = dark
+        theme.set_dark(dark)
+        self._refresh_theme_dependents()
         self._save_prefs()
 
     # ------------------------------------------------------------------

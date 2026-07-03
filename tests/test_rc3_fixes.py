@@ -255,6 +255,26 @@ def test_save_actions_have_shortcuts(fresh):
     assert shortcuts["Save As…"] == "Ctrl+Shift+S"
 
 
+def test_vignette_intensity_clamped(fresh):
+    view = fresh._active_ws.view
+    view.set_vignette(150)
+    assert view._vignette == 100
+    view.set_vignette(-5)
+    assert view._vignette == 0
+
+
+def test_settings_dialog_round_trips_appearance(fresh):
+    from framedraft.app import SettingsDialog
+    prefs = dict(fresh._prefs)
+    prefs["viewport"] = {"preset": "blueprint", "custom_bg": "#123456",
+                         "vignette": 35}
+    prefs["dot_radius_px"] = 6
+    dlg = SettingsDialog(prefs, fresh)
+    out = dlg.to_prefs()
+    assert out["viewport"] == prefs["viewport"]
+    assert out["dot_radius_px"] == 6
+
+
 def test_failed_insert_keeps_redo_stack(fresh):
     win = fresh
     ws = win._active_ws

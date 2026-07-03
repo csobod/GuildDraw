@@ -72,6 +72,14 @@ DEFAULTS: dict = {
     # Theme color overrides — {"light": {token: "#rrggbb"}, "dark": {...}};
     # tokens resolve via framedraft.theme (absent tokens use its defaults)
     "theme": {},
+    # Viewport appearance (Preferences ▸ Appearance)
+    "viewport": {
+        "preset":    "auto",      # auto|parchment|blueprint|matte|white|custom
+        "custom_bg": "#faf6ee",   # canvas color when preset == "custom"
+        "vignette":  0,           # 0–100 edge-darkening intensity
+    },
+    # Node/handle editing-dot radius in screen px (theme.dot_radius)
+    "dot_radius_px": 4,
     # User-assignable hotkeys (empty string = no hotkey)
     "hotkeys": {
         "line":         "L",
@@ -103,7 +111,7 @@ def load() -> dict:
             # Deep-merge nested dicts so new default keys survive old prefs
             # files. EVERY nested dict pref must be listed here — a missing
             # entry means old files silently clobber new defaults.
-            for key in ("toolbar", "hotkeys", "theme"):
+            for key in ("toolbar", "hotkeys", "theme", "viewport"):
                 if isinstance(data.get(key), dict):
                     merged[key] = {**DEFAULTS[key], **data[key]}
                 else:
