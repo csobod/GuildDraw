@@ -659,7 +659,7 @@ the Releases URL in the browser — deferred, not required.
   on LENS with no bevel shrink, so export→import grows by 2·depth. Decide
   whether import should shrink by the current bevel preset (or ask the maker).
 
-## M16 — Central theme module (enabler for M17/M18)
+## M16 — Central theme module (enabler for M17/M18) — ✅ DONE (2026-07-03, `17ef12e`)
 
 Colors currently live hardcoded in ~8 places (QSS strings in `app.py`,
 `_DARK` palettes in `canvas/items.py`, guides, mirror axis, dim, scene cross,
@@ -681,7 +681,7 @@ truth every painter queries at refresh time:
   construction time (4K/accessibility; exposed in M17).
 - Behavior-identical by default: same rendered colors, all tests green.
 
-## M17 — Appearance preferences (viewport themes + vignette + dot size)
+## M17 — Appearance preferences (viewport themes + vignette + dot size) — ✅ DONE (2026-07-03, `5bd3f75`)
 
 New **Appearance** tab in Preferences (dark-mode checkbox moves here):
 
@@ -696,7 +696,7 @@ New **Appearance** tab in Preferences (dark-mode checkbox moves here):
   selection rebuild).
 - Persist as `prefs["viewport"]` (preset/custom color/vignette) + dot radius.
 
-## M18 — Layers & Colors preferences
+## M18 — Layers & Colors preferences — ✅ DONE (2026-07-03, `66cdde0`)
 
 - Per-layer color swatches (light + dark columns) driving `layer.<NAME>`
   overrides; Reset-to-default per row and for the whole tab.
@@ -704,7 +704,7 @@ New **Appearance** tab in Preferences (dark-mode checkbox moves here):
   after M16), so one change recolors everything consistently.
 - Later (backlog): per-layer default line weight + dash pattern.
 
-## M19 — Snap palette v1
+## M19 — Snap palette v1 — ✅ DONE (2026-07-03, `efbe54d`; single-snap override hotkey deferred to backlog)
 
 **UI:** keep the Snap toolbar button as the master toggle (Ctrl still
 suspends). Add a `snap_palette` action beside it that opens a **pinnable
@@ -754,7 +754,7 @@ Grid snap type in the palette. Natural companion for drill-pattern layout.
 
 ### RC3a release checklist
 
-- [ ] M16–M19 landed (M20 stretch, M21 optional), tests green per milestone
+- [x] M16–M19 landed (M20 stretch, M21 optional) — 204 tests green
 - [ ] README/USER-GUIDE "New in RC3a" (snap palette, themes, vignette, Ctrl+S)
 - [ ] Version stamp `1.0.0-rc3a`, installer rebuild via
       `scripts/build_release.ps1`, user test-install
