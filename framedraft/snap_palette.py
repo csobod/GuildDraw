@@ -6,18 +6,30 @@ widget of the main window (same non-auto-hiding pattern as the pinnable
 toolbar's overflow pop-out) so it stays open across operations until the
 palette button is toggled off.
 
+Kept deliberately small: a two-column grid of icon toggles (the type name
+lives in the tooltip, not on the button) plus a magnet-labelled radius
+field, so leaving it pinned costs little viewport.
+
 Emits ``types_changed({key: bool})`` and ``radius_changed(px)`` — the host
 applies them to every workspace's SnapEngine and persists them in prefs.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QPoint, Signal
+from PySide6.QtCore import Qt, QPoint, QSize, Signal
 from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QDoubleSpinBox,
+    QAbstractSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QSpinBox,
+    QToolButton, QVBoxLayout, QWidget,
 )
 
 from . import theme
+from .icons import make_icon, make_pixmap
 from .canvas.snapping import SNAP_TYPES
+
+_RADIUS_MIN = 4
+_RADIUS_MAX = 40    # two digits; a larger snap reach becomes unwieldy
+_ICON_PX    = 18
+_BTN_PX     = 26
+_GRID_COLS  = 2
 
 
 class SnapPalette(QFrame):
@@ -32,47 +44,55 @@ class SnapPalette(QFrame):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(6, 6, 6, 6)
-        lay.setSpacing(2)
+        lay.setContentsMargins(5, 5, 5, 5)
+        lay.setSpacing(4)
 
-        title = QLabel("Snap to")
-        f = title.font()
-        f.setBold(True)
-        title.setFont(f)
-        lay.addWidget(title)
-
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(3)
+        grid.setVerticalSpacing(3)
         self._btns: dict[str, QToolButton] = {}
-        for key, label, tip in SNAP_TYPES:
+        self._btn_icons: dict[str, str] = {}   # key -> svg name
+        for i, (key, label, tip) in enumerate(SNAP_TYPES):
             btn = QToolButton(self)
-            btn.setText(label)
-            btn.setToolTip(tip)
             btn.setCheckable(True)
             btn.setChecked(True)
+            btn.setToolTip(f"{label} — {tip}")
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            btn.setSizePolicy(btn.sizePolicy().horizontalPolicy(),
-                              btn.sizePolicy().verticalPolicy())
-            btn.setMinimumWidth(96)
+            btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
+            btn.setFixedSize(_BTN_PX, _BTN_PX)
             btn.toggled.connect(self._emit_types)
             self._btns[key] = btn
-            lay.addWidget(btn)
+            self._btn_icons[key] = f"snap-{key}"
+            grid.addWidget(btn, i // _GRID_COLS, i % _GRID_COLS)
+        lay.addLayout(grid)
 
+        # Radius: a magnet glyph + "r", then a compact no-arrows field.
         rad_row = QHBoxLayout()
-        rad_row.setContentsMargins(0, 4, 0, 0)
-        rad_row.setSpacing(4)
-        rad_lbl = QLabel("Radius")
-        rad_lbl.setToolTip("Snap reach in screen pixels.")
-        self._radius = QDoubleSpinBox(self)
-        self._radius.setRange(4, 40)
-        self._radius.setDecimals(0)
-        self._radius.setSuffix(" px")
+        rad_row.setContentsMargins(0, 0, 0, 0)
+        rad_row.setSpacing(3)
+        rad_tip = "Radius of snap distance"
+        self._mag = QLabel(self)
+        self._mag.setToolTip(rad_tip)
+        self._r_lbl = QLabel("r", self)
+        self._r_lbl.setToolTip(rad_tip)
+        self._radius = QSpinBox(self)
+        self._radius.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self._radius.setRange(_RADIUS_MIN, _RADIUS_MAX)
         self._radius.setValue(10)
+        self._radius.setAlignment(Qt.AlignmentFlag.AlignRight)
         self._radius.setKeyboardTracking(False)
+        self._radius.setFixedWidth(30)
+        self._radius.setToolTip(rad_tip)
         self._radius.valueChanged.connect(
             lambda v: self.radius_changed.emit(int(v)))
-        rad_row.addWidget(rad_lbl)
-        rad_row.addWidget(self._radius, 1)
-        lay.addLayout(rad_row)
+        rad_row.addWidget(self._mag)
+        rad_row.addWidget(self._r_lbl)
+        rad_row.addWidget(self._radius)
+        rad_row.addStretch()
+        rad_holder = QWidget(self)
+        rad_holder.setLayout(rad_row)
+        lay.addWidget(rad_holder)
 
         self.apply_theme()
         self.hide()
@@ -89,7 +109,8 @@ class SnapPalette(QFrame):
             btn.setChecked(bool(types.get(key, True)))
             btn.blockSignals(False)
         self._radius.blockSignals(True)
-        self._radius.setValue(int(radius_px))
+        self._radius.setValue(
+            max(_RADIUS_MIN, min(_RADIUS_MAX, int(radius_px))))
         self._radius.blockSignals(False)
 
     def _emit_types(self, _on: bool):
@@ -98,11 +119,23 @@ class SnapPalette(QFrame):
     # ------------------------------------------------------------------
 
     def apply_theme(self):
-        bg, border = theme.color("chrome.bg"), theme.color("chrome.border")
+        bg     = theme.color("chrome.bg")
+        border = theme.color("chrome.border")
+        ink    = theme.color("chrome.ink")
+        checked_bg  = theme.color("chrome.checked_bg")
+        checked_ink = theme.color("chrome.checked_ink")
         self.setStyleSheet(
             f"#snapPalette {{ background-color: {bg}; "
             f"border: 1px solid {border}; border-radius: 4px; }}"
+            f"#snapPalette QToolButton {{ min-width: 0; padding: 1px; "
+            f"border: 1px solid {border}; border-radius: 3px; "
+            f"background-color: {theme.color('chrome.panel')}; }}"
+            f"#snapPalette QToolButton:checked {{ background-color: {checked_bg}; }}"
+            f"#snapPalette QLabel {{ color: {ink}; }}"
         )
+        for key, btn in self._btns.items():
+            btn.setIcon(make_icon(self._btn_icons[key], ink, checked_ink))
+        self._mag.setPixmap(make_pixmap("snap-radius", ink, 15))
 
     def reposition(self, toolbar, anchor_widget=None):
         """Place beside the toolbar, top-aligned with the anchor (the palette

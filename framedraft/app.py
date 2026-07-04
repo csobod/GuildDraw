@@ -48,38 +48,7 @@ from .tools.offset import OffsetTool
 from .tools.point_move import PointMoveTool
 from .tools.text import TextTool, TextDialog
 from .pinnable_toolbar import PinnableToolBar
-
-_ICONS_DIR = Path(__file__).parent / "resources" / "icons"
-
-
-def _make_icon(name: str, normal_color: str, checked_color: str,
-               rotation: int = 0) -> QIcon:
-    """Render an SVG icon at two colors for off/on toolbar states.
-
-    rotation: clockwise degrees to rotate the rendered pixmap (0, 90, 180, 270).
-    """
-    from PySide6.QtSvg import QSvgRenderer
-    from PySide6.QtGui import QTransform
-    src = (_ICONS_DIR / f"{name}.svg").read_text(encoding="utf-8")
-    icon = QIcon()
-    for color, mode, state in [
-        (normal_color,  QIcon.Mode.Normal, QIcon.State.Off),
-        (checked_color, QIcon.Mode.Normal, QIcon.State.On),
-    ]:
-        renderer = QSvgRenderer(src.replace("currentColor", color).encode())
-        px = QPixmap(20, 20)
-        px.fill(Qt.GlobalColor.transparent)
-        p = QPainter(px)
-        renderer.render(p)
-        p.end()
-        if rotation:
-            # QPixmap.transformed with a bare rotate() auto-sizes the output to
-            # contain the rotated content (stays 20×20 for 90°/270° on a square).
-            # Do NOT wrap with translate()…translate() — that shifts the canvas.
-            tx = QTransform().rotate(rotation)
-            px = px.transformed(tx, Qt.TransformationMode.SmoothTransformation)
-        icon.addPixmap(px, mode, state)
-    return icon
+from .icons import ICONS_DIR as _ICONS_DIR, make_icon as _make_icon
 
 
 def _curves_bbox(curves, layers=None, x_lo=None, x_hi=None):
@@ -1083,6 +1052,12 @@ class SettingsDialog(QDialog):
         self._dark_check = QCheckBox("Enable dark mode")
         self._dark_check.setChecked(prefs["dark_mode"])
         mode_form.addRow(self._dark_check)
+        self._compact_check = QCheckBox("Compact toolbar (small icons)")
+        self._compact_check.setChecked(prefs.get("compact_toolbar", False))
+        self._compact_check.setToolTip(
+            "Tighten the toolbar: much less button padding and slightly\n"
+            "smaller icons, for more drawing room.")
+        mode_form.addRow(self._compact_check)
         ap_lay.addWidget(mode_box)
 
         vp = prefs.get("viewport") or {}
@@ -1412,6 +1387,7 @@ class SettingsDialog(QDialog):
                 "vignette":  self._vignette_slider.value(),
             },
             "dot_radius_px":        int(self._dot_spin.value()),
+            "compact_toolbar":      self._compact_check.isChecked(),
             "default_line_weight":  self._weight_spin.value(),
             "mirror_on_startup":    self._mirror_chk.isChecked(),
             "guides_on_startup":    self._guides_chk.isChecked(),
@@ -1624,6 +1600,7 @@ class MainWindow(QMainWindow):
         theme.apply_viewport(_vp_prefs.get("preset", "auto"),
                              _vp_prefs.get("custom_bg"))
         theme.set_dot_radius(self._prefs.get("dot_radius_px", 4))
+        theme.set_compact(self._prefs.get("compact_toolbar", False))
         QApplication.instance().setStyleSheet(theme.build_qss())
 
         # ── Global (non-workspace) state ──────────────────────────────────
@@ -1948,7 +1925,8 @@ class MainWindow(QMainWindow):
         self._toolbar = tb
         tb.setMovable(False)
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        tb.setIconSize(QSize(20, 20))
+        _tb_px = theme.toolbar_icon_px()
+        tb.setIconSize(QSize(_tb_px, _tb_px))
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, tb)
 
         tool_group = QActionGroup(self)
@@ -5423,6 +5401,7 @@ class MainWindow(QMainWindow):
         vp = p["viewport"]
         theme.apply_viewport(vp["preset"], vp.get("custom_bg"))
         theme.set_dot_radius(p["dot_radius_px"])
+        theme.set_compact(p["compact_toolbar"])
         for ws in self._workspaces:
             ws.view.set_vignette(vp.get("vignette", 0))
         if p["dark_mode"] != self._dark_mode:
@@ -6999,6 +6978,8 @@ class MainWindow(QMainWindow):
         mode, a viewport preset, or any token override changes."""
         dark = self._dark_mode
         QApplication.instance().setStyleSheet(theme.build_qss())
+        _tb_px = theme.toolbar_icon_px()
+        self._toolbar.setIconSize(QSize(_tb_px, _tb_px))
         bg = theme.color("canvas.bg")
         for ws in self._workspaces:
             ws.view.setBackgroundBrush(QBrush(QColor(bg)))

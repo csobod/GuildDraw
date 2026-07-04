@@ -13,6 +13,7 @@ def _reset():
     theme.set_dark(False)
     theme.set_overrides({})
     theme.set_dot_radius(4)
+    theme.set_compact(False)
 
 
 @pytest.fixture(autouse=True)
@@ -109,3 +110,13 @@ def test_dot_radius_clamped():
     assert theme.dot_radius() == 2
     theme.set_dot_radius(5)
     assert theme.dot_radius() == 5
+
+
+def test_compact_toolbar_tightens_qss_and_icon_size():
+    assert theme.toolbar_icon_px() == 20
+    assert "padding: 5px; min-width: 30px" in theme.build_qss()
+    theme.set_compact(True)
+    assert theme.toolbar_icon_px() == 18
+    qss = theme.build_qss()
+    assert "padding: 1px; min-width: 0px" in qss
+    assert "padding: 5px; min-width: 30px" not in qss

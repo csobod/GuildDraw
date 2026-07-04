@@ -706,6 +706,15 @@ New **Appearance** tab in Preferences (dark-mode checkbox moves here):
 
 ## M19 — Snap palette v1 — ✅ DONE (2026-07-03, `efbe54d`; single-snap override hotkey deferred to backlog)
 
+**UI refinement (2026-07-04):** condensed the pop-out to a 2-col grid of
+icon toggles (names in tooltips, not on buttons), a magnet + "r" radius
+field with no spin arrows (2-digit, capped 4–40 px) — ~68 px wide. Icon
+renderer extracted to `framedraft/icons.py` (shared, no circular import),
+one SVG per snap type. Added **Compact toolbar (small icons)** to
+Preferences ▸ Appearance: `theme.set_compact()` tightens QToolButton
+padding (5→1 px) + icon size (20→18) via the QSS template; pref
+`compact_toolbar`.
+
 **UI:** keep the Snap toolbar button as the master toggle (Ctrl still
 suspends). Add a `snap_palette` action beside it that opens a **pinnable
 palette** of per-type icon toggles (same non-auto-hiding panel pattern as

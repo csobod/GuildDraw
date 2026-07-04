@@ -124,3 +124,25 @@ def test_snap_palette_widget_signals_and_state():
     assert pal._btns["node"].isChecked() is False
     assert int(pal._radius.value()) == 14
     assert pal.state()["node"] is False
+
+
+def test_snap_palette_is_icon_only_with_named_tooltips():
+    from framedraft.snap_palette import SnapPalette
+    pal = SnapPalette(None)
+    for key, btn in pal._btns.items():
+        assert btn.text() == ""                 # icon only — no text on button
+        assert not btn.icon().isNull()          # …but has an icon
+        assert btn.toolTip()                    # …and the name lives in the tooltip
+    # Endpoint's tooltip carries its label.
+    assert pal._btns["endpoint"].toolTip().startswith("Endpoint")
+
+
+def test_snap_palette_radius_field_has_no_arrows_and_clamps():
+    from PySide6.QtWidgets import QAbstractSpinBox
+    from framedraft.snap_palette import SnapPalette
+    pal = SnapPalette(None)
+    assert (pal._radius.buttonSymbols()
+            == QAbstractSpinBox.ButtonSymbols.NoButtons)
+    pal.set_state({}, 999)                       # unwieldy value clamps to max
+    assert pal._radius.value() == 40
+    assert pal._radius.maximum() == 40

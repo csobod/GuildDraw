@@ -70,6 +70,7 @@ _LAYER_DEFAULTS: dict[str, tuple[str, str]] = {
 _dark: bool = False
 _overrides: dict[str, dict[str, str]] = {"light": {}, "dark": {}}
 _dot_radius: int = 4          # node dot radius, screen px (handles are 1 less)
+_compact: bool = False        # compact toolbar: tight button padding + smaller icons
 
 _MIN_DOT_R, _MAX_DOT_R = 2, 10
 
@@ -243,6 +244,24 @@ def set_dot_radius(px: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Compact toolbar (Preferences ▸ Appearance) — tighter chrome for more canvas
+# ---------------------------------------------------------------------------
+
+def set_compact(on: bool) -> None:
+    global _compact
+    _compact = bool(on)
+
+
+def is_compact() -> bool:
+    return _compact
+
+
+def toolbar_icon_px() -> int:
+    """Toolbar icon size in px — slightly smaller when compact."""
+    return 18 if _compact else 20
+
+
+# ---------------------------------------------------------------------------
 # Application stylesheet — ONE template rendered from the chrome tokens
 # (replaces the former hardcoded QSS / QSS_DARK string pair in app.py)
 # ---------------------------------------------------------------------------
@@ -266,7 +285,7 @@ QToolButton, QPushButton {
     border-radius: 4px;
     color: %(ink)s;
 }
-QToolButton { padding: 5px; min-width: 30px; }
+QToolButton { padding: %(tb_pad)s; min-width: %(tb_minw)s; }
 QPushButton { padding: 4px 10px; min-width: 54px; }
 QToolButton:hover, QPushButton:hover { background-color: %(hover)s; }
 QToolButton:checked, QPushButton:checked { background-color: %(checked_bg)s; color: %(checked_ink)s; }
@@ -351,6 +370,8 @@ def build_qss() -> str:
     # color; dark theme used its border color throughout. Preserve that.
     dark = is_dark()
     return _QSS_TEMPLATE % {
+        "tb_pad":       "1px"  if _compact else "5px",
+        "tb_minw":      "0px"  if _compact else "30px",
         "bg":           color("chrome.bg"),
         "panel":        color("chrome.panel"),
         "ink":          ink,

@@ -81,6 +81,8 @@ DEFAULTS: dict = {
     },
     # Node/handle editing-dot radius in screen px (theme.dot_radius)
     "dot_radius_px": 4,
+    # Compact toolbar: tight button padding + slightly smaller icons
+    "compact_toolbar": False,
     # Snap palette: per-type toggles ({snap type key: bool}; keys from
     # canvas.snapping.SNAP_TYPES — absent keys default to enabled)
     "snap_types": {},

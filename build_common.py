@@ -26,6 +26,7 @@ _HIDDEN_FRAMEDRAFT = [
     "framedraft.resize",
     "framedraft.prefs",
     "framedraft.theme",
+    "framedraft.icons",
     "framedraft.snap_palette",
     "framedraft.pinnable_toolbar",
     "framedraft.library",

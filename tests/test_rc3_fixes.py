@@ -269,10 +269,12 @@ def test_settings_dialog_round_trips_appearance(fresh):
     prefs["viewport"] = {"preset": "blueprint", "custom_bg": "#123456",
                          "vignette": 35}
     prefs["dot_radius_px"] = 6
+    prefs["compact_toolbar"] = True
     dlg = SettingsDialog(prefs, fresh)
     out = dlg.to_prefs()
     assert out["viewport"] == prefs["viewport"]
     assert out["dot_radius_px"] == 6
+    assert out["compact_toolbar"] is True
 
 
 def test_settings_dialog_layer_color_overrides(fresh):
