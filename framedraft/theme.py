@@ -48,12 +48,16 @@ _TOKENS: dict[str, tuple[str, str]] = {
     "guide.dim":          ("#7a5c2e", "#7a5c2e"),
     "guide.dim_selected": ("#e67e22", "#e67e22"),
     # ── Snap indicator colors (mode-independent today) ───────────────────
-    "snap.node":     ("#2e8b57", "#2e8b57"),
-    "snap.handle":   ("#2a7f9e", "#2a7f9e"),
-    "snap.mirror":   ("#c0392b", "#c0392b"),
-    "snap.axis":     ("#7b5ea7", "#7b5ea7"),
-    "snap.midpoint": ("#e67e22", "#e67e22"),
-    "snap.curve":    ("#5d8aa8", "#5d8aa8"),
+    "snap.endpoint":     ("#2e8b57", "#2e8b57"),
+    "snap.node":         ("#2e8b57", "#2e8b57"),
+    "snap.handle":       ("#2a7f9e", "#2a7f9e"),
+    "snap.mirror":       ("#c0392b", "#c0392b"),
+    "snap.axis":         ("#7b5ea7", "#7b5ea7"),
+    "snap.midpoint":     ("#e67e22", "#e67e22"),
+    "snap.center":       ("#16a085", "#16a085"),
+    "snap.quadrant":     ("#d4a840", "#d4a840"),
+    "snap.intersection": ("#d35400", "#d35400"),
+    "snap.curve":        ("#5d8aa8", "#5d8aa8"),
 }
 
 # Layers that own a distinct color; every other layer follows geometry.ink so

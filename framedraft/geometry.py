@@ -396,6 +396,22 @@ def _iter_shapely_pts(geom):
             yield _sg.Point(x, y)
 
 
+def curve_intersections(a: Curve, b: Curve) -> List[Tuple[float, float]]:
+    """Intersection points (x, y) of two curves' sampled shapely geometry.
+
+    Used by the intersection snap; returns [] for disjoint/degenerate input.
+    """
+    ga = curve_to_shapely(a)
+    gb = curve_to_shapely(b)
+    if ga is None or gb is None:
+        return []
+    try:
+        inter = ga.intersection(gb)
+    except Exception:
+        return []
+    return [(p.x, p.y) for p in _iter_shapely_pts(inter)]
+
+
 def intersect_curve_params(target: Curve, other: Curve,
                            end_tol_mm: float = _END_TOL_MM) -> List[float]:
     """

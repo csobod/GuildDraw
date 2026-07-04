@@ -4,8 +4,25 @@ from PySide6.QtGui import QPen, QColor, QPainterPath
 
 from ..geometry import sample_curve
 
-_SNAP_RADIUS_PX = 10   # screen-pixel snap radius (view space)
+_SNAP_RADIUS_PX = 10   # default screen-pixel snap radius (view space)
 _INDICATOR_R    = 6    # screen-pixel indicator radius (view space)
+
+# Snap-type registry — drives the engine's gating AND the snap palette UI.
+# (key, palette label, tooltip). Keys are also theme tokens (snap.<key>).
+SNAP_TYPES: list[tuple[str, str, str]] = [
+    ("endpoint",     "Endpoint",     "Open-curve ends and arc endpoints"),
+    ("node",         "Node",         "Interior and closed-curve nodes"),
+    ("midpoint",     "Midpoint",     "Line-segment midpoints"),
+    ("center",       "Center",       "Circle and arc centres"),
+    ("quadrant",     "Quadrant",     "Circle/arc 0°/90°/180°/270° points"),
+    ("intersection", "Intersection", "Where two curves cross"),
+    ("handle",       "Handle",       "Bézier control-point handles"),
+    ("curve",        "On-curve",     "Nearest point along a curve"),
+    ("mirror",       "Mirror axis",  "Project onto the mirror axis"),
+    ("axis",         "Origin",       "The scene origin (0, 0)"),
+]
+
+SNAP_TYPE_KEYS = [k for k, _l, _t in SNAP_TYPES]
 
 
 def _angle_in_arc(angle_deg: float, start_deg: float, end_deg: float) -> bool:
@@ -17,16 +34,17 @@ def _angle_in_arc(angle_deg: float, start_deg: float, end_deg: float) -> bool:
 
 class SnapEngine:
     """
-    Finds the nearest snap target within _SNAP_RADIUS_PX screen pixels of the
+    Finds the nearest snap target within the snap radius (screen px) of the
     cursor and shows a coloured indicator dot.
 
-    Snap targets (in priority order):
-      1. Existing curve on-curve nodes
-      2. Existing curve control-point handles
-      3. In-progress drawing nodes
-      4. Mirror axis (vertical line x = axis_x)
+    Each target carries a type from SNAP_TYPES; the palette toggles types on
+    and off per user preference (set_enabled_types), the master toggle
+    (set_enabled) and Ctrl-suspend still silence everything at once.
 
-    Ctrl held → suspend snap for that event (caller passes use_snap=False).
+    Point-target priority is purely nearest-wins among enabled types;
+    on-curve is a fallback when no point target hits, and the origin
+    overrides everything inside its radius (the mirror projection would
+    otherwise always shadow it with a zero-distance hit).
     """
 
     def __init__(self, scene):
@@ -36,6 +54,13 @@ class SnapEngine:
         self._mirror_on:  bool = False
         self._enabled:    bool = True
         self._indicator         = None
+        self._radius_px: float  = _SNAP_RADIUS_PX
+        self._enabled_types: set[str] = set(SNAP_TYPE_KEYS)
+        # Intersection cache: (id(a), id(b)) -> [(x, y), ...]; wholesale-
+        # invalidated whenever the scene's geometry revision moves (ids are
+        # stable between revisions because add/remove bumps the revision).
+        self._isect_cache: dict = {}
+        self._isect_rev: int = -1
 
     # ------------------------------------------------------------------
     # Configuration
@@ -53,6 +78,28 @@ class SnapEngine:
         self._enabled = on
         if not on:
             self._hide()
+
+    def set_radius_px(self, px: float):
+        self._radius_px = max(2.0, float(px))
+
+    def radius_px(self) -> float:
+        return self._radius_px
+
+    def set_type_enabled(self, key: str, on: bool):
+        if on:
+            self._enabled_types.add(key)
+        else:
+            self._enabled_types.discard(key)
+
+    def set_enabled_types(self, types):
+        """types: {key: bool} mapping or iterable of enabled keys."""
+        if isinstance(types, dict):
+            self._enabled_types = {k for k, on in types.items() if on}
+        else:
+            self._enabled_types = set(types)
+
+    def type_enabled(self, key: str) -> bool:
+        return key in self._enabled_types
 
     # ------------------------------------------------------------------
     # Main API
@@ -73,11 +120,14 @@ class SnapEngine:
         best      = scene_pos
         best_dist = float("inf")
         best_type: str | None = None
+        enabled   = self._enabled_types
 
         def candidate(target: QPointF, t: str):
             nonlocal best, best_dist, best_type
+            if t not in enabled:
+                return
             d = _px_dist(view, scene_pos, target)
-            if d < _SNAP_RADIUS_PX and d < best_dist:
+            if d < self._radius_px and d < best_dist:
                 best_dist = d
                 best      = target
                 best_type = t
@@ -90,25 +140,28 @@ class SnapEngine:
                 continue
             if curve.kind in ("circle", "arc") and curve.radius and curve.nodes:
                 cx, cy, r = curve.nodes[0].x, curve.nodes[0].y, curve.radius
-                candidate(QPointF(cx, cy), "node")          # center
+                candidate(QPointF(cx, cy), "center")
                 # Four cardinal quadrant points
                 quadrants = ((0, cx + r, cy), (90, cx, cy + r),
                              (180, cx - r, cy), (270, cx, cy - r))
                 sa, ea = curve.start_angle, curve.end_angle
                 for q_deg, qx, qy in quadrants:
                     if curve.kind == "circle":
-                        candidate(QPointF(qx, qy), "node")
+                        candidate(QPointF(qx, qy), "quadrant")
                     elif sa is not None and ea is not None:
                         if _angle_in_arc(q_deg, sa, ea):
-                            candidate(QPointF(qx, qy), "node")
+                            candidate(QPointF(qx, qy), "quadrant")
                 # Arc endpoints
                 if curve.kind == "arc" and sa is not None and ea is not None:
                     sa_r, ea_r = math.radians(sa), math.radians(ea)
-                    candidate(QPointF(cx + r * math.cos(sa_r), cy + r * math.sin(sa_r)), "node")
-                    candidate(QPointF(cx + r * math.cos(ea_r), cy + r * math.sin(ea_r)), "node")
+                    candidate(QPointF(cx + r * math.cos(sa_r), cy + r * math.sin(sa_r)), "endpoint")
+                    candidate(QPointF(cx + r * math.cos(ea_r), cy + r * math.sin(ea_r)), "endpoint")
             else:
-                for node in curve.nodes:
-                    candidate(QPointF(node.x, node.y), "node")
+                last = len(curve.nodes) - 1
+                for i, node in enumerate(curve.nodes):
+                    tag = ("endpoint" if not curve.closed and i in (0, last)
+                           else "node")
+                    candidate(QPointF(node.x, node.y), tag)
                     for cp in (node.cp_in, node.cp_out):
                         if cp is not None:
                             candidate(QPointF(cp.x, cp.y), "handle")
@@ -126,6 +179,9 @@ class SnapEngine:
         for node in drawing_nodes:
             candidate(QPointF(node.x, node.y), "node")
 
+        if "intersection" in enabled:
+            self._intersection_candidates(scene_pos, view, candidate, is_visible)
+
         if self._mirror_on and self._mirror_x is not None:
             if getattr(self, '_mirror_horizontal', False):
                 candidate(QPointF(scene_pos.x(), self._mirror_x), "mirror")
@@ -136,7 +192,7 @@ class SnapEngine:
         # priority: only when no point target was found, because every node
         # lies on its curve and would otherwise be shadowed. Needed for
         # drawing OUTLINE→LENS connectors (scallop / extrusion work).
-        if best_type is None:
+        if best_type is None and "curve" in enabled:
             on_curve = self._nearest_on_curve(scene_pos, view, is_visible)
             if on_curve is not None:
                 best, best_type = on_curve, "curve"
@@ -145,10 +201,11 @@ class SnapEngine:
         # Checked after all other candidates so it can override them: the mirror
         # snap projects the cursor onto x=0 with zero distance, which would always
         # beat a point-snap via the normal < comparison.
-        _d_orig = _px_dist(view, scene_pos, QPointF(0.0, 0.0))
-        if _d_orig < _SNAP_RADIUS_PX:
-            best      = QPointF(0.0, 0.0)
-            best_type = "axis"
+        if "axis" in enabled:
+            _d_orig = _px_dist(view, scene_pos, QPointF(0.0, 0.0))
+            if _d_orig < self._radius_px:
+                best      = QPointF(0.0, 0.0)
+                best_type = "axis"
 
         if best_type:
             self._show(best, best_type)
@@ -161,7 +218,7 @@ class SnapEngine:
                           is_visible) -> QPointF | None:
         """Nearest sampled point on any visible curve within the snap radius."""
         scale = max(abs(view.transform().m11()), 1e-6)
-        r_mm  = _SNAP_RADIUS_PX / scale
+        r_mm  = self._radius_px / scale
         px, py = scene_pos.x(), scene_pos.y()
         best = None
         best_d = r_mm
@@ -183,6 +240,44 @@ class SnapEngine:
                     best_d = d
                     best = (x, y)
         return QPointF(*best) if best is not None else None
+
+    def _intersection_candidates(self, scene_pos: QPointF, view,
+                                 candidate, is_visible) -> None:
+        """Feed cached curve-pair intersection points near the cursor."""
+        rev = getattr(self._scene, "revision", 0)
+        if rev != self._isect_rev:
+            self._isect_cache.clear()
+            self._isect_rev = rev
+
+        scale = max(abs(view.transform().m11()), 1e-6)
+        r_mm  = self._radius_px / scale
+        px, py = scene_pos.x(), scene_pos.y()
+
+        near: list = []
+        for curve in self._doc_curves:
+            if not curve.nodes:
+                continue
+            if is_visible is not None and not is_visible(curve.layer):
+                continue
+            xs = [n.x for n in curve.nodes]
+            ys = [n.y for n in curve.nodes]
+            pad = (curve.radius or 0.0) + r_mm + 5.0
+            if (min(xs) - pad <= px <= max(xs) + pad
+                    and min(ys) - pad <= py <= max(ys) + pad):
+                near.append(curve)
+        if len(near) < 2:
+            return
+
+        from ..geometry import curve_intersections
+        for i, a in enumerate(near):
+            for b in near[i + 1:]:
+                key = (id(a), id(b))
+                pts = self._isect_cache.get(key)
+                if pts is None:
+                    pts = curve_intersections(a, b)
+                    self._isect_cache[key] = pts
+                for x, y in pts:
+                    candidate(QPointF(x, y), "intersection")
 
     def hide(self):
         self._hide()
@@ -213,6 +308,14 @@ class SnapEngine:
             path.lineTo(0, R)
             path.lineTo(-R, 0)
             path.closeSubpath()
+            item = self._scene.addPath(path, pen)
+        elif snap_type == "intersection":
+            # "×" glyph — the crossing itself.
+            path = QPainterPath()
+            path.moveTo(-R, -R)
+            path.lineTo(R, R)
+            path.moveTo(-R, R)
+            path.lineTo(R, -R)
             item = self._scene.addPath(path, pen)
         else:
             item = self._scene.addEllipse(-R, -R, 2 * R, 2 * R, pen)

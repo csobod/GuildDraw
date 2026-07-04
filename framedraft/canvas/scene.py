@@ -119,6 +119,10 @@ class FrameScene(QGraphicsScene):
         self.geometry_changed = None   # (Curve) -> None; live-follow hook (M12)
         self._layer_visible: dict = {}   # Layer -> bool (default True)
         self._layer_locked:  dict = {}   # Layer -> bool (default False)
+        # Monotonic geometry revision — bumped on every curve add/remove/edit
+        # so caches keyed on document state (intersection snap) can invalidate
+        # without watching individual curves.
+        self.revision: int = 0
         # Frame fill overlay (display-only; never exported)
         self._fill_visible: bool = False
         self._fill_color = QColor("#2a6099")
@@ -448,12 +452,14 @@ class FrameScene(QGraphicsScene):
         item = CurveItem(curve)
         self.addItem(item)
         self._curve_items[id(curve)] = item
+        self.revision += 1
         self._apply_layer_state_to_item(item)
         self._update_ghost_for(curve)
         self._schedule_fill_rebuild()
         return item
 
     def refresh_curve(self, curve: Curve):
+        self.revision += 1
         item = self._curve_items.get(id(curve))
         if item:
             item.refresh()
@@ -466,6 +472,7 @@ class FrameScene(QGraphicsScene):
             self.geometry_changed(curve)
 
     def remove_curve(self, curve: Curve):
+        self.revision += 1
         item = self._curve_items.pop(id(curve), None)
         if item:
             self.removeItem(item)

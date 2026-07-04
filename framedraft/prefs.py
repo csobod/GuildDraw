@@ -56,6 +56,7 @@ DEFAULTS: dict = {
         "ghost":        True,   # Ghost (mirror-axis toggle)
         "guides":       True,
         "snap":         True,
+        "snap_palette": True,
         "smooth":       True,
         "boxing":       True,
         "stock":        True,
@@ -80,6 +81,11 @@ DEFAULTS: dict = {
     },
     # Node/handle editing-dot radius in screen px (theme.dot_radius)
     "dot_radius_px": 4,
+    # Snap palette: per-type toggles ({snap type key: bool}; keys from
+    # canvas.snapping.SNAP_TYPES — absent keys default to enabled)
+    "snap_types": {},
+    # Snap reach in screen pixels
+    "snap_radius_px": 10,
     # User-assignable hotkeys (empty string = no hotkey)
     "hotkeys": {
         "line":         "L",
@@ -111,7 +117,8 @@ def load() -> dict:
             # Deep-merge nested dicts so new default keys survive old prefs
             # files. EVERY nested dict pref must be listed here — a missing
             # entry means old files silently clobber new defaults.
-            for key in ("toolbar", "hotkeys", "theme", "viewport"):
+            for key in ("toolbar", "hotkeys", "theme", "viewport",
+                        "snap_types"):
                 if isinstance(data.get(key), dict):
                     merged[key] = {**DEFAULTS[key], **data[key]}
                 else:

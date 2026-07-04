@@ -144,6 +144,7 @@ _TOOLBAR_ACTION_DEFS = [
     ("ghost",        "Ghost (mirror toggle)",   True),
     ("guides",       "Guides",                  True),
     ("snap",         "Snap",                    True),
+    ("snap_palette", "Snap Palette",            True),
     ("smooth",       "Smooth Handles",          True),
     ("boxing",       "Boxing",                  True),
     ("stock",        "Stock",                   True),
@@ -1747,6 +1748,23 @@ class MainWindow(QMainWindow):
             bool(self._prefs.get("toolbar_pinned", False)), persist=False)
         self._toolbar.pin_changed.connect(self._on_toolbar_pin_changed)
 
+        # ── Snap palette (per-type snap toggles + radius) ─────────────────
+        from .snap_palette import SnapPalette
+        from .canvas.snapping import SNAP_TYPE_KEYS
+        snap_types = {k: True for k in SNAP_TYPE_KEYS}
+        snap_types.update({k: bool(v) for k, v in
+                           (self._prefs.get("snap_types") or {}).items()
+                           if k in snap_types})
+        snap_radius = int(self._prefs.get("snap_radius_px", 10))
+        for ws in self._workspaces:
+            ws.snap.set_enabled_types(snap_types)
+            ws.snap.set_radius_px(snap_radius)
+        self._snap_palette = SnapPalette(self)
+        self._snap_palette.set_state(snap_types, snap_radius)
+        self._snap_palette.types_changed.connect(self._on_snap_types_changed)
+        self._snap_palette.radius_changed.connect(self._on_snap_radius_changed)
+        self._act_snap_palette.toggled.connect(self._toggle_snap_palette)
+
         # ── Per-workspace post-toolbar wiring ─────────────────────────────
         snap_fn = lambda: self._act_snap.isChecked()
         for ws in self._workspaces:
@@ -2042,6 +2060,12 @@ class MainWindow(QMainWindow):
         self._act_guides.setToolTip("Construction Guides: toggle bridge angle and apical radius guide lines.")
         self._act_snap   = QAction("Snap",   self, checkable=True, checked=True)
         self._act_snap.setToolTip("Snap: toggle node/handle snapping (hold Ctrl to suspend).")
+        self._act_snap_palette = QAction("Snap\nTypes", self, checkable=True,
+                                         checked=False)
+        self._act_snap_palette.setToolTip(
+            "Snap palette: choose WHICH targets snap (endpoint, midpoint,\n"
+            "intersection, …) and set the snap radius. The Snap button stays\n"
+            "the master on/off; holding Ctrl still suspends snapping.")
         self._act_smooth = QAction("Smooth\nHandles", self, checkable=True, checked=True)
         self._act_smooth.setToolTip(
             "Smooth Handles: when checked, moving one Bézier handle mirrors "
@@ -2065,6 +2089,7 @@ class MainWindow(QMainWindow):
         tb.addAction(self._act_mirror)
         tb.addAction(self._act_guides)
         tb.addAction(self._act_snap)
+        tb.addAction(self._act_snap_palette)
         tb.addAction(self._act_smooth)
         tb.addAction(self._act_boxing)
         tb.addAction(self._act_stock)
@@ -2162,6 +2187,7 @@ class MainWindow(QMainWindow):
             "ghost":        self._act_mirror,
             "guides":       self._act_guides,
             "snap":         self._act_snap,
+            "snap_palette": self._act_snap_palette,
             "smooth":       self._act_smooth,
             "boxing":       self._act_boxing,
             "stock":        self._act_stock,
@@ -4020,6 +4046,7 @@ class MainWindow(QMainWindow):
             (self._act_mirror,       "toggle-mirror"),
             (self._act_guides,       "toggle-guides"),
             (self._act_snap,         "toggle-snap"),
+            (self._act_snap_palette, "toggle-snap-palette"),
             (self._act_smooth,       "toggle-smooth"),
             (self._act_boxing,       "toggle-boxing"),
             (self._act_stock,        "toggle-stock"),
@@ -4416,6 +4443,28 @@ class MainWindow(QMainWindow):
             return
         self._circle_tool.set_radius_and_advance(radius_mm)
         self.view.setFocus()
+
+    def _toggle_snap_palette(self, on: bool):
+        if on:
+            anchor = self._toolbar.widgetForAction(self._act_snap_palette)
+            self._snap_palette.reposition(self._toolbar, anchor)
+            self._snap_palette.show()
+            self._snap_palette.raise_()
+        else:
+            self._snap_palette.hide()
+
+    def _on_snap_types_changed(self, types: dict):
+        """Palette toggles apply to every workspace and persist immediately."""
+        for ws in self._workspaces:
+            ws.snap.set_enabled_types(types)
+        self._prefs["snap_types"] = dict(types)
+        _prefs_mod.save(self._prefs)
+
+    def _on_snap_radius_changed(self, px: int):
+        for ws in self._workspaces:
+            ws.snap.set_radius_px(px)
+        self._prefs["snap_radius_px"] = int(px)
+        _prefs_mod.save(self._prefs)
 
     def _on_mirror_toggled(self, on: bool):
         if self.scene.mirror:
@@ -6961,6 +7010,8 @@ class MainWindow(QMainWindow):
             ws.edit_tool.refresh_theme()
         self._apply_toolbar_icons(dark)
         self._toolbar.set_dark(dark)  # overflow pop-out panel matches theme
+        if getattr(self, "_snap_palette", None) is not None:
+            self._snap_palette.apply_theme()
         self._refresh_layer_panel()   # eye/padlock icons are theme-colored
         self._update_readiness()      # dot colours are theme-aware
 
