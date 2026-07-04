@@ -20,6 +20,7 @@ SNAP_TYPES: list[tuple[str, str, str]] = [
     ("perpendicular", "Perpendicular", "Perpendicular to a line/curve from the point being drawn"),
     ("handle",        "Handle",        "Bézier control-point handles"),
     ("curve",         "On-curve",      "Nearest point along a curve"),
+    ("grid",          "Grid",          "Nearest grid intersection (in empty space)"),
     ("mirror",        "Mirror axis",   "Project onto the mirror axis"),
     ("axis",          "Origin",        "The scene origin (0, 0)"),
 ]
@@ -61,6 +62,7 @@ class SnapEngine:
         self._enabled:    bool = True
         self._indicator         = None
         self._radius_px: float  = _SNAP_RADIUS_PX
+        self._grid_spacing: float = 0.0   # mm; 0 disables grid snap
         self._enabled_types: set[str] = set(SNAP_TYPE_KEYS)
         # Intersection cache: (id(a), id(b)) -> [(x, y), ...]; wholesale-
         # invalidated whenever the scene's geometry revision moves (ids are
@@ -90,6 +92,10 @@ class SnapEngine:
 
     def radius_px(self) -> float:
         return self._radius_px
+
+    def set_grid_spacing(self, mm: float):
+        """Grid-snap cell size (mm); should match the viewport grid overlay."""
+        self._grid_spacing = max(0.0, float(mm))
 
     def set_type_enabled(self, key: str, on: bool):
         if on:
@@ -212,6 +218,17 @@ class SnapEngine:
             on_curve = self._nearest_on_curve(scene_pos, view, is_visible)
             if on_curve is not None:
                 best, best_type = on_curve, "curve"
+
+        # Grid snap — the nearest grid intersection, but only as a fallback in
+        # empty space (object snaps above always win) so it's a coarse-position
+        # aid, not a cursor jail.
+        if best_type is None and "grid" in enabled and self._grid_spacing > 0:
+            sp = self._grid_spacing
+            gx = round(scene_pos.x() / sp) * sp
+            gy = round(scene_pos.y() / sp) * sp
+            gpt = QPointF(gx, gy)
+            if _px_dist(view, scene_pos, gpt) < self._radius_px:
+                best, best_type = gpt, "grid"
 
         # Origin snap — single point (0, 0).
         # Checked after all other candidates so it can override them: the mirror
@@ -430,6 +447,12 @@ class SnapEngine:
             path.moveTo(-R, R)
             path.lineTo(-R, -R)
             path.addRect(-R, R - R * 0.5, R * 0.5, R * 0.5)
+            item = self._scene.addPath(path, pen)
+        elif snap_type == "grid":
+            # A small "+" at the grid intersection.
+            path = QPainterPath()
+            path.moveTo(-R, 0); path.lineTo(R, 0)
+            path.moveTo(0, -R); path.lineTo(0, R)
             item = self._scene.addPath(path, pen)
         else:
             item = self._scene.addEllipse(-R, -R, 2 * R, 2 * R, pen)

@@ -137,6 +137,33 @@ def test_perpendicular_snap_to_circle_is_radial():
     assert (p.x(), p.y()) == pytest.approx((5.0, 0.0), abs=1e-6)
 
 
+def test_grid_snap_is_fallback_in_empty_space():
+    _s, view, eng = _engine([line([(0, 0), (0, 20)])])
+    eng.set_enabled_types(_only("grid", "endpoint"))
+    eng.set_grid_spacing(5.0)
+
+    # Empty space near a grid intersection → snaps to it.
+    p = eng.snap(QPointF(9.6, 5.4), [], view)
+    assert (p.x(), p.y()) == (10.0, 5.0)
+
+    # Near the line endpoint, the object snap wins over the grid.
+    p2 = eng.snap(QPointF(0.6, 0.4), [], view)
+    assert (p2.x(), p2.y()) == (0.0, 0.0)
+
+
+def test_grid_snap_disabled_or_zero_spacing_is_noop():
+    _s, view, eng = _engine([])
+    eng.set_enabled_types(_only("grid"))
+    eng.set_grid_spacing(0.0)                    # no grid configured
+    p = eng.snap(QPointF(9.6, 5.4), [], view)
+    assert (p.x(), p.y()) == (9.6, 5.4)
+
+    eng.set_grid_spacing(5.0)
+    eng.set_enabled_types(_only())               # grid type off
+    p2 = eng.snap(QPointF(9.6, 5.4), [], view)
+    assert (p2.x(), p2.y()) == (9.6, 5.4)
+
+
 def test_snap_palette_context_toggles_grey_out():
     from framedraft.snap_palette import SnapPalette
     pal = SnapPalette(None)

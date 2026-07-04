@@ -57,6 +57,7 @@ DEFAULTS: dict = {
         "guides":       True,
         "snap":         True,
         "snap_palette": True,
+        "grid":         True,
         "smooth":       True,
         "boxing":       True,
         "stock":        True,
@@ -83,6 +84,10 @@ DEFAULTS: dict = {
     "dot_radius_px": 4,
     # Compact toolbar: tight button padding + slightly smaller icons
     "compact_toolbar": False,
+    # Grid overlay (viewport aid; global across workspaces)
+    "grid_visible":     False,
+    "grid_spacing_mm":  5.0,
+    "grid_major":       5,       # every Nth line is a major (heavier) line
     # Snap palette: per-type toggles ({snap type key: bool}; keys from
     # canvas.snapping.SNAP_TYPES — absent keys default to enabled)
     "snap_types": {},

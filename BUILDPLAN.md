@@ -743,10 +743,20 @@ perpendicular-foot) points from the anchor; snap within radius; distinct
 indicator glyphs. Only active mid-draw; palette toggles grey out otherwise.
 If it slips, RC3a ships without it and it heads RC4.
 
-## M21 — Grid overlay + grid snap (follow-on)
+## M21 — Grid overlay + grid snap — ✅ DONE (2026-07-04)
 
 mm grid with major/minor divisions (spacing + color in Appearance), plus a
 Grid snap type in the palette. Natural companion for drill-pattern layout.
+
+## M22 — Full bug + optimization audit (planned)
+
+A dedicated pass BEFORE the RC3a community drop: read every module for
+correctness bugs, dead code, and performance (mirrors the RC3 audit `82adb44`
+that produced M15's fixes). RC3a added a lot of surface area (theme module,
+snap engine rework, prefs growth, palette/vignette/grid rendering) — audit it
+as a whole. Deliverables: findings report, fixes each as its own tested
+commit, regression tests. Fold in the customization-backlog quick wins if they
+surface naturally. Run this LAST, so the release ships audited.
 
 ### Customization backlog (agreed candidates beyond M16–M21)
 
@@ -763,7 +773,7 @@ Grid snap type in the palette. Natural companion for drill-pattern layout.
 
 ### RC3a release checklist
 
-- [x] M16–M20 landed (M21 optional) — 211 tests green
+- [x] M16–M21 landed — 213 tests green
 - [ ] README/USER-GUIDE "New in RC3a" (snap palette, themes, vignette, Ctrl+S)
 - [ ] Version stamp `1.0.0-rc3a`, installer rebuild via
       `scripts/build_release.ps1`, user test-install

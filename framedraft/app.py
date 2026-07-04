@@ -114,6 +114,7 @@ _TOOLBAR_ACTION_DEFS = [
     ("guides",       "Guides",                  True),
     ("snap",         "Snap",                    True),
     ("snap_palette", "Snap Palette",            True),
+    ("grid",         "Grid",                    True),
     ("smooth",       "Smooth Handles",          True),
     ("boxing",       "Boxing",                  True),
     ("stock",        "Stock",                   True),
@@ -196,9 +197,73 @@ class CanvasView(QGraphicsView):
         # pixmap is cached per viewport size so painting is one blit.
         self._vignette: int = 0
         self._vignette_pm: QPixmap | None = None
+        # Grid overlay (drawn in drawBackground, scene coords). Off by default.
+        self._grid_visible: bool  = False
+        self._grid_spacing: float = 5.0    # mm
+        self._grid_major:   int   = 5      # every Nth line is heavier
 
         self.measure_bar = MeasureBar(self)
         QTimer.singleShot(0, self._reposition_measure_bar)
+
+    # ------------------------------------------------------------------
+    # Grid overlay (mm grid with major/minor divisions, drawn behind all)
+    # ------------------------------------------------------------------
+
+    def set_grid(self, visible: bool | None = None, spacing_mm: float | None = None,
+                 major: int | None = None):
+        if visible is not None:
+            self._grid_visible = bool(visible)
+        if spacing_mm is not None and spacing_mm > 0:
+            self._grid_spacing = float(spacing_mm)
+        if major is not None and major >= 1:
+            self._grid_major = int(major)
+        self.viewport().update()
+
+    _GRID_MIN_PX = 4.0   # hide a line level once its screen spacing drops below this
+
+    def drawBackground(self, painter, rect):
+        super().drawBackground(painter, rect)   # fills the canvas background
+        if not self._grid_visible or self._grid_spacing <= 0:
+            return
+        sp    = self._grid_spacing
+        major = max(1, self._grid_major)
+        scale = abs(self.transform().m11())
+        draw_minor = sp * scale >= self._GRID_MIN_PX
+        draw_major = sp * major * scale >= self._GRID_MIN_PX
+        if not draw_major:
+            return   # too far zoomed out — even major lines would be a smear
+
+        minor_pen = QPen(QColor(theme.color("canvas.grid_minor")), 0)
+        minor_pen.setCosmetic(True)
+        major_pen = QPen(QColor(theme.color("canvas.grid_major")), 0)
+        major_pen.setCosmetic(True)
+
+        i0 = math.floor(rect.left()   / sp)
+        i1 = math.ceil(rect.right()  / sp)
+        j0 = math.floor(rect.top()    / sp)
+        j1 = math.ceil(rect.bottom() / sp)
+        top, bot, left, right = rect.top(), rect.bottom(), rect.left(), rect.right()
+
+        for i in range(i0, i1 + 1):
+            is_major = (i % major == 0)
+            if is_major:
+                painter.setPen(major_pen)
+            elif draw_minor:
+                painter.setPen(minor_pen)
+            else:
+                continue
+            x = i * sp
+            painter.drawLine(QPointF(x, top), QPointF(x, bot))
+        for j in range(j0, j1 + 1):
+            is_major = (j % major == 0)
+            if is_major:
+                painter.setPen(major_pen)
+            elif draw_minor:
+                painter.setPen(minor_pen)
+            else:
+                continue
+            y = j * sp
+            painter.drawLine(QPointF(left, y), QPointF(right, y))
 
     # ------------------------------------------------------------------
     # Vignette (viewport-space radial darkening, intensity 0–100)
@@ -1126,6 +1191,24 @@ class SettingsDialog(QDialog):
         dots_form.addRow("Node dot radius:", self._dot_spin)
         ap_lay.addWidget(dots_box)
 
+        grid_box  = QGroupBox("Grid")
+        grid_form = QFormLayout(grid_box)
+        self._grid_spacing_spin = _spinbox(
+            0.5, 100.0, 0.5, float(prefs.get("grid_spacing_mm", 5.0)),
+            suffix=" mm", decimals=1)
+        self._grid_spacing_spin.setToolTip(
+            "Grid line spacing. Toggle the grid overlay with the Grid toolbar\n"
+            "button; enable Grid in the snap palette to snap to intersections.")
+        grid_form.addRow("Spacing:", self._grid_spacing_spin)
+        from PySide6.QtWidgets import QSpinBox as _QSpinBox
+        self._grid_major_spin = _QSpinBox()
+        self._grid_major_spin.setRange(1, 20)
+        self._grid_major_spin.setValue(int(prefs.get("grid_major", 5)))
+        self._grid_major_spin.setToolTip(
+            "Every Nth line is drawn heavier (a major division).")
+        grid_form.addRow("Major every:", self._grid_major_spin)
+        ap_lay.addWidget(grid_box)
+
         ap_lay.addStretch()
 
         # ═══════════════════════════════════════════════════════════════════
@@ -1388,6 +1471,8 @@ class SettingsDialog(QDialog):
             },
             "dot_radius_px":        int(self._dot_spin.value()),
             "compact_toolbar":      self._compact_check.isChecked(),
+            "grid_spacing_mm":      self._grid_spacing_spin.value(),
+            "grid_major":           self._grid_major_spin.value(),
             "default_line_weight":  self._weight_spin.value(),
             "mirror_on_startup":    self._mirror_chk.isChecked(),
             "guides_on_startup":    self._guides_chk.isChecked(),
@@ -1729,6 +1814,7 @@ class MainWindow(QMainWindow):
         from .snap_palette import SnapPalette
         from .canvas.snapping import SNAP_TYPE_KEYS
         snap_types = {k: True for k in SNAP_TYPE_KEYS}
+        snap_types["grid"] = False   # grid snap is opt-in (independent of the overlay)
         snap_types.update({k: bool(v) for k, v in
                            (self._prefs.get("snap_types") or {}).items()
                            if k in snap_types})
@@ -1741,6 +1827,13 @@ class MainWindow(QMainWindow):
         self._snap_palette.types_changed.connect(self._on_snap_types_changed)
         self._snap_palette.radius_changed.connect(self._on_snap_radius_changed)
         self._act_snap_palette.toggled.connect(self._toggle_snap_palette)
+
+        # ── Grid overlay (global) ─────────────────────────────────────────
+        self._act_grid.blockSignals(True)
+        self._act_grid.setChecked(bool(self._prefs.get("grid_visible", False)))
+        self._act_grid.blockSignals(False)
+        self._act_grid.toggled.connect(self._on_grid_toggled)
+        self._apply_grid_config()
 
         # ── Per-workspace post-toolbar wiring ─────────────────────────────
         snap_fn = lambda: self._act_snap.isChecked()
@@ -2044,6 +2137,11 @@ class MainWindow(QMainWindow):
             "Snap palette: choose WHICH targets snap (endpoint, midpoint,\n"
             "intersection, …) and set the snap radius. The Snap button stays\n"
             "the master on/off; holding Ctrl still suspends snapping.")
+        self._act_grid = QAction("Grid", self, checkable=True, checked=False)
+        self._act_grid.setToolTip(
+            "Grid: show a millimetre grid overlay (spacing + divisions in\n"
+            "Preferences ▸ Appearance). Enable the Grid snap in the snap\n"
+            "palette to snap to its intersections.")
         self._act_smooth = QAction("Smooth\nHandles", self, checkable=True, checked=True)
         self._act_smooth.setToolTip(
             "Smooth Handles: when checked, moving one Bézier handle mirrors "
@@ -2068,6 +2166,7 @@ class MainWindow(QMainWindow):
         tb.addAction(self._act_guides)
         tb.addAction(self._act_snap)
         tb.addAction(self._act_snap_palette)
+        tb.addAction(self._act_grid)
         tb.addAction(self._act_smooth)
         tb.addAction(self._act_boxing)
         tb.addAction(self._act_stock)
@@ -2166,6 +2265,7 @@ class MainWindow(QMainWindow):
             "guides":       self._act_guides,
             "snap":         self._act_snap,
             "snap_palette": self._act_snap_palette,
+            "grid":         self._act_grid,
             "smooth":       self._act_smooth,
             "boxing":       self._act_boxing,
             "stock":        self._act_stock,
@@ -4025,6 +4125,7 @@ class MainWindow(QMainWindow):
             (self._act_guides,       "toggle-guides"),
             (self._act_snap,         "toggle-snap"),
             (self._act_snap_palette, "toggle-snap-palette"),
+            (self._act_grid,         "toggle-grid"),
             (self._act_smooth,       "toggle-smooth"),
             (self._act_boxing,       "toggle-boxing"),
             (self._act_stock,        "toggle-stock"),
@@ -4443,6 +4544,28 @@ class MainWindow(QMainWindow):
         pal = getattr(self, "_snap_palette", None)
         if pal is not None:
             pal.set_context_available(self._draw_tool.active)
+
+    # ------------------------------------------------------------------
+    # Grid overlay (global — same grid on every workspace)
+    # ------------------------------------------------------------------
+
+    def _apply_grid_config(self, save: bool = False):
+        """Push grid visibility + spacing from prefs onto every view and every
+        snap engine (grid snap uses the same spacing as the overlay)."""
+        visible = bool(self._prefs.get("grid_visible", False))
+        spacing = float(self._prefs.get("grid_spacing_mm", 5.0))
+        major   = int(self._prefs.get("grid_major", 5))
+        for ws in self._workspaces:
+            ws.view.set_grid(visible=visible, spacing_mm=spacing, major=major)
+            ws.snap.set_grid_spacing(spacing)
+        if save:
+            _prefs_mod.save(self._prefs)
+
+    def _on_grid_toggled(self, on: bool):
+        self._prefs["grid_visible"] = bool(on)
+        for ws in self._workspaces:
+            ws.view.set_grid(visible=on)
+        _prefs_mod.save(self._prefs)
 
     def _on_snap_types_changed(self, types: dict):
         """Palette toggles apply to every workspace and persist immediately."""
@@ -5415,6 +5538,9 @@ class MainWindow(QMainWindow):
         theme.apply_viewport(vp["preset"], vp.get("custom_bg"))
         theme.set_dot_radius(p["dot_radius_px"])
         theme.set_compact(p["compact_toolbar"])
+        # Grid spacing/major changed in the dialog — re-push to views + engines
+        # (visibility stays as the toolbar toggle left it).
+        self._apply_grid_config()
         for ws in self._workspaces:
             ws.view.set_vignette(vp.get("vignette", 0))
         if p["dark_mode"] != self._dark_mode:

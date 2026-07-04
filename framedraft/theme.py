@@ -33,6 +33,8 @@ _TOKENS: dict[str, tuple[str, str]] = {
     "canvas.cross":          ("#ccbbaa", "#554433"),
     "canvas.mirror_axis":    ("#c0392b", "#e05555"),
     "canvas.selection_halo": ("#82ff8c00", "#96ffaa3c"),   # amber glow, alpha
+    "canvas.grid_minor":     ("#ece4d2", "#2a2926"),
+    "canvas.grid_major":     ("#dbcfb4", "#3a3833"),
     # ── Geometry + editing dots ──────────────────────────────────────────
     "geometry.ink":           ("#1f1f1f", "#d4cfc0"),
     "geometry.node_fill":     ("#fce9c2", "#3a3020"),
@@ -60,6 +62,7 @@ _TOKENS: dict[str, tuple[str, str]] = {
     "snap.tangent":      ("#8e44ad", "#a569bd"),
     "snap.perpendicular":("#2980b9", "#5499c7"),
     "snap.curve":        ("#5d8aa8", "#5d8aa8"),
+    "snap.grid":         ("#7f8c8d", "#95a5a6"),
 }
 
 # Layers that own a distinct color; every other layer follows geometry.ink so
