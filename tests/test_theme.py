@@ -112,6 +112,14 @@ def test_dot_radius_clamped():
     assert theme.dot_radius() == 5
 
 
+def test_apply_viewport_custom_bad_color_does_not_crash():
+    # A hand-corrupted custom_bg must not crash (apply_viewport runs in
+    # MainWindow.__init__); the parser falls back to grey for the derived ink.
+    theme.apply_viewport("custom", "#not-a-color")
+    assert theme.color("canvas.bg") == "#not-a-color"   # used verbatim, no raise
+    assert theme.color("geometry.ink") in ("#1f1f1f", "#d4cfc0")
+
+
 def test_compact_toolbar_tightens_qss_and_icon_size():
     assert theme.toolbar_icon_px() == 20
     assert "padding: 5px; min-width: 30px" in theme.build_qss()

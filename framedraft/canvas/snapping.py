@@ -90,18 +90,9 @@ class SnapEngine:
     def set_radius_px(self, px: float):
         self._radius_px = max(2.0, float(px))
 
-    def radius_px(self) -> float:
-        return self._radius_px
-
     def set_grid_spacing(self, mm: float):
         """Grid-snap cell size (mm); should match the viewport grid overlay."""
         self._grid_spacing = max(0.0, float(mm))
-
-    def set_type_enabled(self, key: str, on: bool):
-        if on:
-            self._enabled_types.add(key)
-        else:
-            self._enabled_types.discard(key)
 
     def set_enabled_types(self, types):
         """types: {key: bool} mapping or iterable of enabled keys."""
@@ -109,9 +100,6 @@ class SnapEngine:
             self._enabled_types = {k for k, on in types.items() if on}
         else:
             self._enabled_types = set(types)
-
-    def type_enabled(self, key: str) -> bool:
-        return key in self._enabled_types
 
     # ------------------------------------------------------------------
     # Main API
@@ -328,14 +316,6 @@ class SnapEngine:
                 cx, cy, r = curve.nodes[0].x, curve.nodes[0].y, curve.radius
                 sa, ea = curve.start_angle, curve.end_angle
                 is_arc = curve.kind == "arc"
-
-                def on_arc(a_rad: float) -> bool:
-                    if not is_arc:
-                        return True
-                    if sa is None or ea is None:
-                        return True
-                    return _angle_in_arc(math.degrees(a_rad) % 360, sa, ea)
-
                 dx, dy = ax - cx, ay - cy
                 d = math.hypot(dx, dy)
                 base = math.atan2(dy, dx)
@@ -346,7 +326,7 @@ class SnapEngine:
                     alpha = math.acos(max(-1.0, min(1.0, r / d)))
                     for s in (1.0, -1.0):
                         a = base + s * alpha
-                        if on_arc(a):
+                        if _angle_on_arc(is_arc, a, sa, ea):
                             candidate(QPointF(cx + r * math.cos(a),
                                               cy + r * math.sin(a)), "tangent")
                 # Perpendicular to a circle = the radial points (the normal at
@@ -356,7 +336,7 @@ class SnapEngine:
                     for s in (1.0, -1.0):
                         px, py = cx + s * r * ux, cy + s * r * uy
                         a = math.atan2(py - cy, px - cx)
-                        if on_arc(a):
+                        if _angle_on_arc(is_arc, a, sa, ea):
                             candidate(QPointF(px, py), "perpendicular")
 
             elif want_perp and curve.kind == "line":
@@ -374,16 +354,9 @@ class SnapEngine:
                 m = len(samples)
                 if m < 3:
                     continue
-
-                def perp_dot(i: int) -> float:
-                    x, y = samples[i]
-                    xp, yp = samples[max(0, i - 1)]
-                    xn, yn = samples[min(m - 1, i + 1)]
-                    return (x - ax) * (xn - xp) + (y - ay) * (yn - yp)
-
-                prev = perp_dot(0)
+                prev = _perp_dot(samples, 0, ax, ay)
                 for i in range(1, m):
-                    val = perp_dot(i)
+                    val = _perp_dot(samples, i, ax, ay)
                     if prev == 0.0 or (prev < 0.0) != (val < 0.0):
                         u = prev / (prev - val) if val != prev else 0.5
                         x0, y0 = samples[i - 1]
@@ -468,6 +441,25 @@ class SnapEngine:
 
 
 # ---------- helpers ----------
+
+def _angle_on_arc(is_arc: bool, a_rad: float,
+                  sa: float | None, ea: float | None) -> bool:
+    """True if angle a_rad (radians) lies on the curve — always for a full
+    circle, within the sweep for an arc."""
+    if not is_arc or sa is None or ea is None:
+        return True
+    return _angle_in_arc(math.degrees(a_rad) % 360, sa, ea)
+
+
+def _perp_dot(samples: list, i: int, ax: float, ay: float) -> float:
+    """(sample_i − anchor) · local tangent; a sign change between consecutive
+    samples brackets a point where the curve is perpendicular to the anchor."""
+    m = len(samples)
+    x, y = samples[i]
+    xp, yp = samples[max(0, i - 1)]
+    xn, yn = samples[min(m - 1, i + 1)]
+    return (x - ax) * (xn - xp) + (y - ay) * (yn - yp)
+
 
 def _project_to_segment(px: float, py: float,
                         x0: float, y0: float,

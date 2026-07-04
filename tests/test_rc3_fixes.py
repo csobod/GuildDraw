@@ -300,6 +300,21 @@ def test_settings_dialog_layer_color_overrides(fresh):
     assert out["dark"]["layer.SCULPT"] == "#445566"
 
 
+def test_grid_toggle_and_config_propagate(fresh):
+    win = fresh
+    win._prefs["grid_spacing_mm"] = 8.0
+    win._prefs["grid_major"] = 4
+    win._apply_grid_config()
+    for ws in win._workspaces:
+        assert ws.snap._grid_spacing == 8.0        # overlay + snap share spacing
+        assert ws.view._grid_spacing == 8.0
+        assert ws.view._grid_major == 4
+    win._act_grid.setChecked(True)                 # global toggle → all views
+    assert all(ws.view._grid_visible for ws in win._workspaces)
+    win._act_grid.setChecked(False)
+    assert not any(ws.view._grid_visible for ws in win._workspaces)
+
+
 def test_failed_insert_keeps_redo_stack(fresh):
     win = fresh
     ws = win._active_ws

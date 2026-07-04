@@ -748,7 +748,7 @@ If it slips, RC3a ships without it and it heads RC4.
 mm grid with major/minor divisions (spacing + color in Appearance), plus a
 Grid snap type in the palette. Natural companion for drill-pattern layout.
 
-## M22 — Full bug + optimization audit (planned)
+## M22 — Full bug + optimization audit — ✅ DONE (2026-07-04)
 
 A dedicated pass BEFORE the RC3a community drop: read every module for
 correctness bugs, dead code, and performance (mirrors the RC3 audit `82adb44`
@@ -757,6 +757,8 @@ snap engine rework, prefs growth, palette/vignette/grid rendering) — audit it
 as a whole. Deliverables: findings report, fixes each as its own tested
 commit, regression tests. Fold in the customization-backlog quick wins if they
 surface naturally. Run this LAST, so the release ships audited.
+
+**Outcome (2026-07-04):** RC3a code was clean — no correctness bugs. Removed dead code (`theme.overrides`, `SnapEngine.type_enabled`/`set_type_enabled`/`radius_px`, an unused `dark` local in `_refresh_mirror_icons`). Robustness: `theme._rgb` now tolerates a malformed colour so a hand-corrupted `custom_bg` can't crash startup. Refactored the tangent/perp loop-variable closures to module helpers (`_angle_on_arc`/`_perp_dot`) — ruff clean package-wide. 215 tests green.
 
 ### Customization backlog (agreed candidates beyond M16–M21)
 

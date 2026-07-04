@@ -104,11 +104,6 @@ def set_overrides(theme_prefs: dict | None) -> None:
     }
 
 
-def overrides() -> dict:
-    """Current overrides in the ``prefs["theme"]`` shape (copies)."""
-    return {"light": dict(_overrides["light"]), "dark": dict(_overrides["dark"])}
-
-
 def set_override(token: str, value: str | None, dark: bool | None = None) -> None:
     """Set (or clear with ``None``) one token override in one mode.
 
@@ -193,10 +188,16 @@ VIEWPORT_PRESETS: dict[str, dict[str, str]] = {
 
 
 def _rgb(hex_color: str) -> tuple[int, int, int]:
-    h = hex_color.lstrip("#")
-    if len(h) == 8:          # #AARRGGBB
-        h = h[2:]
-    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    """(r, g, b) from #rrggbb / #AARRGGBB. Falls back to mid-grey on a
+    malformed value so a hand-corrupted prefs colour can't crash startup
+    (apply_viewport runs during MainWindow.__init__)."""
+    try:
+        h = hex_color.lstrip("#")
+        if len(h) == 8:          # #AARRGGBB
+            h = h[2:]
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except (ValueError, AttributeError, IndexError):
+        return (128, 128, 128)
 
 
 def _luminance(hex_color: str) -> float:

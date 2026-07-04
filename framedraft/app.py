@@ -4155,7 +4155,6 @@ class MainWindow(QMainWindow):
 
     def _refresh_mirror_icons(self):
         """Re-render ghost and mirror-close icons rotated 90° for temple workspaces."""
-        dark = self._dark_mode
         normal_c  = theme.color("chrome.ink")
         checked_c = theme.color("chrome.checked_ink")
         ws_type = self._active_ws.workspace_type if self._workspaces else "front"
