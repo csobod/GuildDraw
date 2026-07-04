@@ -99,6 +99,55 @@ def test_snap_radius_is_configurable():
     assert (p.x(), p.y()) == (0.0, 0.0)          # now within reach
 
 
+def test_tangent_snap_from_anchor_to_circle():
+    from framedraft.document import SplineNode
+    _s, view, eng = _engine([circle(0, 0, 5)])
+    eng.set_enabled_types(_only("tangent"))
+    anchor = [SplineNode(10.0, 0.0)]           # d=10, r=5 → tangents at ±60°
+
+    p = eng.snap(QPointF(2.9, 4.2), anchor, view)   # near the upper tangent pt
+    assert (p.x(), p.y()) == pytest.approx((2.5, 4.3301), abs=1e-2)
+
+    # No anchor (not mid-draw) → tangent produces nothing.
+    p2 = eng.snap(QPointF(2.9, 4.2), [], view)
+    assert (p2.x(), p2.y()) == (2.9, 4.2)
+
+    # Anchor inside the circle → no tangent exists.
+    p3 = eng.snap(QPointF(2.9, 4.2), [SplineNode(1.0, 0.0)], view)
+    assert (p3.x(), p3.y()) == (2.9, 4.2)
+
+
+def test_perpendicular_snap_from_anchor_to_line():
+    from framedraft.document import SplineNode
+    _s, view, eng = _engine([line([(0, 0), (0, 20)])])   # vertical line x=0
+    eng.set_enabled_types(_only("perpendicular"))
+    anchor = [SplineNode(8.0, 6.0)]                       # foot is (0, 6)
+
+    p = eng.snap(QPointF(0.4, 6.3), anchor, view)
+    assert (p.x(), p.y()) == pytest.approx((0.0, 6.0), abs=1e-6)
+
+
+def test_perpendicular_snap_to_circle_is_radial():
+    from framedraft.document import SplineNode
+    _s, view, eng = _engine([circle(0, 0, 5)])
+    eng.set_enabled_types(_only("perpendicular"))
+    anchor = [SplineNode(10.0, 0.0)]           # radial feet at (5,0) and (-5,0)
+
+    p = eng.snap(QPointF(5.3, 0.2), anchor, view)
+    assert (p.x(), p.y()) == pytest.approx((5.0, 0.0), abs=1e-6)
+
+
+def test_snap_palette_context_toggles_grey_out():
+    from framedraft.snap_palette import SnapPalette
+    pal = SnapPalette(None)
+    assert pal._btns["tangent"].isEnabled() is False        # no draw at startup
+    assert pal._btns["perpendicular"].isEnabled() is False
+    pal.set_context_available(True)
+    assert pal._btns["tangent"].isEnabled() is True
+    # Disabling never loses the checked value — the engine just finds no target.
+    assert pal.state()["tangent"] is True
+
+
 def test_curve_intersections_helper():
     pts = curve_intersections(line([(0, 0), (10, 10)]),
                               line([(0, 10), (10, 0)]))

@@ -4179,6 +4179,9 @@ class MainWindow(QMainWindow):
         if clear_selection:
             self._edit_tool.clear()
             self.scene.clearSelection()
+        # The draw tool just deactivated — grey out the context snaps. A
+        # line/spline setter re-enables them right after (below).
+        self._update_snap_context()
 
     def _set_tool_select(self):
         self._teardown_tools(clear_selection=False)
@@ -4190,6 +4193,7 @@ class MainWindow(QMainWindow):
                                  self.view, snap=self._snap,
                                  all_curves=self._doc_curves)
         self.view.set_draw_tool(self._draw_tool)
+        self._update_snap_context()
 
     def _set_tool_spline(self):
         self._teardown_tools(clear_selection=True)
@@ -4197,6 +4201,7 @@ class MainWindow(QMainWindow):
                                  self.view, snap=self._snap,
                                  all_curves=self._doc_curves)
         self.view.set_draw_tool(self._draw_tool)
+        self._update_snap_context()
 
     def _set_tool_circle(self):
         self._teardown_tools(clear_selection=True)
@@ -4426,10 +4431,18 @@ class MainWindow(QMainWindow):
         if on:
             anchor = self._toolbar.widgetForAction(self._act_snap_palette)
             self._snap_palette.reposition(self._toolbar, anchor)
+            self._update_snap_context()
             self._snap_palette.show()
             self._snap_palette.raise_()
         else:
             self._snap_palette.hide()
+
+    def _update_snap_context(self):
+        """Enable the palette's context snaps (tangent/perpendicular) only while
+        a line/spline draw is active — they need a point being drawn."""
+        pal = getattr(self, "_snap_palette", None)
+        if pal is not None:
+            pal.set_context_available(self._draw_tool.active)
 
     def _on_snap_types_changed(self, types: dict):
         """Palette toggles apply to every workspace and persist immediately."""

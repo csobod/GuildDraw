@@ -57,6 +57,8 @@ _TOKENS: dict[str, tuple[str, str]] = {
     "snap.center":       ("#16a085", "#16a085"),
     "snap.quadrant":     ("#d4a840", "#d4a840"),
     "snap.intersection": ("#d35400", "#d35400"),
+    "snap.tangent":      ("#8e44ad", "#a569bd"),
+    "snap.perpendicular":("#2980b9", "#5499c7"),
     "snap.curve":        ("#5d8aa8", "#5d8aa8"),
 }
 

@@ -734,7 +734,7 @@ palette** of per-type icon toggles (same non-auto-hiding panel pattern as
 - **Single-snap override** (AutoCAD-style): a hotkey forces one snap type for
   the next click regardless of palette state — slots into the Hotkeys tab.
 
-## M20 — Context snaps: Tangent + Perpendicular (stretch)
+## M20 — Context snaps: Tangent + Perpendicular — ✅ DONE (2026-07-04)
 
 Drawing-context snaps: the snap point depends on the segment being drawn
 (anchor = last placed node, already passed into `snap()` via
@@ -763,7 +763,7 @@ Grid snap type in the palette. Natural companion for drill-pattern layout.
 
 ### RC3a release checklist
 
-- [x] M16–M19 landed (M20 stretch, M21 optional) — 204 tests green
+- [x] M16–M20 landed (M21 optional) — 211 tests green
 - [ ] README/USER-GUIDE "New in RC3a" (snap palette, themes, vignette, Ctrl+S)
 - [ ] Version stamp `1.0.0-rc3a`, installer rebuild via
       `scripts/build_release.ps1`, user test-install

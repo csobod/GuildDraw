@@ -10,19 +10,25 @@ _INDICATOR_R    = 6    # screen-pixel indicator radius (view space)
 # Snap-type registry — drives the engine's gating AND the snap palette UI.
 # (key, palette label, tooltip). Keys are also theme tokens (snap.<key>).
 SNAP_TYPES: list[tuple[str, str, str]] = [
-    ("endpoint",     "Endpoint",     "Open-curve ends and arc endpoints"),
-    ("node",         "Node",         "Interior and closed-curve nodes"),
-    ("midpoint",     "Midpoint",     "Line-segment midpoints"),
-    ("center",       "Center",       "Circle and arc centres"),
-    ("quadrant",     "Quadrant",     "Circle/arc 0°/90°/180°/270° points"),
-    ("intersection", "Intersection", "Where two curves cross"),
-    ("handle",       "Handle",       "Bézier control-point handles"),
-    ("curve",        "On-curve",     "Nearest point along a curve"),
-    ("mirror",       "Mirror axis",  "Project onto the mirror axis"),
-    ("axis",         "Origin",       "The scene origin (0, 0)"),
+    ("endpoint",      "Endpoint",      "Open-curve ends and arc endpoints"),
+    ("node",          "Node",          "Interior and closed-curve nodes"),
+    ("midpoint",      "Midpoint",      "Line-segment midpoints"),
+    ("center",        "Center",        "Circle and arc centres"),
+    ("quadrant",      "Quadrant",      "Circle/arc 0°/90°/180°/270° points"),
+    ("intersection",  "Intersection",  "Where two curves cross"),
+    ("tangent",       "Tangent",       "Tangent to a circle/arc from the point being drawn"),
+    ("perpendicular", "Perpendicular", "Perpendicular to a line/curve from the point being drawn"),
+    ("handle",        "Handle",        "Bézier control-point handles"),
+    ("curve",         "On-curve",      "Nearest point along a curve"),
+    ("mirror",        "Mirror axis",   "Project onto the mirror axis"),
+    ("axis",          "Origin",        "The scene origin (0, 0)"),
 ]
 
 SNAP_TYPE_KEYS = [k for k, _l, _t in SNAP_TYPES]
+
+# Context snaps only produce a target relative to the point currently being
+# drawn (the last placed node); they do nothing outside a line/spline draw.
+CONTEXT_SNAP_KEYS = ("tangent", "perpendicular")
 
 
 def _angle_in_arc(angle_deg: float, start_deg: float, end_deg: float) -> bool:
@@ -182,6 +188,16 @@ class SnapEngine:
         if "intersection" in enabled:
             self._intersection_candidates(scene_pos, view, candidate, is_visible)
 
+        # Context snaps: tangent / perpendicular are measured FROM the point
+        # being drawn (the last placed node), so they only exist mid-draw.
+        anchor = drawing_nodes[-1] if drawing_nodes else None
+        if anchor is not None:
+            want_t = "tangent" in enabled
+            want_p = "perpendicular" in enabled
+            if want_t or want_p:
+                self._context_candidates(anchor.x, anchor.y, candidate,
+                                         is_visible, want_t, want_p)
+
         if self._mirror_on and self._mirror_x is not None:
             if getattr(self, '_mirror_horizontal', False):
                 candidate(QPointF(scene_pos.x(), self._mirror_x), "mirror")
@@ -279,6 +295,86 @@ class SnapEngine:
                 for x, y in pts:
                     candidate(QPointF(x, y), "intersection")
 
+    def _context_candidates(self, ax: float, ay: float, candidate,
+                            is_visible, want_tangent: bool,
+                            want_perp: bool) -> None:
+        """Tangent + perpendicular targets measured from the anchor (ax, ay) —
+        the point currently being drawn. candidate() still filters by nearness
+        to the cursor, so the maker steers toward the target they want."""
+        for curve in self._doc_curves:
+            if not curve.nodes:
+                continue
+            if is_visible is not None and not is_visible(curve.layer):
+                continue
+
+            if curve.kind in ("circle", "arc") and curve.radius:
+                cx, cy, r = curve.nodes[0].x, curve.nodes[0].y, curve.radius
+                sa, ea = curve.start_angle, curve.end_angle
+                is_arc = curve.kind == "arc"
+
+                def on_arc(a_rad: float) -> bool:
+                    if not is_arc:
+                        return True
+                    if sa is None or ea is None:
+                        return True
+                    return _angle_in_arc(math.degrees(a_rad) % 360, sa, ea)
+
+                dx, dy = ax - cx, ay - cy
+                d = math.hypot(dx, dy)
+                base = math.atan2(dy, dx)
+
+                # Tangent: touch points where the line anchor→T grazes the
+                # circle (two of them; none when the anchor is inside).
+                if want_tangent and d > r + 1e-9:
+                    alpha = math.acos(max(-1.0, min(1.0, r / d)))
+                    for s in (1.0, -1.0):
+                        a = base + s * alpha
+                        if on_arc(a):
+                            candidate(QPointF(cx + r * math.cos(a),
+                                              cy + r * math.sin(a)), "tangent")
+                # Perpendicular to a circle = the radial points (the normal at
+                # T points straight back at the anchor along the radius).
+                if want_perp and d > 1e-9:
+                    ux, uy = dx / d, dy / d
+                    for s in (1.0, -1.0):
+                        px, py = cx + s * r * ux, cy + s * r * uy
+                        a = math.atan2(py - cy, px - cx)
+                        if on_arc(a):
+                            candidate(QPointF(px, py), "perpendicular")
+
+            elif want_perp and curve.kind == "line":
+                nodes = curve.nodes
+                n = len(nodes)
+                count = n if curve.closed else n - 1
+                for i in range(count):
+                    p0, p1 = nodes[i], nodes[(i + 1) % n]
+                    foot = _project_to_segment(ax, ay, p0.x, p0.y, p1.x, p1.y)
+                    if foot is not None:
+                        candidate(QPointF(*foot), "perpendicular")
+
+            elif want_perp:   # spline: feet where the tangent is ⟂ to anchor→S
+                samples = [(x, y) for x, y, _t in sample_curve(curve, 24)]
+                m = len(samples)
+                if m < 3:
+                    continue
+
+                def perp_dot(i: int) -> float:
+                    x, y = samples[i]
+                    xp, yp = samples[max(0, i - 1)]
+                    xn, yn = samples[min(m - 1, i + 1)]
+                    return (x - ax) * (xn - xp) + (y - ay) * (yn - yp)
+
+                prev = perp_dot(0)
+                for i in range(1, m):
+                    val = perp_dot(i)
+                    if prev == 0.0 or (prev < 0.0) != (val < 0.0):
+                        u = prev / (prev - val) if val != prev else 0.5
+                        x0, y0 = samples[i - 1]
+                        x1, y1 = samples[i]
+                        candidate(QPointF(x0 + (x1 - x0) * u,
+                                          y0 + (y1 - y0) * u), "perpendicular")
+                    prev = val
+
     def hide(self):
         self._hide()
 
@@ -317,6 +413,24 @@ class SnapEngine:
             path.moveTo(-R, R)
             path.lineTo(R, -R)
             item = self._scene.addPath(path, pen)
+        elif snap_type == "tangent":
+            # A small circle with a tangent line grazing its top.
+            path = QPainterPath()
+            rr = R * 0.6
+            path.addEllipse(-rr, -rr + R * 0.4, 2 * rr, 2 * rr)
+            path.moveTo(-R, -R)
+            path.lineTo(R, -R)
+            item = self._scene.addPath(path, pen)
+        elif snap_type == "perpendicular":
+            # The ⊥ right-angle mark: an upright leg meeting a base with a
+            # small square at the corner.
+            path = QPainterPath()
+            path.moveTo(-R, R)
+            path.lineTo(R, R)
+            path.moveTo(-R, R)
+            path.lineTo(-R, -R)
+            path.addRect(-R, R - R * 0.5, R * 0.5, R * 0.5)
+            item = self._scene.addPath(path, pen)
         else:
             item = self._scene.addEllipse(-R, -R, 2 * R, 2 * R, pen)
         item.setPos(pos)
@@ -331,6 +445,19 @@ class SnapEngine:
 
 
 # ---------- helpers ----------
+
+def _project_to_segment(px: float, py: float,
+                        x0: float, y0: float,
+                        x1: float, y1: float):
+    """Perpendicular foot of (px, py) on segment (x0,y0)-(x1,y1), clamped to
+    the segment. None if the segment is degenerate."""
+    dx, dy = x1 - x0, y1 - y0
+    seg2 = dx * dx + dy * dy
+    if seg2 < 1e-12:
+        return None
+    t = max(0.0, min(1.0, ((px - x0) * dx + (py - y0) * dy) / seg2))
+    return (x0 + t * dx, y0 + t * dy)
+
 
 def _px_dist(view, sp: QPointF, tp: QPointF) -> float:
     a = view.mapFromScene(sp)

@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from .icons import make_icon, make_pixmap
-from .canvas.snapping import SNAP_TYPES
+from .canvas.snapping import SNAP_TYPES, CONTEXT_SNAP_KEYS
 
 _RADIUS_MIN = 4
 _RADIUS_MAX = 40    # two digits; a larger snap reach becomes unwieldy
@@ -101,6 +101,7 @@ class SnapPalette(QFrame):
         lay.addWidget(rad_holder)
 
         self.apply_theme()
+        self.set_context_available(False)   # no draw tool active at startup
         self.hide()
 
     # ------------------------------------------------------------------
@@ -121,6 +122,16 @@ class SnapPalette(QFrame):
 
     def _emit_types(self, _on: bool):
         self.types_changed.emit(self.state())
+
+    def set_context_available(self, available: bool):
+        """Grey the tangent/perpendicular toggles when not drawing a
+        line/spline — they produce nothing without a point being drawn.
+        The checked state is preserved (a disabled button keeps its value),
+        so the engine simply never finds a target while it's unavailable."""
+        for key in CONTEXT_SNAP_KEYS:
+            btn = self._btns.get(key)
+            if btn is not None:
+                btn.setEnabled(available)
 
     # ------------------------------------------------------------------
 
