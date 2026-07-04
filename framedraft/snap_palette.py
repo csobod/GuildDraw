@@ -16,6 +16,7 @@ applies them to every workspace's SnapEngine and persists them in prefs.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QPoint, QSize, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QSpinBox,
     QToolButton, QVBoxLayout, QWidget,
@@ -82,7 +83,12 @@ class SnapPalette(QFrame):
         self._radius.setValue(10)
         self._radius.setAlignment(Qt.AlignmentFlag.AlignRight)
         self._radius.setKeyboardTracking(False)
-        self._radius.setFixedWidth(30)
+        # Smaller font than the app-wide 13 px so a 2-digit value isn't
+        # clipped in the narrow field.
+        rf = QFont(self._radius.font())
+        rf.setPixelSize(11)
+        self._radius.setFont(rf)
+        self._radius.setFixedWidth(32)
         self._radius.setToolTip(rad_tip)
         self._radius.valueChanged.connect(
             lambda v: self.radius_changed.emit(int(v)))
@@ -132,6 +138,7 @@ class SnapPalette(QFrame):
             f"background-color: {theme.color('chrome.panel')}; }}"
             f"#snapPalette QToolButton:checked {{ background-color: {checked_bg}; }}"
             f"#snapPalette QLabel {{ color: {ink}; }}"
+            f"#snapPalette QSpinBox {{ padding: 1px 2px; }}"
         )
         for key, btn in self._btns.items():
             btn.setIcon(make_icon(self._btn_icons[key], ink, checked_ink))
