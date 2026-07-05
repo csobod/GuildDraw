@@ -775,10 +775,11 @@ surface naturally. Run this LAST, so the release ships audited.
 
 ### RC3a release checklist
 
-- [x] M16–M21 landed — 213 tests green
-- [ ] README/USER-GUIDE "New in RC3a" (snap palette, themes, vignette, Ctrl+S)
-- [ ] Version stamp `1.0.0-rc3a`, installer rebuild via
-      `scripts/build_release.ps1`, user test-install
+- [x] M16–M22 landed (features + audit) — 215 tests green
+- [x] Version stamped `1.0.0-rc3a`; installer built (setup.exe + win64.zip +
+      portable.exe in `dist\`, built off-drive to dodge the G: cloud lock;
+      frozen exe smoke-tested). **User test-install pending.**
+- [ ] README/USER-GUIDE "New in RC3a" (snap palette, themes, vignette, grid, Ctrl+S)
 - [ ] Tag + GitHub pre-release (first community drop since rc2)
 
 ---
