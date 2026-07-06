@@ -1,0 +1,105 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="-20.8250 -25.5000 53.7000 51.0004" width="53.7000mm" height="51.0004mm">
+  <metadata>{
+  "calibration": {
+    "px_per_mm": null
+  },
+  "mirror": {
+    "x": 0.0,
+    "enabled": false
+  },
+  "forming": {
+    "bridge_angle_deg": 0.0,
+    "apical_radius_mm": 0.0
+  },
+  "machined_bridge": {
+    "depth_mm": 4.0,
+    "width_mm": 5.0
+  },
+  "face_images": [],
+  "curves": [
+    {
+      "kind": "line",
+      "layer": "REF",
+      "closed": false,
+      "mirrored": false,
+      "line_weight": 1.5,
+      "nodes": [
+        {
+          "x": 0.8250562818220253,
+          "y": 5.500375212146659
+        },
+        {
+          "x": -0.8250000000000313,
+          "y": -5.499999999999994
+        }
+      ]
+    },
+    {
+      "kind": "line",
+      "layer": "REF",
+      "closed": false,
+      "mirrored": false,
+      "line_weight": 1.5,
+      "nodes": [
+        {
+          "x": 4.375002712416265,
+          "y": -0.0
+        },
+        {
+          "x": 0.0,
+          "y": -0.0
+        }
+      ]
+    },
+    {
+      "kind": "spline",
+      "layer": "HINGE",
+      "closed": true,
+      "mirrored": false,
+      "line_weight": 1.5,
+      "nodes": [
+        {
+          "x": 11.575002712416262,
+          "y": 2.000000000000004,
+          "cp_in": {
+            "x": 12.365509560365622,
+            "y": 1.6488325348532684
+          }
+        },
+        {
+          "x": 4.675002712416267,
+          "y": 1.999999999999993
+        },
+        {
+          "x": 4.075002712416262,
+          "y": -1.9999999999999951
+        },
+        {
+          "x": 11.575002712416262,
+          "y": -1.9999999999999867,
+          "cp_out": {
+            "x": 12.365509560365618,
+            "y": -1.6488325348532538
+          }
+        },
+        {
+          "x": 12.875002712416258,
+          "y": 7.901676503524388e-15,
+          "cp_in": {
+            "x": 12.875002712416258,
+            "y": -0.8649969163138079
+          },
+          "cp_out": {
+            "x": 12.875002712416258,
+            "y": 0.8649969163138237
+          }
+        }
+      ]
+    }
+  ]
+}</metadata>
+  <path d="M 0.8251,5.5004 L -0.8250,-5.5000" data-layer="REF" data-kind="line" fill="none" stroke="#1f1f1f" stroke-width="1.5" />
+  <path d="M 4.3750,-0.0000 L 0.0000,-0.0000" data-layer="REF" data-kind="line" fill="none" stroke="#1f1f1f" stroke-width="1.5" />
+  <path d="M 11.5750,2.0000 C 11.5750,2.0000 4.6750,2.0000 4.6750,2.0000 C 4.6750,2.0000 4.0750,-2.0000 4.0750,-2.0000 C 4.0750,-2.0000 11.5750,-2.0000 11.5750,-2.0000 C 12.3655,-1.6488 12.8750,-0.8650 12.8750,0.0000 C 12.8750,0.8650 12.3655,1.6488 11.5750,2.0000 Z" data-layer="HINGE" data-kind="spline" fill="none" stroke="#1f1f1f" stroke-width="1.5" />
+</svg>

@@ -25,17 +25,17 @@ DEFAULTS: dict = {
     "guides_on_startup":    True,
     "snap_on_startup":      True,
     "smooth_handles":       True,
-    # Boxing guide
-    "boxing_on_startup":    True,
-    "boxing_a_mm":          50.0,
-    "boxing_b_mm":          30.0,
+    # Boxing guide (defaults mirror the maintainer's working setup — rc3a)
+    "boxing_on_startup":    False,
+    "boxing_a_mm":          49.0,
+    "boxing_b_mm":          27.0,
     "boxing_dbl_mm":        18.0,
     # Stock blank reference guide (centered at origin)
-    "stock_on_startup":     False,
+    "stock_on_startup":     True,
     "stock_width_mm":       170.0,
     "stock_height_mm":      85.0,
     # Pad block reference guide (centered at origin)
-    "pad_on_startup":       False,
+    "pad_on_startup":       True,
     "pad_width_mm":         45.0,
     "pad_height_mm":        45.0,
     # Toolbar button visibility (False = hidden; action still works via hotkey)
@@ -86,11 +86,27 @@ DEFAULTS: dict = {
     "compact_toolbar": False,
     # Grid overlay (viewport aid; global across workspaces)
     "grid_visible":     False,
-    "grid_spacing_mm":  5.0,
+    "grid_spacing_mm":  2.0,
     "grid_major":       5,       # every Nth line is a major (heavier) line
-    # Snap palette: per-type toggles ({snap type key: bool}; keys from
-    # canvas.snapping.SNAP_TYPES — absent keys default to enabled)
-    "snap_types": {},
+    # Snap palette: per-type toggles (keys from canvas.snapping.SNAP_TYPES;
+    # absent keys default to enabled). This shipped set is the maintainer's
+    # working palette: precise point targets on, the "grabby" ones (node,
+    # center, on-curve, intersection) off until the maker opts in.
+    "snap_types": {
+        "endpoint":      True,
+        "node":          False,
+        "midpoint":      True,
+        "center":        False,
+        "quadrant":      True,
+        "intersection":  False,
+        "tangent":       True,
+        "perpendicular": True,
+        "handle":        True,
+        "curve":         False,
+        "grid":          True,
+        "mirror":        True,
+        "axis":          True,
+    },
     # Snap reach in screen pixels
     "snap_radius_px": 10,
     # User-assignable hotkeys (empty string = no hotkey)

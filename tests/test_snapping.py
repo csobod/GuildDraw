@@ -164,6 +164,23 @@ def test_grid_snap_disabled_or_zero_spacing_is_noop():
     assert (p2.x(), p2.y()) == (9.6, 5.4)
 
 
+def test_point_move_deactivate_hides_snap_indicator():
+    # Regression: after a point-to-point move the endpoint snap indicator
+    # (green circle) stayed on the canvas until restart — PointMoveTool never
+    # hid the engine's indicator on deactivate.
+    from framedraft.tools.point_move import PointMoveTool
+    scene, view, eng = _engine([line([(0, 0), (10, 0)])])
+    eng.set_enabled_types(_only("endpoint"))
+
+    tool = PointMoveTool()
+    tool.activate(scene, view, eng)
+    tool.handle_press(QPointF(0.4, 0.3))     # grab point — snaps to (0, 0)
+    assert eng._indicator is not None        # indicator showing
+    tool.handle_press(QPointF(30.0, 30.0))   # destination → move applied
+    tool.deactivate()                        # what _teardown_tools always does
+    assert eng._indicator is None            # …must clear the indicator
+
+
 def test_snap_palette_context_toggles_grey_out():
     from framedraft.snap_palette import SnapPalette
     pal = SnapPalette(None)

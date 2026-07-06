@@ -1224,9 +1224,11 @@ class SettingsDialog(QDialog):
         lc_scroll.setWidget(lc_inner)
         tabs.addTab(lc_scroll, "Layers")
 
+        # No embedded line breaks — the label word-wraps to the tab width, and
+        # hard breaks mid-sentence fight the natural wrapping.
         lc_note = QLabel(
-            "Drawing colour per layer, for each UI mode. Plain layers follow\n"
-            "the shared ink colour until you override them; SCULPT and\n"
+            "Drawing colour per layer, for each UI mode. Plain layers follow "
+            "the shared ink colour until you override them; SCULPT and "
             "ENGRAVING carry their own defaults.")
         lc_note.setWordWrap(True)
         lc_lay.addWidget(lc_note)
@@ -1293,7 +1295,7 @@ class SettingsDialog(QDialog):
         tb_scroll.setWidget(tb_inner)
         tabs.addTab(tb_scroll, "Toolbar")
 
-        note = QLabel("Uncheck a button to hide it. Hidden buttons remain\n"
+        note = QLabel("Uncheck a button to hide it. Hidden buttons remain "
                       "accessible via their hotkey (set in the Hotkeys tab).")
         note.setWordWrap(True)
         tb_lay.addWidget(note)
@@ -1813,8 +1815,9 @@ class MainWindow(QMainWindow):
         # ── Snap palette (per-type snap toggles + radius) ─────────────────
         from .snap_palette import SnapPalette
         from .canvas.snapping import SNAP_TYPE_KEYS
+        # prefs.load() deep-merges DEFAULTS["snap_types"], so the dict is
+        # complete; the all-True base only covers a hand-edited prefs file.
         snap_types = {k: True for k in SNAP_TYPE_KEYS}
-        snap_types["grid"] = False   # grid snap is opt-in (independent of the overlay)
         snap_types.update({k: bool(v) for k, v in
                            (self._prefs.get("snap_types") or {}).items()
                            if k in snap_types})

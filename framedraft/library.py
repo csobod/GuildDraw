@@ -6,6 +6,10 @@ Storage layout:
 
 Each entry is a standard GuildDraw SVG saved with save_svg (hinge pocket
 workspace format).  The filename stem (minus .svg) is the display name.
+
+A starter set ships in ``framedraft/resources/library/hinges`` and is copied
+into the user library the first time it is created (only when empty — a maker
+who deletes a shipped hinge must not have it resurrected on every launch).
 """
 
 from __future__ import annotations
@@ -14,9 +18,11 @@ import datetime
 import json
 import pathlib
 import re
+import shutil
 
 _HINGES_DIR = pathlib.Path.home() / ".guilddraw" / "library" / "hinges"
 _DRILLS_DIR = pathlib.Path.home() / ".guilddraw" / "library" / "drills"
+_SHIPPED_HINGES = pathlib.Path(__file__).parent / "resources" / "library" / "hinges"
 
 
 def _safe_filename(name: str) -> str:
@@ -30,6 +36,21 @@ class HingeLibrary:
 
     def __init__(self) -> None:
         _HINGES_DIR.mkdir(parents=True, exist_ok=True)
+        self._seed_shipped()
+
+    @staticmethod
+    def _seed_shipped() -> None:
+        """First run only: copy the shipped starter hinges into an EMPTY user
+        library. Never touches a library that already has entries."""
+        try:
+            if any(_HINGES_DIR.glob("*.svg")):
+                return
+            if not _SHIPPED_HINGES.is_dir():
+                return
+            for src in sorted(_SHIPPED_HINGES.glob("*.svg")):
+                shutil.copyfile(src, _HINGES_DIR / src.name)
+        except OSError:
+            pass   # seeding is best-effort; an empty library still works
 
     # ------------------------------------------------------------------
     # Query

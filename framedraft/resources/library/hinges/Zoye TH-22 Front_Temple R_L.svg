@@ -1,0 +1,87 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="-20.0000 -22.0000 52.9700 44.0000" width="52.9700mm" height="44.0000mm">
+  <metadata>{
+  "calibration": {
+    "px_per_mm": null
+  },
+  "mirror": {
+    "x": 0.0,
+    "enabled": false
+  },
+  "forming": {
+    "bridge_angle_deg": 0.0,
+    "apical_radius_mm": 0.0
+  },
+  "machined_bridge": {
+    "depth_mm": 4.0,
+    "width_mm": 5.0
+  },
+  "face_images": [],
+  "curves": [
+    {
+      "kind": "line",
+      "layer": "REF",
+      "closed": false,
+      "mirrored": false,
+      "line_weight": 1.5,
+      "nodes": [
+        {
+          "x": 3.77,
+          "y": -4.440892098500626e-16
+        },
+        {
+          "x": 0.0,
+          "y": 0.0
+        }
+      ]
+    },
+    {
+      "kind": "spline",
+      "layer": "HINGE",
+      "closed": true,
+      "mirrored": false,
+      "line_weight": 1.5,
+      "nodes": [
+        {
+          "x": 3.77,
+          "y": 1.9999999999999996
+        },
+        {
+          "x": 3.77,
+          "y": -2.0000000000000004
+        },
+        {
+          "x": 11.727229793334065,
+          "y": -2.000000000000001,
+          "cp_out": {
+            "x": 12.488263983489265,
+            "y": -1.62407846014545
+          }
+        },
+        {
+          "x": 12.969999999999999,
+          "y": -8.881784197001252e-16,
+          "cp_in": {
+            "x": 12.969999999999999,
+            "y": -0.8488168487440619
+          },
+          "cp_out": {
+            "x": 12.969999999999999,
+            "y": 0.8488168487440606
+          }
+        },
+        {
+          "x": 11.727229793334065,
+          "y": 1.9999999999999996,
+          "cp_in": {
+            "x": 12.488263983489265,
+            "y": 1.6240784601454483
+          }
+        }
+      ]
+    }
+  ]
+}</metadata>
+  <path d="M 3.7700,-0.0000 L 0.0000,0.0000" data-layer="REF" data-kind="line" fill="none" stroke="#1f1f1f" stroke-width="1.5" />
+  <path d="M 3.7700,2.0000 C 3.7700,2.0000 3.7700,-2.0000 3.7700,-2.0000 C 3.7700,-2.0000 11.7272,-2.0000 11.7272,-2.0000 C 12.4883,-1.6241 12.9700,-0.8488 12.9700,-0.0000 C 12.9700,0.8488 12.4883,1.6241 11.7272,2.0000 C 11.7272,2.0000 3.7700,2.0000 3.7700,2.0000 Z" data-layer="HINGE" data-kind="spline" fill="none" stroke="#1f1f1f" stroke-width="1.5" />
+</svg>

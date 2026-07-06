@@ -161,6 +161,11 @@ class PointMoveTool(QObject):
         self._clear_scene_items()
         if self._hud:
             self._hud.hide()
+        # Hide the snap indicator — the last handle_press/handle_move left it
+        # showing at the snapped point, and nothing else clears it (the "green
+        # endpoint circle persists after a point-to-point move" bug).
+        if self._snap:
+            self._snap.hide()
         self._scene   = None
         self._view    = None
         self._snap    = None

@@ -1,4 +1,4 @@
-# GuildDraw User Guide (v1.0.0-rc2)
+# GuildDraw User Guide (v1.0.0-rc3a)
 
 GuildDraw drafts eyewear in true millimetres. Everything you draw is at 1:1
 scale; the DXF you export is what the CNC cuts.
@@ -63,10 +63,34 @@ hidden per-button in **Settings → Toolbar**.
 
 ### Snapping
 
-Snap targets (toggle with the Snap button): curve nodes, handles, line
-midpoints (orange), circle/arc quadrants, nearest point on curve (steel-blue
-diamond), the mirror axis, and the origin (purple). Hidden layers are never
-snap targets; locked layers still snap (reference geometry).
+The **Snap** button is the master on/off; holding `Ctrl` suspends snapping
+while held. The **Snap Types** button beside it opens the *snap palette* — a
+pinnable pop-out that chooses *which* targets snap (hover a button for its
+name) and sets the snap radius (the magnet + `r` field):
+
+- **Endpoint** — open-curve ends and arc endpoints (green).
+- **Node** — interior and closed-curve nodes.
+- **Midpoint** — line-segment midpoints (orange).
+- **Center / Quadrant** — circle and arc centres and 0/90/180/270° points.
+- **Intersection** — where two curves cross (orange-red ×).
+- **Tangent / Perpendicular** — measured from the point you are drawing, so
+  they light up only mid-line/spline: tangent touch points on circles/arcs,
+  and perpendicular feet on lines, circles, and splines.
+- **Handle** — Bézier control points (blue).
+- **On-curve** — nearest point along a curve (steel-blue diamond; fallback
+  when no point target is in reach).
+- **Grid** — nearest grid intersection, in empty space only (see *Grid* below).
+- **Mirror axis** (red) and **Origin** (purple).
+
+Palette choices persist across sessions. Hidden layers are never snap
+targets; locked layers still snap (reference geometry).
+
+### Grid
+
+The **Grid** toolbar button overlays a millimetre grid (minor lines with a
+heavier major line every Nth division). Spacing and divisions live in
+*Preferences ▸ Appearance ▸ Grid*; the Grid snap type in the palette snaps to
+its intersections. The grid is display-only — never exported.
 
 ### Layers panel
 
@@ -182,6 +206,10 @@ What the validator enforces:
   changes; after a crash, the next launch offers to restore.
 - The hinge library lives in `~/.guilddraw/library/hinges/` — save a hinge
   pocket once, import it into any project (it arrives as a group).
+- **Appearance** (*Settings ▸ Preferences ▸ Appearance*): dark mode, canvas
+  presets (Parchment / Blueprint / Matte Dark / Plain White / custom colour),
+  a vignette slider, node-dot size, compact toolbar, and grid spacing.
+  Per-layer drawing colours (light + dark) are on the **Layers** tab.
 - Preferences (theme, toolbar, hotkeys, guide defaults) are in
   `~/.guilddraw/prefs.json`.
 
@@ -189,6 +217,7 @@ What the validator enforces:
 
 | Shortcut | Action |
 |---|---|
+| `Ctrl+S` / `Ctrl+Shift+S` | Save / Save As |
 | `Ctrl+Z` / `Ctrl+Y` (or `Ctrl+Shift+Z`) | Undo / Redo |
 | `Ctrl+C` / `Ctrl+V` / `Ctrl+D` | Copy / Paste / Duplicate |
 | `Ctrl+A` | Select all (visible + unlocked) |

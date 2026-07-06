@@ -8,10 +8,11 @@ nothing else.
 Built with Python + PySide6 (Qt 6). Scene units are true millimetres (1 scene
 unit = 1 mm) end to end: what you draw is what gets cut.
 
-**Status: v1.0.0-rc2 — release candidate.** All drafting features are
-complete and tested (161-test suite). rc2 adds generic DXF import, a bevel model
-with a lens-locked boxing guide and measurement-driven auto-resize, and
-drill-mount holes with OMA `DRILLE` interchange (see *New in rc2* below). Final
+**Status: v1.0.0-rc3a — release candidate.** All drafting features are
+complete and tested (221-test suite). rc3a adds a per-type snap palette with
+intersection/tangent/perpendicular/grid snapping, a millimetre grid overlay,
+full appearance customization (canvas themes, per-layer colours, vignette),
+Ctrl+S, and a starter hinge library (see *New in rc3a* below). Final
 1.0 sign-off is gated on the GuildCAM hardware round-trip (cutting a physical
 frame from exported DXF), which is pending GuildCAM's redevelopment.
 
@@ -39,6 +40,30 @@ frame from exported DXF), which is pending GuildCAM's redevelopment.
 - **Clean DXF out**: R2000 SPLINE entities (exact Bézier → B-spline, never
   flattened), strict layer vocabulary, per-workspace validation, and batch
   export of all four workspaces in one go.
+
+## New in rc3a
+
+- **Snap palette** — a pinnable pop-out beside the Snap button with per-type
+  toggles: Endpoint, Node, Midpoint, Center, Quadrant, **Intersection** (new),
+  **Tangent** and **Perpendicular** (new; active while drawing a line/spline),
+  Handle, On-curve, Grid, Mirror axis, and Origin — plus the snap radius. The
+  Snap button stays the master on/off and holding Ctrl still suspends snapping.
+- **Millimetre grid** — a Grid toolbar toggle draws a minor/major grid over the
+  canvas (spacing and divisions in *Preferences ▸ Appearance*); an opt-in Grid
+  snap targets its intersections in empty space.
+- **Themes & appearance** — every colour now lives in one theme system: canvas
+  presets (Parchment, Blueprint, Matte Dark, Plain White, or a custom colour
+  with auto-derived ink), a vignette slider, per-layer colours for light and
+  dark mode (*Preferences ▸ Layers*), node-dot size for high-DPI displays, and
+  a compact-toolbar option.
+- **Ctrl+S saves** (Ctrl+Shift+S = Save As), shown in the File menu.
+- **Starter hinge library** — nine Zoye hinge pocket designs ship with the app
+  and seed an empty library on first run.
+- **Fixes** — intersection splits undo as one step, Mirror-Close preserves
+  hand-tuned handles, OMA export boxes/trace describe the finished (beveled)
+  lens, split-at-node endpoint corruption fixed, snap indicators no longer
+  linger after a Point Move, and two full-codebase audits' worth of smaller
+  correctness and performance work.
 
 ## New in rc2
 

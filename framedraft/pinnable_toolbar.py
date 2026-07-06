@@ -128,6 +128,7 @@ class PinnableToolBar(QToolBar):
         self._dark = bool(dark)
         if self._panel is not None:
             self._panel.apply_theme(self._dark)
+        self._apply_ext_icon()   # re-ink the ⋯ glyph for the new mode
 
     def extension_button(self) -> "QToolButton | None":
         return self._ext_btn
@@ -141,6 +142,20 @@ class PinnableToolBar(QToolBar):
                 # clicked() fires exactly once per physical click, AFTER Qt's own
                 # (transient) expand slot — so our collapse below always wins.
                 ext.clicked.connect(self._on_ext_clicked)
+                self._apply_ext_icon()
+
+    def _apply_ext_icon(self):
+        """Replace Qt's style-drawn extension glyph with our own ellipsis.
+
+        The native glyph is painted from the style's palette, which renders
+        white in light mode against the pale button face — unreadable. An
+        explicit theme-inked icon reads correctly in both modes."""
+        if self._ext_btn is None:
+            return
+        from . import theme
+        from .icons import make_icon
+        ink = theme.color("chrome.ink")
+        self._ext_btn.setIcon(make_icon("ellipsis", ink, ink))
 
     def _on_ext_clicked(self, *args):
         # We never use Qt's native transient expansion: collapse whatever the

@@ -1,0 +1,75 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="-20.0000 -24.0500 51.3227 48.1000" width="51.3227mm" height="48.1000mm">
+  <metadata>{
+  "calibration": {
+    "px_per_mm": null
+  },
+  "mirror": {
+    "x": 0.0,
+    "enabled": false
+  },
+  "forming": {
+    "bridge_angle_deg": 0.0,
+    "apical_radius_mm": 0.0
+  },
+  "machined_bridge": {
+    "depth_mm": 4.0,
+    "width_mm": 5.0
+  },
+  "face_images": [],
+  "curves": [
+    {
+      "kind": "line",
+      "layer": "REF",
+      "closed": false,
+      "mirrored": false,
+      "line_weight": 1.5,
+      "nodes": [
+        {
+          "x": 3.77,
+          "y": 0.0
+        },
+        {
+          "x": 0.0,
+          "y": 0.0
+        }
+      ]
+    },
+    {
+      "kind": "spline",
+      "layer": "HINGE",
+      "closed": true,
+      "mirrored": false,
+      "line_weight": 1.5,
+      "nodes": [
+        {
+          "x": 10.11,
+          "y": 4.050000000000001,
+          "cp_in": {
+            "x": 11.322705204413335,
+            "y": 1.4861716585936318
+          }
+        },
+        {
+          "x": 3.77,
+          "y": 4.050000000000001
+        },
+        {
+          "x": 3.77,
+          "y": -4.050000000000001
+        },
+        {
+          "x": 10.11,
+          "y": -4.050000000000001,
+          "cp_out": {
+            "x": 11.322705204413335,
+            "y": -1.4861716585936264
+          }
+        }
+      ]
+    }
+  ]
+}</metadata>
+  <path d="M 3.7700,0.0000 L 0.0000,0.0000" data-layer="REF" data-kind="line" fill="none" stroke="#1f1f1f" stroke-width="1.5" />
+  <path d="M 10.1100,4.0500 C 10.1100,4.0500 3.7700,4.0500 3.7700,4.0500 C 3.7700,4.0500 3.7700,-4.0500 3.7700,-4.0500 C 3.7700,-4.0500 10.1100,-4.0500 10.1100,-4.0500 C 11.3227,-1.4862 11.3227,1.4862 10.1100,4.0500 Z" data-layer="HINGE" data-kind="spline" fill="none" stroke="#1f1f1f" stroke-width="1.5" />
+</svg>
