@@ -775,12 +775,20 @@ surface naturally. Run this LAST, so the release ships audited.
 
 ### RC3a release checklist
 
-- [x] M16–M22 landed (features + audit) — 215 tests green
-- [x] Version stamped `1.0.0-rc3a`; installer built (setup.exe + win64.zip +
-      portable.exe in `dist\`, built off-drive to dodge the G: cloud lock;
-      frozen exe smoke-tested). **User test-install pending.**
-- [ ] README/USER-GUIDE "New in RC3a" (snap palette, themes, vignette, grid, Ctrl+S)
-- [ ] Tag + GitHub pre-release (first community drop since rc2)
+- [x] M16–M22 landed (features + audit) — 220 tests green
+- [x] Test-install feedback fixed (2026-07-06, `86dd885`): themed ellipsis
+      overflow glyph (was white-on-pale in light mode), open-padlock unlock
+      icon, Preferences label wrapping, Point Move snap-indicator leak.
+- [x] Shipped defaults mirror the maintainer's install (prefs.DEFAULTS) +
+      starter hinge library (9 Zoye designs, seeded into an EMPTY user
+      library on first run only).
+- [x] README "New in rc3a" + USER-GUIDE (snap palette/grid/appearance,
+      Ctrl+S); version `1.0.0-rc3a`.
+- [x] Installer REBUILT with all of the above (setup.exe + win64.zip +
+      portable.exe in `dist\`; built off-drive to dodge the G: cloud lock;
+      frozen exe smoke-tested, hinge resources verified bundled).
+- [ ] Final user test-install → tag `v1.0.0-rc3a` + GitHub pre-release
+      (first community drop since rc2)
 
 ---
 
