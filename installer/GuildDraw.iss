@@ -14,7 +14,7 @@
 ; builds dist\GuildDraw first. Defaults below let the script be compiled by hand.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0-rc3a"
+  #define MyAppVersion "1.0.0-rc4"
 #endif
 #ifndef MyAppVersionNumeric
   #define MyAppVersionNumeric "1.0.0.0"
