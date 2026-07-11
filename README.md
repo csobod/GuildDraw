@@ -8,13 +8,13 @@ nothing else.
 Built with Python + PySide6 (Qt 6). Scene units are true millimetres (1 scene
 unit = 1 mm) end to end: what you draw is what gets cut.
 
-**Status: v1.0.0-rc3a — release candidate.** All drafting features are
-complete and tested (221-test suite). rc3a adds a per-type snap palette with
-intersection/tangent/perpendicular/grid snapping, a millimetre grid overlay,
-full appearance customization (canvas themes, per-layer colours, vignette),
-Ctrl+S, and a starter hinge library (see *New in rc3a* below). Final
-1.0 sign-off is gated on the GuildModel hardware round-trip (cutting a physical
-frame from exported DXF), which is pending GuildModel's redevelopment.
+**Status: v1.0.0-rc4 — release candidate.** All drafting features are
+complete and tested (258-test suite). rc4 is a field-fixes-and-polish round:
+three community-reported bugs, light-mode readability for every floating
+pop-up, a reworked dimension tool, a grid appearance panel, and a size-notation
+hotkey (see *New in rc4* below). Final 1.0 sign-off is gated on the GuildModel
+hardware round-trip (cutting a physical frame from exported DXF), which is
+pending GuildModel's redevelopment.
 
 ## Highlights
 
@@ -40,6 +40,33 @@ frame from exported DXF), which is pending GuildModel's redevelopment.
 - **Clean DXF out**: R2000 SPLINE entities (exact Bézier → B-spline, never
   flattened), strict layer vocabulary, per-workspace validation, and batch
   export of all four workspaces in one go.
+
+## New in rc4
+
+- **Field fixes** — wheel-zoom no longer resets the viewport while a tool is
+  active; the shipped hinge library now merges into an existing library
+  instead of only seeding an empty one; Offset on a closed shape is now
+  always outward on a positive distance and inward on negative, regardless of
+  how the curve was drawn.
+- **Light-mode pop-ups** — the Move, Point Move, and Radius/Diameter HUDs now
+  read correctly in light mode (they used to sit on the app's chrome colour
+  instead of their own background). The Radius/Diameter chip also moved from
+  a bar docked behind the scroll bar to a floating chip near the circle/arc
+  centre.
+- **Dimension tool** — the snap indicator now shows while picking the first
+  point, not just the second; dimension ends draw real arrowheads instead of
+  ticks; the length label rotates parallel to the line and floats clear of it.
+- **Grid appearance** — minor/major line colour and major line weight are now
+  set in *Preferences ▸ Appearance ▸ Grid*, alongside spacing; shipped default
+  is 2 mm spacing with a major line every 10 mm.
+- **"Dimmed" canvas preset** — a softer light-mode canvas option between
+  Parchment and the dark presets.
+- **□ hotkey** (`Ctrl+Shift+B`) — types the boxing square used in frame-size
+  notation (`49□27-145`) into bookmark names, the hinge/drill library dialogs,
+  and the engraving text dialog; Save As pre-fills an untitled project's
+  filename with the size string.
+- Renamed **GuildCAM → GuildModel** throughout, matching the downstream tool's
+  new name.
 
 ## New in rc3a
 

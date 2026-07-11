@@ -1,4 +1,4 @@
-# GuildDraw User Guide (v1.0.0-rc3a)
+# GuildDraw User Guide (v1.0.0-rc4)
 
 GuildDraw drafts eyewear in true millimetres. Everything you draw is at 1:1
 scale; the DXF you export is what the CNC cuts.
@@ -35,10 +35,10 @@ mirror axis is the vertical through x=0.
 | Spline | `S` | Centripetal Catmull-Rom through clicked points; smooth handles editable afterwards |
 | Circle | `C` | Click centre, click/type radius |
 | Arc | `A` | Centre, radius, start/end angles |
-| Dimension | `D` | Linear dimension between two snapped points; drag the label to offset it |
+| Dimension | `D` | Linear dimension between two snapped points; arrowed ends, drag the label to offset it |
 | Trim | `T` | Click the segment to remove between intersections |
 | Split | `X` | Split a curve at a clicked point |
-| Offset | `O` | Type a distance, amber preview, Enter confirms |
+| Offset | `O` | Type a distance, amber preview, Enter confirms. On a closed shape, positive is always outward and negative is always inward, whichever way the curve was drawn |
 | Point Move | `G` | Grab a point (snapped), click destination or type exact X/Y |
 | Move gizmo | `M` | Drag selection with exact-distance HUD |
 | Text | `I` | ENGRAVING text (temples only); double-click to re-edit |
@@ -88,9 +88,12 @@ targets; locked layers still snap (reference geometry).
 ### Grid
 
 The **Grid** toolbar button overlays a millimetre grid (minor lines with a
-heavier major line every Nth division). Spacing and divisions live in
-*Preferences ▸ Appearance ▸ Grid*; the Grid snap type in the palette snaps to
-its intersections. The grid is display-only — never exported.
+heavier major line every Nth division; shipped default is 2 mm spacing with a
+major line every 10 mm). Spacing, divisions, minor/major line colour, and
+major line weight all live in *Preferences ▸ Appearance ▸ Grid* — a "Theme
+default" button clears a colour override and follows the canvas theme again.
+The Grid snap type in the palette snaps to its intersections. The grid is
+display-only — never exported.
 
 ### Layers panel
 
@@ -205,11 +208,20 @@ What the validator enforces:
 - **Autosave** writes a recovery file every 3 minutes while there are unsaved
   changes; after a crash, the next launch offers to restore.
 - The hinge library lives in `~/.guilddraw/library/hinges/` — save a hinge
-  pocket once, import it into any project (it arrives as a group).
+  pocket once, import it into any project (it arrives as a group). New
+  shipped starter hinges merge into your library automatically; a hinge you
+  delete stays deleted.
+- **□ (boxing square)** — `Ctrl+Shift+B` types "□" into the focused field,
+  for frame-size notation like `49□27-145` (A□DBL-TempleLength) in bookmark
+  names, hinge/drill library saves, and engraving text. Reassignable in
+  *Settings ▸ Hotkeys*. Save As on an untitled project pre-fills the
+  filename with the current design's size string.
 - **Appearance** (*Settings ▸ Preferences ▸ Appearance*): dark mode, canvas
-  presets (Parchment / Blueprint / Matte Dark / Plain White / custom colour),
-  a vignette slider, node-dot size, compact toolbar, and grid spacing.
-  Per-layer drawing colours (light + dark) are on the **Layers** tab.
+  presets (Parchment / **Dimmed** / Blueprint / Matte Dark / Plain White /
+  custom colour), a vignette slider, node-dot size, compact toolbar, and grid
+  spacing/colours/weight. Dimmed is a light-mode canvas darker than Parchment
+  but still light enough for the standard line palette. Per-layer drawing
+  colours (light + dark) are on the **Layers** tab.
 - Preferences (theme, toolbar, hotkeys, guide defaults) are in
   `~/.guilddraw/prefs.json`.
 
