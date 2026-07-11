@@ -49,6 +49,21 @@ _TOKENS: dict[str, tuple[str, str]] = {
     "guide.pad":          ("#8e44ad", "#9b59b6"),
     "guide.dim":          ("#7a5c2e", "#7a5c2e"),
     "guide.dim_selected": ("#e67e22", "#e67e22"),
+    # ── Canvas HUD overlays (Move / Point Move / Measure bar) ────────────
+    # The dark chip is deliberate in BOTH modes — HUDs float over the canvas,
+    # not the chrome — but the colors route through tokens so makers can
+    # retheme them per mode. Child rules must always set an explicit
+    # background: the app-level QWidget rule otherwise paints opaque chrome
+    # boxes under HUD labels (unreadable in light mode).
+    "hud.bg":           ("#dc141414", "#dc141414"),
+    "hud.border":       ("#e67e22",   "#e67e22"),
+    "hud.ink":          ("#e0e0e0",   "#e0e0e0"),
+    "hud.muted":        ("#888888",   "#888888"),
+    "hud.field_bg":     ("#e62d2d2d", "#e62d2d2d"),
+    "hud.field_ink":    ("#f0f0f0",   "#f0f0f0"),
+    "hud.field_border": ("#606060",   "#606060"),
+    "hud.accent":       ("#ffd580",   "#ffd580"),
+    "hud.divider":      ("#28ffffff", "#28ffffff"),
     # ── Snap indicator colors (mode-independent today) ───────────────────
     "snap.endpoint":     ("#2e8b57", "#2e8b57"),
     "snap.node":         ("#2e8b57", "#2e8b57"),
@@ -178,6 +193,10 @@ _VIEWPORT_TOKENS = ("canvas.bg", "geometry.ink", "canvas.cross")
 VIEWPORT_PRESETS: dict[str, dict[str, str]] = {
     "parchment": {"canvas.bg": "#faf6ee", "geometry.ink": "#1f1f1f",
                   "canvas.cross": "#ccbbaa"},
+    # Dimmed: between Parchment and dark — easy on the eyes but still light
+    # enough that the standard light-mode line palette keeps its contrast.
+    "dimmed":    {"canvas.bg": "#d8d1c3", "geometry.ink": "#1f1f1f",
+                  "canvas.cross": "#aaa49a"},
     "blueprint": {"canvas.bg": "#16324f", "geometry.ink": "#dce8f2",
                   "canvas.cross": "#3a5a78"},
     "matte":     {"canvas.bg": "#1e1e1e", "geometry.ink": "#d4cfc0",
@@ -365,6 +384,29 @@ QTabBar::tab {
 QTabBar::tab:selected { background: %(bg)s; font-weight: bold; }
 QTabBar::tab:hover:!selected { background: %(hover)s; }
 """
+
+
+def build_hud_qss(container: str) -> str:
+    """Stylesheet for a floating canvas HUD (Move / Point Move / MeasureBar).
+
+    *container* is an objectName selector like ``#moveHud``. Every child rule
+    sets an explicit background — the application-level ``QWidget``
+    background-color otherwise paints opaque chrome boxes under the HUD's
+    labels, which made them unreadable in light mode. Callers re-apply this
+    each time the HUD is shown so theme changes/overrides take effect.
+    """
+    return (
+        f"{container} {{ background: {color('hud.bg')}; "
+        f"border: 1px solid {color('hud.border')}; border-radius: 4px; }}"
+        f"{container} QLabel {{ background: transparent; "
+        f"color: {color('hud.ink')}; }}"
+        f'{container} QLabel[hudRole="hint"] {{ color: {color("hud.muted")}; }}'
+        f"{container} QLineEdit {{ background: {color('hud.field_bg')}; "
+        f"color: {color('hud.field_ink')}; "
+        f"border: 1px solid {color('hud.field_border')}; "
+        f"border-radius: 3px; padding: 2px 5px; }}"
+        f"{container} QLineEdit:focus {{ border-color: {color('hud.accent')}; }}"
+    )
 
 
 def build_qss() -> str:

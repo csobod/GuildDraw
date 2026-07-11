@@ -17,14 +17,19 @@ measurement direction to extend/retract the extension lines.
 import math
 
 from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem
-from PySide6.QtCore import QRectF, QPointF, Qt
-from PySide6.QtGui import QPen, QColor, QPainter, QFont, QFontMetrics, QPainterPath, QPainterPathStroker
+from PySide6.QtCore import QRectF, QPointF, Qt, QTimer
+from PySide6.QtGui import (
+    QPen, QColor, QPainter, QFont, QFontMetrics, QPainterPath,
+    QPainterPathStroker, QPolygonF,
+)
 
 from ..document import DimLine
 
 _OVERSHOOT_MM = 1.5   # mm: extension line extends this far past the dim line
-_TICK_PX      = 8     # screen-pixel half-length of end ticks
+_ARROW_PX     = 10.0  # screen-pixel arrowhead length
+_ARROW_W_PX   = 3.5   # screen-pixel arrowhead half-width
 _LABEL_PX     = 11    # label font size (screen pixels)
+_LABEL_GAP_PX = 3     # screen pixels between the dim line and the label
 _ANCHOR_R_PX  = 2.5   # screen-pixel radius of anchor dots
 _HIT_TOL_MM   = 3.0   # mm: click-tolerance for contains()
 
@@ -65,6 +70,12 @@ class DimItem(QGraphicsItem):
         self._dragging    = False
         self._maybe_drag  = False
         self._press_screen = None
+        # Screen-sized decorations (label, arrows) live outside the scene-mm
+        # geometry, so boundingRect needs the current view scale to cover
+        # them. paint() caches it here and queues a geometry refresh when the
+        # zoom moves far enough that the old pad no longer covers the label.
+        self._br_scale   = 1.0
+        self._label_w_px = 90.0
 
     # ------------------------------------------------------------------
     # Geometry helpers
@@ -128,8 +139,14 @@ class DimItem(QGraphicsItem):
 
         xs  = [p[0] for p in pts]
         ys  = [p[1] for p in pts]
-        # Pad must cover the hit tolerance in ALL directions, including perpendicular
-        pad = max(6.0, _HIT_TOL_MM + 1.0)
+        # Pad must cover the hit tolerance in ALL directions, plus the
+        # screen-sized decorations (label half-width, arrowheads) converted
+        # to mm at the last painted scale.
+        deco_px = max(2.0 * _ARROW_PX,
+                      self._label_w_px / 2.0 + 8.0,
+                      _LABEL_GAP_PX + _LABEL_PX + 8.0)
+        pad = max(6.0, _HIT_TOL_MM + 1.0,
+                  deco_px / max(self._br_scale, 1e-6))
         return QRectF(min(xs) - pad, min(ys) - pad,
                       max(xs) - min(xs) + 2 * pad,
                       max(ys) - min(ys) + 2 * pad)
@@ -190,9 +207,7 @@ class DimItem(QGraphicsItem):
         # ── dimension line (A → B) ──
         painter.drawLine(A, B)
 
-        # ── tick marks at A and B ──
-        # Ticks are perpendicular to the dim line direction → along measurement axis
-        # Compute in screen space so they stay constant pixel size
+        # ── arrowheads at A and B (filled, constant screen size) ──
         t_painter = painter.transform()
         scale_x   = math.hypot(t_painter.m11(), t_painter.m21())
         scale_y   = math.hypot(t_painter.m12(), t_painter.m22())
@@ -201,19 +216,28 @@ class DimItem(QGraphicsItem):
         dx_m = self.dim.x1 - self.dim.x0
         dy_m = self.dim.y1 - self.dim.y0
         mlen  = math.hypot(dx_m, dy_m) or 1.0
-        tx_m  = dx_m / mlen   # unit along measurement (for ticks)
+        tx_m  = dx_m / mlen   # unit along measurement (A → B)
         ty_m  = dy_m / mlen
 
-        tick_mm = _TICK_PX / scale
+        arrow_mm = _ARROW_PX / scale
+        half_mm  = _ARROW_W_PX / scale
+        # Tips sit exactly on A/B, bodies inside; too tight for two heads →
+        # flip the bodies outside (classic CAD short-dimension form).
+        inward = 1.0 if mlen * scale >= 4.0 * _ARROW_PX else -1.0
 
-        def draw_tick(pt: QPointF):
-            painter.drawLine(
-                QPointF(pt.x() + tx_m * tick_mm, pt.y() + ty_m * tick_mm),
-                QPointF(pt.x() - tx_m * tick_mm, pt.y() - ty_m * tick_mm),
-            )
+        def draw_arrow(tip: QPointF, bdx: float, bdy: float):
+            bx = tip.x() + bdx * arrow_mm
+            by = tip.y() + bdy * arrow_mm
+            painter.setBrush(QColor(color))
+            painter.drawPolygon(QPolygonF([
+                tip,
+                QPointF(bx - bdy * half_mm, by + bdx * half_mm),
+                QPointF(bx + bdy * half_mm, by - bdx * half_mm),
+            ]))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
 
-        draw_tick(A)
-        draw_tick(B)
+        draw_arrow(A,  inward * tx_m,  inward * ty_m)
+        draw_arrow(B, -inward * tx_m, -inward * ty_m)
 
         # ── anchor dots (visible when offset is large enough) ──
         if abs(off) > 2.0:
@@ -223,36 +247,48 @@ class DimItem(QGraphicsItem):
                 painter.drawEllipse(pt, r_mm, r_mm)
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
-        # ── label (rendered at constant screen size) ──
-        dist_mm = math.hypot(self.dim.x1 - self.dim.x0,
-                             self.dim.y1 - self.dim.y0)
+        # ── label: parallel to the dim line, floating clear above it ──
+        dist_mm = math.hypot(dx_m, dy_m)
         label   = f"{dist_mm:.2f} mm"
-        mid_scene  = QPointF((A.x() + B.x()) / 2, (A.y() + B.y()) / 2)
-        mid_screen = t_painter.map(mid_scene)
-
-        # Perpendicular screen vector (for nudging label off the dim line)
-        sp_nx = nx * scale_x
-        sp_ny = ny * scale_y
-        sp_len = math.hypot(sp_nx, sp_ny) or 1.0
+        A_s = t_painter.map(A)
+        B_s = t_painter.map(B)
+        mid = QPointF((A_s.x() + B_s.x()) / 2, (A_s.y() + B_s.y()) / 2)
+        ang = math.degrees(math.atan2(B_s.y() - A_s.y(), B_s.x() - A_s.x()))
+        if ang > 90.0 or ang <= -90.0:
+            ang += 180.0   # keep the text upright
 
         painter.save()
         painter.resetTransform()
+        painter.translate(mid)
+        painter.rotate(ang)
 
         font = QFont("Segoe UI")   # no point size — pixel-sized below
         font.setPixelSize(_LABEL_PX)
         painter.setFont(font)
         painter.setPen(QPen(color))
 
-        fm     = QFontMetrics(font)
-        text_w = fm.horizontalAdvance(label)
-        text_h = fm.height()
-        nudge  = 4   # screen pixels above the dim line
-
-        lx = mid_screen.x() + (sp_nx / sp_len) * nudge - text_w / 2
-        ly = mid_screen.y() + (sp_ny / sp_len) * nudge - text_h / 4
-
-        painter.drawText(QPointF(lx, ly), label)
+        fm = QFontMetrics(font)
+        self._label_w_px = float(fm.horizontalAdvance(label))
+        # Baseline gap + descent above the line: the whole text box clears
+        # the dim line by _LABEL_GAP_PX at any angle and zoom.
+        painter.drawText(
+            QPointF(-self._label_w_px / 2.0,
+                    -(_LABEL_GAP_PX + fm.descent())), label)
         painter.restore()
+
+        # Screen-sized decorations moved relative to scene mm — refresh the
+        # cached scale (and the bounding rect derived from it) off-paint.
+        if abs(scale - self._br_scale) > 0.2 * self._br_scale:
+            self._br_scale = scale
+            QTimer.singleShot(0, self._sync_bounds)
+
+    def _sync_bounds(self):
+        # Queued from paint — the item (a non-QObject, so no parent-cancelled
+        # timers) may have been removed AND C++-deleted before this fires.
+        import shiboken6
+        if shiboken6.isValid(self) and self.scene() is not None:
+            self.prepareGeometryChange()
+            self.update()
 
     # ------------------------------------------------------------------
     # Drag interaction — updates dim.offset on mouse move

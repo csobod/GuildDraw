@@ -191,3 +191,22 @@ def test_offset_distance_roughly_constant(d):
     # node-to-node displacement should be |d| within a loose tolerance
     for a, b in zip(s.nodes, off.nodes, strict=True):
         assert abs(math.hypot(b.x - a.x, b.y - a.y) - abs(d)) < 0.5
+
+
+_DIAMOND      = [(0, -20), (20, 0), (0, 20), (-20, 0)]
+_DIAMOND_REV  = list(reversed(_DIAMOND))
+
+
+@pytest.mark.parametrize("pts", [_DIAMOND, _DIAMOND_REV])
+@pytest.mark.parametrize("kind", ["line", "spline"])
+def test_offset_closed_positive_is_outward_any_winding(pts, kind):
+    """GitHub issue #1 — +d must grow a closed shape whatever the winding
+    (the old left-normal rule sent +d inward on one of the two windings)."""
+    make = line if kind == "line" else spline
+    c = make(pts, closed=True)
+    outward = offset_curve(c, 2.8)
+    inward  = offset_curve(c, -2.8)
+    for src, out, inn in zip(c.nodes, outward.nodes, inward.nodes, strict=True):
+        r = math.hypot(src.x, src.y)
+        assert math.hypot(out.x, out.y) > r, "positive offset went inward"
+        assert math.hypot(inn.x, inn.y) < r, "negative offset went outward"

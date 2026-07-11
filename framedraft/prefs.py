@@ -84,10 +84,14 @@ DEFAULTS: dict = {
     "dot_radius_px": 4,
     # Compact toolbar: tight button padding + slightly smaller icons
     "compact_toolbar": False,
-    # Grid overlay (viewport aid; global across workspaces)
+    # Grid overlay (viewport aid; global across workspaces).
+    # Standard grid: 2 mm spacing, major line every 5th = every 10 mm.
     "grid_visible":     False,
     "grid_spacing_mm":  2.0,
     "grid_major":       5,       # every Nth line is a major (heavier) line
+    "grid_minor_color": "",      # "" = follow the theme (canvas.grid_minor)
+    "grid_major_color": "",      # "" = follow the theme (canvas.grid_major)
+    "grid_major_width_px": 1.0,  # major line weight (device px, cosmetic)
     # Snap palette: per-type toggles (keys from canvas.snapping.SNAP_TYPES;
     # absent keys default to enabled). This shipped set is the maintainer's
     # working palette: precise point targets on, the "grabby" ones (node,
@@ -127,6 +131,9 @@ DEFAULTS: dict = {
         "move_gizmo":   "M",
         "join":         "J",
         "bookmark":     "Ctrl+B",
+        # Types "□" into the focused text field — frame-size notation
+        # A□DBL-TempleLength in bookmark names, filenames, engravings.
+        "insert_square": "Ctrl+Shift+B",
     },
 }
 

@@ -175,7 +175,7 @@ class CircleTool(QObject):
             self._center = (pos.x(), pos.y())
             self._state  = 1
             if self._measure_bar:
-                self._measure_bar.show_radius()
+                self._measure_bar.show_radius(pos)   # chip pops by the centre
             if self._kind == "circle":
                 self.status_message.emit(
                     "Circle: click on the edge to set radius  |  type radius (mm) + Enter  |  Esc to cancel"

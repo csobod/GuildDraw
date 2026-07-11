@@ -10,7 +10,7 @@ class Layer(str, Enum):
     HINGE     = "HINGE"
     DRILL     = "DRILL"      # drill-mount holes (Frame Front; circles → DXF/OMA)
     REF       = "REF"
-    SCULPT    = "SCULPT"     # back-surface scallop lines (Frame Front → GuildCAM)
+    SCULPT    = "SCULPT"     # back-surface scallop lines (Frame Front → GuildModel)
     ENGRAVING = "ENGRAVING"  # engraving marks (Temple)
 
 
@@ -18,7 +18,7 @@ MACHINED_LAYERS = {Layer.OUTLINE, Layer.LENS, Layer.BRIDGE, Layer.HINGE, Layer.D
 ALL_LAYER_NAMES = {l.value for l in Layer}
 
 # Layers available per workspace (strict — layer combo filtered to these).
-# BRIDGE exists in the enum for future GuildCAM bridge-path tooling (deferred).
+# BRIDGE exists in the enum for future GuildModel bridge-path tooling (deferred).
 WORKSPACE_LAYERS: dict[str, list[Layer]] = {
     "front":    [Layer.OUTLINE, Layer.LENS, Layer.DRILL, Layer.SCULPT, Layer.HINGE, Layer.REF],
     "temple_r": [Layer.OUTLINE, Layer.ENGRAVING, Layer.SCULPT, Layer.HINGE, Layer.REF],

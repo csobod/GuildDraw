@@ -148,7 +148,37 @@ _HOTKEY_ACTION_DEFS = [
     ("move_gizmo",   "Move gizmo"),
     ("join",         "Join curves"),
     ("bookmark",     "Bookmark revision"),
+    ("insert_square", "Insert □ (size notation)"),
 ]
+
+# Hotkeys that INSERT INTO text fields. Unlike every other binding (which the
+# _hotkey_dispatch guard silences while a text widget has focus), these only
+# mean something while typing — they bypass the guard and use application
+# scope so they reach modal dialogs (bookmark names, library saves, the
+# engraving text dialog).
+_TEXT_FIELD_HOTKEYS = {"insert_square"}
+
+
+def _insert_text_into(widget, text: str) -> bool:
+    """Type *text* at the cursor of a Qt text-entry widget; False if *widget*
+    isn't one (the hotkey is then a silent no-op)."""
+    from PySide6.QtWidgets import QPlainTextEdit, QTextEdit
+    if isinstance(widget, QLineEdit):
+        widget.insert(text)
+        return True
+    if isinstance(widget, (QTextEdit, QPlainTextEdit)):
+        widget.insertPlainText(text)
+        return True
+    return False
+
+
+def _matches_key_event(seq, event) -> bool:
+    """True when a KeyPress *event* is exactly the bound sequence *seq*."""
+    from PySide6.QtGui import QKeySequence
+    if seq is None or seq.isEmpty():
+        return False
+    return (QKeySequence(event.keyCombination()).matches(seq)
+            == QKeySequence.SequenceMatch.ExactMatch)
 
 
 class CanvasView(QGraphicsView):
@@ -197,10 +227,14 @@ class CanvasView(QGraphicsView):
         # pixmap is cached per viewport size so painting is one blit.
         self._vignette: int = 0
         self._vignette_pm: QPixmap | None = None
-        # Grid overlay (drawn in drawBackground, scene coords). Off by default.
+        # Grid overlay (drawn in drawBackground, scene coords). Off by
+        # default; fallbacks mirror prefs.DEFAULTS (2 mm, major every 10 mm).
         self._grid_visible: bool  = False
-        self._grid_spacing: float = 5.0    # mm
+        self._grid_spacing: float = 2.0    # mm
         self._grid_major:   int   = 5      # every Nth line is heavier
+        self._grid_minor_color: str | None = None   # None = theme token
+        self._grid_major_color: str | None = None   # None = theme token
+        self._grid_major_width: float = 1.0          # device px, cosmetic
 
         self.measure_bar = MeasureBar(self)
         QTimer.singleShot(0, self._reposition_measure_bar)
@@ -210,13 +244,23 @@ class CanvasView(QGraphicsView):
     # ------------------------------------------------------------------
 
     def set_grid(self, visible: bool | None = None, spacing_mm: float | None = None,
-                 major: int | None = None):
+                 major: int | None = None, minor_color: str | None = None,
+                 major_color: str | None = None,
+                 major_width: float | None = None):
+        """Update grid config; color arguments use "" to fall back to the
+        theme tokens (None leaves the current value untouched)."""
         if visible is not None:
             self._grid_visible = bool(visible)
         if spacing_mm is not None and spacing_mm > 0:
             self._grid_spacing = float(spacing_mm)
         if major is not None and major >= 1:
             self._grid_major = int(major)
+        if minor_color is not None:
+            self._grid_minor_color = minor_color or None
+        if major_color is not None:
+            self._grid_major_color = major_color or None
+        if major_width is not None and major_width > 0:
+            self._grid_major_width = float(major_width)
         self.viewport().update()
 
     _GRID_MIN_PX = 4.0   # hide a line level once its screen spacing drops below this
@@ -233,9 +277,11 @@ class CanvasView(QGraphicsView):
         if not draw_major:
             return   # too far zoomed out — even major lines would be a smear
 
-        minor_pen = QPen(QColor(theme.color("canvas.grid_minor")), 0)
+        minor_col = self._grid_minor_color or theme.color("canvas.grid_minor")
+        major_col = self._grid_major_color or theme.color("canvas.grid_major")
+        minor_pen = QPen(QColor(minor_col), 0)
         minor_pen.setCosmetic(True)
-        major_pen = QPen(QColor(theme.color("canvas.grid_major")), 0)
+        major_pen = QPen(QColor(major_col), self._grid_major_width)
         major_pen.setCosmetic(True)
 
         i0 = math.floor(rect.left()   / sp)
@@ -351,13 +397,7 @@ class CanvasView(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
 
     def _reposition_measure_bar(self):
-        bar = self.measure_bar
-        bar.adjustSize()
-        w = self.width()
-        h = bar.sizeHint().height()
-        bar.setFixedWidth(max(w, 1))
-        bar.move(0, self.height() - h)
-        bar.raise_()
+        self.measure_bar.reposition()
 
     # ------------------------------------------------------------------
     # Events
@@ -409,12 +449,33 @@ class CanvasView(QGraphicsView):
             self.scale(f, f)
         self.zoom_changed.emit(round(self.transform().m11() * 100))
 
+    def fit_view(self, rect):
+        """fitInView, then re-clamp into the wheel-zoom bounds — a tiny (or
+        huge) scene rect must not land outside [_MIN_ZOOM, _MAX_ZOOM]."""
+        self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+        self.zoom_by(1.0)
+
     def wheelEvent(self, event):
-        # Ensure scroll room first so AnchorUnderMouse keeps the point under the
-        # cursor fixed instead of drifting when it would hit the old clamp.
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return   # horizontal wheel tilt — not a zoom request
+        # Ensure scroll room first so the anchor restore below has scrollbar
+        # range to work with instead of drifting when it hits the old clamp.
         self._ensure_scroll_room()
-        self.zoom_by(1.15 if event.angleDelta().y() > 0 else 1 / 1.15)
+        # Anchor manually. AnchorUnderMouse trusts QGraphicsView's internally
+        # tracked mouse position, which only updates in the base
+        # mouseMoveEvent — while a tool consumes moves that position goes
+        # stale and every wheel tick yanked the viewport toward it (issue #3).
+        vp_pos       = event.position()
+        anchor_scene = self.mapToScene(vp_pos.toPoint())
+        self.zoom_by(1.15 if delta > 0 else 1 / 1.15)
         self._ensure_scroll_room()
+        after = self.mapFromScene(anchor_scene)
+        self.horizontalScrollBar().setValue(
+            self.horizontalScrollBar().value() + round(after.x() - vp_pos.x()))
+        self.verticalScrollBar().setValue(
+            self.verticalScrollBar().value() + round(after.y() - vp_pos.y()))
+        event.accept()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -939,7 +1000,10 @@ class KeyCaptureEdit(QLineEdit):
             event.accept()
             return
         from PySide6.QtGui import QKeySequence
-        seq = QKeySequence(int(event.modifiers()) | key)
+        # keyCombination() carries modifiers+key as one value; int(modifiers())
+        # raised TypeError on current PySide6 (flags enum isn't int()-able),
+        # which broke hotkey recording with a console error per keypress.
+        seq = QKeySequence(event.keyCombination())
         self.setText(seq.toString())
         event.accept()
 
@@ -1135,6 +1199,7 @@ class SettingsDialog(QDialog):
         self._vp_choices = [
             ("auto",      "Follow UI theme"),
             ("parchment", "Parchment"),
+            ("dimmed",    "Dimmed"),
             ("blueprint", "Blueprint"),
             ("matte",     "Matte Dark"),
             ("white",     "Plain White"),
@@ -1194,7 +1259,7 @@ class SettingsDialog(QDialog):
         grid_box  = QGroupBox("Grid")
         grid_form = QFormLayout(grid_box)
         self._grid_spacing_spin = _spinbox(
-            0.5, 100.0, 0.5, float(prefs.get("grid_spacing_mm", 5.0)),
+            0.5, 100.0, 0.5, float(prefs.get("grid_spacing_mm", 2.0)),
             suffix=" mm", decimals=1)
         self._grid_spacing_spin.setToolTip(
             "Grid line spacing. Toggle the grid overlay with the Grid toolbar\n"
@@ -1205,8 +1270,39 @@ class SettingsDialog(QDialog):
         self._grid_major_spin.setRange(1, 20)
         self._grid_major_spin.setValue(int(prefs.get("grid_major", 5)))
         self._grid_major_spin.setToolTip(
-            "Every Nth line is drawn heavier (a major division).")
+            "Every Nth line is drawn heavier (a major division).\n"
+            "With 2 mm spacing the shipped default of 5 = a major every 10 mm.")
         grid_form.addRow("Major every:", self._grid_major_spin)
+
+        self._grid_width_spin = _spinbox(
+            0.5, 4.0, 0.5, float(prefs.get("grid_major_width_px", 1.0)),
+            suffix=" px", decimals=1)
+        self._grid_width_spin.setToolTip(
+            "Line weight of the major grid lines (screen pixels).")
+        grid_form.addRow("Major width:", self._grid_width_spin)
+
+        # Grid line colours: "" = follow the theme tokens. Swatch buttons
+        # mirror the Custom-canvas-colour pattern above.
+        self._grid_minor_color = str(prefs.get("grid_minor_color", "") or "")
+        self._grid_major_color = str(prefs.get("grid_major_color", "") or "")
+        self._grid_minor_btn = QPushButton("Minor colour…")
+        self._grid_minor_btn.clicked.connect(lambda: self._pick_grid_color("minor"))
+        self._grid_major_btn = QPushButton("Major colour…")
+        self._grid_major_btn.clicked.connect(lambda: self._pick_grid_color("major"))
+        grid_reset = QPushButton("Theme default")
+        grid_reset.setToolTip("Clear both grid colour overrides — the grid "
+                              "follows the theme again.")
+        grid_reset.clicked.connect(self._reset_grid_colors)
+        grid_colors_row = QWidget()
+        gc_lay = QHBoxLayout(grid_colors_row)
+        gc_lay.setContentsMargins(0, 0, 0, 0)
+        gc_lay.setSpacing(6)
+        gc_lay.addWidget(self._grid_minor_btn)
+        gc_lay.addWidget(self._grid_major_btn)
+        gc_lay.addWidget(grid_reset)
+        gc_lay.addStretch()
+        grid_form.addRow("Colours:", grid_colors_row)
+        self._update_grid_swatches()
         ap_lay.addWidget(grid_box)
 
         ap_lay.addStretch()
@@ -1347,7 +1443,9 @@ class SettingsDialog(QDialog):
             hk_form.addRow(label + ":", edit)
 
         self._conflict_label = QLabel()
-        self._conflict_label.setStyleSheet("color: #cc0000;")
+        # Dark red vanishes on the dark chrome — brighten it there.
+        self._conflict_label.setStyleSheet(
+            f"color: {'#ff6b6b' if theme.is_dark() else '#cc0000'};")
         self._conflict_label.hide()
         hk_lay.addWidget(self._conflict_label)
 
@@ -1433,6 +1531,32 @@ class SettingsDialog(QDialog):
         pm.fill(QColor(self._vp_custom_color))
         self._vp_color_btn.setIcon(QIcon(pm))
 
+    def _pick_grid_color(self, which: str):
+        current = (self._grid_minor_color if which == "minor"
+                   else self._grid_major_color)
+        fallback = theme.color(f"canvas.grid_{which}")
+        c = QColorDialog.getColor(QColor(current or fallback), self,
+                                  f"Grid {which} line colour")
+        if c.isValid():
+            if which == "minor":
+                self._grid_minor_color = c.name()
+            else:
+                self._grid_major_color = c.name()
+            self._update_grid_swatches()
+
+    def _reset_grid_colors(self):
+        self._grid_minor_color = ""
+        self._grid_major_color = ""
+        self._update_grid_swatches()
+
+    def _update_grid_swatches(self):
+        for value, which, btn in (
+                (self._grid_minor_color, "minor", self._grid_minor_btn),
+                (self._grid_major_color, "major", self._grid_major_btn)):
+            pm = QPixmap(16, 16)
+            pm.fill(QColor(value or theme.color(f"canvas.grid_{which}")))
+            btn.setIcon(QIcon(pm))
+
     # ------------------------------------------------------------------
 
     def _check_conflicts(self):
@@ -1442,7 +1566,9 @@ class SettingsDialog(QDialog):
         for edit in self._key_edits:
             txt = edit.text().strip()
             if txt and txt in conflict_keys:
-                edit.setStyleSheet("background: #ffcccc;")
+                # Explicit ink: the theme's light-on-dark text is unreadable
+                # on the pink highlight in dark mode.
+                edit.setStyleSheet("background: #ffcccc; color: #1f1f1f;")
             else:
                 edit.setStyleSheet("")
         has_conflict = bool(conflict_keys)
@@ -1475,6 +1601,9 @@ class SettingsDialog(QDialog):
             "compact_toolbar":      self._compact_check.isChecked(),
             "grid_spacing_mm":      self._grid_spacing_spin.value(),
             "grid_major":           self._grid_major_spin.value(),
+            "grid_minor_color":     self._grid_minor_color,
+            "grid_major_color":     self._grid_major_color,
+            "grid_major_width_px":  self._grid_width_spin.value(),
             "default_line_weight":  self._weight_spin.value(),
             "mirror_on_startup":    self._mirror_chk.isChecked(),
             "guides_on_startup":    self._guides_chk.isChecked(),
@@ -1710,7 +1839,7 @@ class MainWindow(QMainWindow):
         self._info_label = QLabel()
         self._info_label.setContentsMargins(0, 0, 8, 0)
         self._status.addPermanentWidget(self._info_label)
-        # "Ready for GuildCAM" readiness dot (mirrors GuildCAM's M5.2 traffic
+        # "Ready for GuildModel" readiness dot (mirrors GuildModel's M5.2 traffic
         # light): green when the active workspace meets the export contract,
         # amber when it doesn't, grey when there's nothing to hand off.
         self._readiness_dot = ReadinessDot()
@@ -1803,9 +1932,13 @@ class MainWindow(QMainWindow):
             "move_gizmo":   self._toggle_move_gizmo,
             "join":         self._act_join.trigger,
             "bookmark":     self._add_bookmark,
+            "insert_square": self._insert_square_char,
         }
         self._apply_toolbar_visibility(self._toolbar_prefs)
         self._apply_hotkeys(self._hotkey_prefs)
+        # The insert-□ binding is matched by eventFilter, which must see key
+        # presses in every window (modal dialogs included) — app-level filter.
+        QApplication.instance().installEventFilter(self)
 
         # Pinned toolbar overflow pop-out (durable, global) — restore + persist.
         self._toolbar.set_pinned(
@@ -2083,7 +2216,7 @@ class MainWindow(QMainWindow):
         self._act_offset.setToolTip(
             "Offset (O): select a curve, then type a distance (mm) and press Enter\n"
             "to create a parallel curve at that offset.\n"
-            "Positive = outward (left-hand normal); negative = inward.\n"
+            "Closed shapes: positive = outward, negative = inward.\n"
             "Esc to cancel."
         )
 
@@ -3172,7 +3305,7 @@ class MainWindow(QMainWindow):
         self._update_readiness()
 
     def _update_readiness(self):
-        """Recompute the 'Ready for GuildCAM' dot for the active workspace."""
+        """Recompute the 'Ready for GuildModel' dot for the active workspace."""
         dot = getattr(self, "_readiness_dot", None)
         if dot is None:
             return
@@ -3223,7 +3356,7 @@ class MainWindow(QMainWindow):
 
         # Fit the view the first time this workspace is shown
         if not ws.fitted:
-            self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            self.view.fit_view(self.scene.sceneRect())
             ws.fitted = True
             self._update_info_label()
 
@@ -4099,14 +4232,43 @@ class MainWindow(QMainWindow):
             sc.setEnabled(False)
             sc.deleteLater()
         self._shortcuts.clear()
+        self._square_seq = None
         for key, target in self._hotkey_targets.items():
             key_str = hotkey_prefs.get(key, "").strip()
-            if key_str:
-                sc = QShortcut(QKeySequence(key_str), self)
-                sc.setContext(Qt.ShortcutContext.WindowShortcut)
-                sc.activated.connect(
-                    lambda t=target: self._hotkey_dispatch(t))
-                self._shortcuts[key] = sc
+            if not key_str:
+                continue
+            if key in _TEXT_FIELD_HOTKEYS:
+                # NOT a QShortcut: application-context shortcuts go dead
+                # while a modal dialog blocks their parent window, and this
+                # binding is needed exactly there (bookmark names, library
+                # saves, the engraving text dialog). The QApplication event
+                # filter (eventFilter below) matches the sequence instead.
+                self._square_seq = QKeySequence(key_str)
+                continue
+            sc = QShortcut(QKeySequence(key_str), self)
+            sc.setContext(Qt.ShortcutContext.WindowShortcut)
+            sc.activated.connect(
+                lambda t=target: self._hotkey_dispatch(t))
+            self._shortcuts[key] = sc
+
+    def eventFilter(self, obj, event):
+        # App-wide □ insertion (see _apply_hotkeys for why no QShortcut).
+        from PySide6.QtCore import QEvent
+        if (event.type() == QEvent.Type.KeyPress
+                and _matches_key_event(self._square_seq, event)
+                and self._insert_square_char()):
+            return True
+        return super().eventFilter(obj, event)
+
+    def _insert_square_char(self) -> bool:
+        """Type "□" (U+25A1) into the focused text field — the boxing square
+        of frame-size notation A□DBL-TempleLength (e.g. 49□27-145).
+        Returns True when inserted (eventFilter consumes the key press)."""
+        fw = QApplication.focusWidget()
+        # The hotkey-recording field must SEE the combo, not get a □ typed.
+        if isinstance(fw, KeyCaptureEdit):
+            return False
+        return _insert_text_into(fw, "□")
 
     # ------------------------------------------------------------------
     # Toolbar icon refresh (called on build and on theme change)
@@ -4552,13 +4714,18 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _apply_grid_config(self, save: bool = False):
-        """Push grid visibility + spacing from prefs onto every view and every
-        snap engine (grid snap uses the same spacing as the overlay)."""
-        visible = bool(self._prefs.get("grid_visible", False))
-        spacing = float(self._prefs.get("grid_spacing_mm", 5.0))
-        major   = int(self._prefs.get("grid_major", 5))
+        """Push grid visibility + spacing + appearance from prefs onto every
+        view and every snap engine (grid snap uses the overlay spacing)."""
+        visible     = bool(self._prefs.get("grid_visible", False))
+        spacing     = float(self._prefs.get("grid_spacing_mm", 2.0))
+        major       = int(self._prefs.get("grid_major", 5))
+        minor_color = str(self._prefs.get("grid_minor_color", "") or "")
+        major_color = str(self._prefs.get("grid_major_color", "") or "")
+        major_width = float(self._prefs.get("grid_major_width_px", 1.0))
         for ws in self._workspaces:
-            ws.view.set_grid(visible=visible, spacing_mm=spacing, major=major)
+            ws.view.set_grid(visible=visible, spacing_mm=spacing, major=major,
+                             minor_color=minor_color, major_color=major_color,
+                             major_width=major_width)
             ws.snap.set_grid_spacing(spacing)
         if save:
             _prefs_mod.save(self._prefs)
@@ -6222,8 +6389,7 @@ class MainWindow(QMainWindow):
             self._face_list.addItem(item)
             self._face_list.setCurrentRow(idx)
             if idx == 0:
-                self.view.fitInView(self.scene.sceneRect(),
-                                    Qt.AspectRatioMode.KeepAspectRatio)
+                self.view.fit_view(self.scene.sceneRect())
             self._mark_dirty()
             self._status.showMessage(f"Loaded: {os.path.basename(path)}")
         else:
@@ -6348,7 +6514,7 @@ class MainWindow(QMainWindow):
         self._current_path = path
         self._clear_dirty()
         self._add_recent(path)
-        self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.view.fit_view(self.scene.sceneRect())
         bm = self._workspaces[0].bookmarks
         self._status.showMessage(
             f"Opened: {os.path.basename(path)}"
@@ -6370,7 +6536,7 @@ class MainWindow(QMainWindow):
         active = all_data.get("active_tab", "front")
         target_idx = tab_names.index(active) if active in tab_names else 0
         self._ws_tab_widget.setCurrentIndex(target_idx)
-        self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.view.fit_view(self.scene.sceneRect())
 
         errors = all_data.get("errors") or []
         if errors:
@@ -6509,13 +6675,64 @@ class MainWindow(QMainWindow):
             self._do_save(self._current_path)
 
     def _save_as(self):
+        # Untitled project: suggest the frame-size notation (49□27.gdraw) so
+        # the □ is in the filename without typing it — the native Windows
+        # dialog can't receive the insert-□ application shortcut.
+        start = getattr(self, "_current_path", "") or ""
+        if not start:
+            size = self._size_string()
+            if size:
+                start = f"{size}.gdraw"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save GuildDraw File", "",
+            self, "Save GuildDraw File", start,
             "GuildDraw Project (*.gdraw);;SVG Files (*.svg)"
         )
         if path:
             self._current_path = path
             self._do_save(path)
+
+    def _size_string(self) -> str | None:
+        """Frame-size notation ``A□DBL`` from the front workspace's finished
+        boxing dims, e.g. ``"49□27"``; None when no lens is drawn.
+
+        Same measurement basis as _refresh_measurements (sampled union_bbox,
+        finished A/DBL grown/narrowed by the bevel) — keep them in step."""
+        front = next((w for w in self._workspaces
+                      if w.workspace_type == "front"), None)
+        if front is None:
+            return None
+        from .boxing import finished_ab, finished_dbl, union_bbox
+        mirror_x = getattr(front.scene.mirror, "_x", 0.0) \
+            if front.scene.mirror else 0.0
+        os_c, od_c = [], []
+        for c in front.doc_curves:
+            if c.layer != Layer.LENS or not c.nodes:
+                continue
+            cx = sum(n.x for n in c.nodes) / len(c.nodes)
+            if cx > mirror_x:
+                os_c.append(c)
+            elif cx < mirror_x:
+                od_c.append(c)
+        os_lb = union_bbox(os_c) if os_c else None
+        od_lb = union_bbox(od_c) if od_c else None
+        lb = od_lb or os_lb
+        if lb is None:
+            return None
+        a = lb[2] - lb[0]
+        b = lb[3] - lb[1]
+        if os_lb and od_lb:
+            dbl = os_lb[0] - od_lb[2]
+        elif os_lb:
+            dbl = 2.0 * (os_lb[0] - mirror_x)
+        else:
+            dbl = 2.0 * (mirror_x - od_lb[2])
+        bevel_d = max(0.0, front.bevel_depth)
+        if bevel_d > 0:
+            a, _b = finished_ab(a, b, bevel_d)
+            dbl   = finished_dbl(dbl, bevel_d)
+        if dbl <= 0:
+            return None
+        return f"{a:.0f}□{dbl:.0f}"
 
     def _do_save(self, path: str):
         """Atomic save: write a temp file, keep the previous version as .bak,
@@ -6625,21 +6842,21 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _readiness_note(self) -> str:
-        """One-line GuildCAM-readiness summary for the active workspace, used
+        """One-line GuildModel-readiness summary for the active workspace, used
         as the status-bar marker after a (never-blocked) DXF export."""
         from .export.validate import validate
         errors, warnings = validate(self._doc_curves, self._act_mirror.isChecked(),
                                     self._active_ws.workspace_type)
         if errors:
-            return f"not yet GuildCAM-ready ({errors[0]})"
+            return f"not yet GuildModel-ready ({errors[0]})"
         if warnings:
-            return f"ready for GuildCAM (with warnings: {warnings[0]})"
-        return "ready for GuildCAM"
+            return f"ready for GuildModel (with warnings: {warnings[0]})"
+        return "ready for GuildModel"
 
     def _export_dxf(self):
         # DXF export is never blocked on the contract: the maker may want a
-        # partial frame, or an unusual multi-lens shape GuildCAM will finish.
-        # The readiness dot and the status note below report GuildCAM-readiness.
+        # partial frame, or an unusual multi-lens shape GuildModel will finish.
+        # The readiness dot and the status note below report GuildModel-readiness.
         path, _ = QFileDialog.getSaveFileName(
             self, "Export DXF", "", "DXF Files (*.dxf)"
         )
@@ -6671,7 +6888,7 @@ class MainWindow(QMainWindow):
         """File > Export > Export All DXF… — one DXF per populated workspace
         (<base>_front.dxf, _temple_r, _temple_l, _hinge). Export is never
         blocked; the per-workspace validator only annotates which files aren't
-        GuildCAM-ready yet (reported after the write)."""
+        GuildModel-ready yet (reported after the write)."""
         from .export.batch import (
             BatchWorkspace, base_from_path, check_batch, write_batch,
         )
@@ -6703,7 +6920,7 @@ class MainWindow(QMainWindow):
         ws_titles = {"front": "Frame Front", "temple_r": "Temple R",
                      "temple_l": "Temple L",  "hinge": "Hinge Pocket"}
         # Validation never blocks the batch export — it only annotates which
-        # workspaces aren't GuildCAM-ready yet (reported after the write).
+        # workspaces aren't GuildModel-ready yet (reported after the write).
         report = check_batch(items)
 
         suggested = ""
@@ -6727,7 +6944,7 @@ class MainWindow(QMainWindow):
                 ws_titles[t] for t in report.skipped)
         not_ready = [t for t in ws_titles if t in report.errors]
         if not_ready:
-            msg += " — not yet GuildCAM-ready: " + ", ".join(
+            msg += " — not yet GuildModel-ready: " + ", ".join(
                 ws_titles[t] for t in not_ready)
         self._status.showMessage(msg)
         # The file-name preview in the dialog can't show the suffixing, so
@@ -6737,7 +6954,7 @@ class MainWindow(QMainWindow):
             info += "\n\nSkipped (empty): " + ", ".join(
                 ws_titles[t] for t in report.skipped)
         if not_ready:
-            info += "\n\nNot yet GuildCAM-ready (exported anyway):"
+            info += "\n\nNot yet GuildModel-ready (exported anyway):"
             for tab in not_ready:
                 info += f"\n• {ws_titles[tab]}: {report.errors[tab][0]}"
         QMessageBox.information(self, "Export All DXF", info)
@@ -7152,7 +7369,7 @@ class MainWindow(QMainWindow):
         content = self.scene.geometry_rect()
         if not content.isNull():
             rect = rect.united(content)
-        self.view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+        self.view.fit_view(rect)
         self._update_info_label()
 
 

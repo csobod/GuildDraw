@@ -1,14 +1,14 @@
-"""Readiness traffic-light dot — GuildDraw's upstream mirror of GuildCAM's M5.2.
+"""Readiness traffic-light dot — GuildDraw's upstream mirror of GuildModel's M5.2.
 
 A small painted circle docked in the status-bar corner that tells the maker at
-a glance whether the *current workspace* satisfies the GuildCAM export contract
+a glance whether the *current workspace* satisfies the GuildModel export contract
 before they hand off a DXF. Dot only — the gap (if any) lives in the tooltip:
 
     grey/off  nothing to hand off yet (no machined geometry)
     amber     machined geometry present but the handoff contract isn't met
-    green     ready for GuildCAM (validator passes)
+    green     ready for GuildModel (validator passes)
 
-GuildCAM answers "is this job ready to cut?"; GuildDraw answers "is this design
+GuildModel answers "is this job ready to cut?"; GuildDraw answers "is this design
 ready to send?". The state is computed from the same validator the export path
 already uses (``framedraft.export.validate.validate``), so the dot never drifts
 from what export will actually allow. The indicator is non-blocking: export
@@ -56,10 +56,10 @@ def readiness_state(curves: list, mirror_on: bool,
 
     errors, warnings = validate(curves, mirror_on, workspace_type)
     if errors:
-        return AMBER, "Not ready for GuildCAM — " + errors[0]
+        return AMBER, "Not ready for GuildModel — " + errors[0]
     if warnings:
-        return GREEN, "Ready for GuildCAM (with warnings — " + warnings[0] + ")"
-    return GREEN, "Ready for GuildCAM"
+        return GREEN, "Ready for GuildModel (with warnings — " + warnings[0] + ")"
+    return GREEN, "Ready for GuildModel"
 
 
 class ReadinessDot(QWidget):

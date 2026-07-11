@@ -14,10 +14,10 @@ layers, guides, and undo history:
 | **Temple R / L** | Each temple arm | `OUTLINE` ×1, optional `HINGE`, `ENGRAVING` |
 | **Hinge Pocket** | Hinge recess geometry | `HINGE` ≥1 |
 
-At least one `LENS` contour is required for a GuildCAM-ready front (a classic
+At least one `LENS` contour is required for a GuildModel-ready front (a classic
 pair is two; aviators and other shapes may carry more). The validator checks
 these rules per workspace and drives the readiness dot, but it no longer blocks
-export — you decide when the geometry is complete and GuildCAM's intake is the
+export — you decide when the geometry is complete and GuildModel's intake is the
 final gate.
 
 **Mirror Copy** (toolbar, temple workspaces) copies Temple R to Temple L (or
@@ -176,7 +176,7 @@ For rimless / drill-mount lenses (flat, no bevel), use the **DRILL** layer:
   isn't exactly 50 mm, your printer driver scaled the page (disable
   "fit to page").
 
-## 6. Exporting for GuildCAM
+## 6. Exporting for GuildModel
 
 1. Make sure each populated workspace passes validation (export runs it
    automatically and explains any failure).
@@ -185,9 +185,9 @@ For rimless / drill-mount lenses (flat, no bevel), use the **DRILL** layer:
    `<name>_front.dxf`, `<name>_temple_r.dxf`, `<name>_temple_l.dxf`,
    `<name>_hinge.dxf`. Nothing is written unless all populated workspaces
    validate.
-3. Hand the DXFs to GuildCAM. The files are R2000 with SPLINE entities at
+3. Hand the DXFs to GuildModel. The files are R2000 with SPLINE entities at
    true mm; closed contours have endpoints within 0.1 mm; `REF` is ignored
-   by GuildCAM; ENGRAVING text is already converted to outline splines.
+   by GuildModel; ENGRAVING text is already converted to outline splines.
 
 What the validator enforces:
 

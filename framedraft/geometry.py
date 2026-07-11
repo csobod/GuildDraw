@@ -707,11 +707,24 @@ def split_curve_at_t(curve: Curve,
 # Offset
 # ---------------------------------------------------------------------------
 
+def _abs_polygon_area(nodes) -> float:
+    """|shoelace area| of the node polygon — winding-independent size proxy
+    used to normalize offset direction on closed curves."""
+    n = len(nodes)
+    s = 0.0
+    for i in range(n):
+        a, b = nodes[i], nodes[(i + 1) % n]
+        s += a.x * b.y - b.x * a.y
+    return abs(s) / 2.0
+
+
 def offset_curve(curve: Curve, d_mm: float) -> Curve:
     """Create a new curve parallel to *curve* at *d_mm* offset.
 
-    Positive d = left-hand normal (outward for CCW shapes).
-    Negative d = right-hand normal (inward).
+    Closed curves: positive d always grows the shape (outward), negative
+    shrinks it — independent of node winding (GitHub issue #1: the old
+    left-normal rule sent +d inward on screen-clockwise shapes).
+    Open curves: positive d = left-hand normal of the node order.
     Result has the same kind, layer, and node count as the input.
     Circles and arcs are offset analytically (radius ± d).
     """
@@ -745,8 +758,8 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
             return (0.0, 0.0)
         return (-dy / L, dx / L)
 
-    if curve.kind == "line":
-        new_nodes: List[SplineNode] = []
+    def _line_nodes(d: float) -> List[SplineNode]:
+        out: List[SplineNode] = []
         for i in range(n):
             nd = nodes[i]
             if closed:
@@ -763,45 +776,56 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
             mx, my = n1[0] + n2[0], n1[1] + n2[1]
             dot = n1[0] * mx + n1[1] * my  # n1 · (n1+n2); denominator for miter
             if abs(dot) < 0.05:            # near-antiparallel (tight U-turn) → bevel
-                ox = nd.x + n1[0] * d_mm
-                oy = nd.y + n1[1] * d_mm
+                ox = nd.x + n1[0] * d
+                oy = nd.y + n1[1] * d
             else:
-                s = d_mm / dot
+                s = d / dot
                 ox = nd.x + mx * s
                 oy = nd.y + my * s
-            new_nodes.append(SplineNode(x=ox, y=oy))
+            out.append(SplineNode(x=ox, y=oy))
+        return out
+
+    def _spline_nodes(d: float) -> List[SplineNode]:
+        out: List[SplineNode] = []
+        for i in range(n):
+            nd = nodes[i]
+            if closed:
+                prev = nodes[(i - 1) % n]
+                nxt  = nodes[(i + 1) % n]
+            else:
+                prev = nodes[max(0, i - 1)]
+                nxt  = nodes[min(n - 1, i + 1)]
+            n1 = _seg_normal(prev.x, prev.y, nd.x, nd.y)
+            n2 = _seg_normal(nd.x, nd.y, nxt.x, nxt.y)
+            if i == 0 and not closed:
+                nx, ny = n2
+            elif i == n - 1 and not closed:
+                nx, ny = n1
+            else:
+                nx = n1[0] + n2[0]
+                ny = n1[1] + n2[1]
+                L = math.hypot(nx, ny)
+                if L < 1e-9:
+                    nx, ny = n1
+                else:
+                    nx /= L
+                    ny /= L
+            out.append(SplineNode(x=nd.x + nx * d, y=nd.y + ny * d))
+        return out
+
+    build = _line_nodes if curve.kind == "line" else _spline_nodes
+    new_nodes = build(d_mm)
+    if closed and n >= 3:
+        # Normalize direction: +d must grow the shape whatever the winding.
+        grew = _abs_polygon_area(new_nodes) > _abs_polygon_area(nodes)
+        if grew != (d_mm > 0):
+            new_nodes = build(-d_mm)
+
+    if curve.kind == "line":
         return Curve(kind="line", layer=curve.layer, nodes=new_nodes,
                      closed=closed, line_weight=curve.line_weight)
 
-    # spline: offset nodes along averaged normal, recompute Catmull-Rom handles
-    new_nodes = []
-    for i in range(n):
-        nd = nodes[i]
-        if closed:
-            prev = nodes[(i - 1) % n]
-            nxt  = nodes[(i + 1) % n]
-        else:
-            prev = nodes[max(0, i - 1)]
-            nxt  = nodes[min(n - 1, i + 1)]
-        n1 = _seg_normal(prev.x, prev.y, nd.x, nd.y)
-        n2 = _seg_normal(nd.x, nd.y, nxt.x, nxt.y)
-        if i == 0 and not closed:
-            nx, ny = n2
-        elif i == n - 1 and not closed:
-            nx, ny = n1
-        else:
-            nx = n1[0] + n2[0]
-            ny = n1[1] + n2[1]
-            L = math.hypot(nx, ny)
-            if L < 1e-9:
-                nx, ny = n1
-            else:
-                nx /= L
-                ny /= L
-        new_nodes.append(SplineNode(x=nd.x + nx * d_mm, y=nd.y + ny * d_mm))
-
     compute_catmull_handles(new_nodes, closed)
-
     return Curve(kind="spline", layer=curve.layer, nodes=new_nodes,
                  closed=closed, line_weight=curve.line_weight)
 

@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QLabel, QLineEdit,
 )
 
+from .. import theme
+
 _ARROW_LEN  = 30   # px, shaft from gap-start to tip
 _ARROW_GAP  = 8    # px, gap from center to shaft start
 _ARROW_HEAD = 8    # px, arrowhead length
@@ -137,15 +139,6 @@ class _ArrowItem(QGraphicsPathItem):
 class _MoveHud(QWidget):
     """Distance-entry overlay parented to CanvasView, shown on arrow click."""
 
-    _STYLE = (
-        "_MoveHud { background: rgba(20,20,20,220); border: 1px solid #e67e22; "
-        "border-radius: 4px; }"
-        "QLabel { color: #e0e0e0; }"
-        "QLineEdit { background: rgba(45,45,45,230); color: #f0f0f0; "
-        "border: 1px solid #606060; border-radius: 3px; padding: 2px 5px; }"
-        "QLineEdit:focus { border-color: #ffd580; color: #ffffff; }"
-    )
-
     def __init__(self, view):
         super().__init__(view)
         self._view     = view
@@ -154,7 +147,8 @@ class _MoveHud(QWidget):
         self._on_commit = None
         self._on_cancel = None
 
-        self.setStyleSheet(self._STYLE)
+        self.setObjectName("moveHud")
+        self.setStyleSheet(theme.build_hud_qss("#moveHud"))
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         layout = QHBoxLayout(self)
@@ -170,7 +164,7 @@ class _MoveHud(QWidget):
         self._edit.setPlaceholderText("mm")
         hint = QLabel("mm  ↵ confirm  Esc cancel")
         hint.setFont(QFont("Segoe UI", 9))
-        hint.setStyleSheet("color: #888888;")
+        hint.setProperty("hudRole", "hint")
         layout.addWidget(self._label)
         layout.addWidget(self._edit)
         layout.addWidget(hint)
@@ -180,6 +174,7 @@ class _MoveHud(QWidget):
 
     def show_for(self, dx_dir: int, dy_dir: int, vp_x: int, vp_y: int,
                  on_commit, on_cancel):
+        self.setStyleSheet(theme.build_hud_qss("#moveHud"))
         self._dx_dir    = dx_dir
         self._dy_dir    = dy_dir
         self._on_commit = on_commit
@@ -191,7 +186,7 @@ class _MoveHud(QWidget):
         pr = self._view.rect()
         x  = min(vp_x + 14, pr.width()  - self.width()  - 4)
         y  = max(4, vp_y - self.height() - 10)
-        self.move(x, y)
+        self.move(max(0, x), y)
         self.show()
         self.raise_()
         self._edit.setFocus()

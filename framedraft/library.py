@@ -7,9 +7,12 @@ Storage layout:
 Each entry is a standard GuildDraw SVG saved with save_svg (hinge pocket
 workspace format).  The filename stem (minus .svg) is the display name.
 
-A starter set ships in ``framedraft/resources/library/hinges`` and is copied
-into the user library the first time it is created (only when empty — a maker
-who deletes a shipped hinge must not have it resurrected on every launch).
+A starter set ships in ``framedraft/resources/library/hinges``. A manifest
+(``~/.guilddraw/library/seeded.json``) records every shipped filename ever
+offered, so new shipped hinges reach existing libraries on upgrade while a
+maker who deletes a shipped hinge never has it resurrected (GitHub issue #2 —
+the old rule "seed only an empty library" meant upgraders with their own
+hinges never received the starter set at all).
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ import shutil
 _HINGES_DIR = pathlib.Path.home() / ".guilddraw" / "library" / "hinges"
 _DRILLS_DIR = pathlib.Path.home() / ".guilddraw" / "library" / "drills"
 _SHIPPED_HINGES = pathlib.Path(__file__).parent / "resources" / "library" / "hinges"
+_SEED_MANIFEST  = pathlib.Path.home() / ".guilddraw" / "library" / "seeded.json"
 
 
 def _safe_filename(name: str) -> str:
@@ -40,15 +44,38 @@ class HingeLibrary:
 
     @staticmethod
     def _seed_shipped() -> None:
-        """First run only: copy the shipped starter hinges into an EMPTY user
-        library. Never touches a library that already has entries."""
+        """Copy shipped starter hinges the user has never been offered.
+
+        The manifest lists every shipped filename ever seeded; entries on it
+        are never copied again, so deletions stick. A shipped name that
+        collides with a user's own file is skipped but still recorded."""
         try:
-            if any(_HINGES_DIR.glob("*.svg")):
-                return
             if not _SHIPPED_HINGES.is_dir():
                 return
-            for src in sorted(_SHIPPED_HINGES.glob("*.svg")):
-                shutil.copyfile(src, _HINGES_DIR / src.name)
+            shipped = sorted(p.name for p in _SHIPPED_HINGES.glob("*.svg"))
+            if not shipped:
+                return
+            try:
+                seeded = set(json.loads(
+                    _SEED_MANIFEST.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                # No manifest yet. RC3a seeded the full set into an EMPTY
+                # library — if any shipped name is already present, assume
+                # that happened and mark the whole set as offered so hinges
+                # the maker deleted since are not resurrected.
+                if any((_HINGES_DIR / name).exists() for name in shipped):
+                    seeded = set(shipped)
+                else:
+                    seeded = set()
+            new = [n for n in shipped if n not in seeded]
+            for name in new:
+                dest = _HINGES_DIR / name
+                if not dest.exists():   # collision with a user file → skip
+                    shutil.copyfile(_SHIPPED_HINGES / name, dest)
+                seeded.add(name)
+            if new or not _SEED_MANIFEST.exists():
+                _SEED_MANIFEST.write_text(
+                    json.dumps(sorted(seeded), indent=2), encoding="utf-8")
         except OSError:
             pass   # seeding is best-effort; an empty library still works
 

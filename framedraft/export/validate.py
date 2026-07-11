@@ -1,5 +1,5 @@
 """
-Pre-export validator — mirrors GuildCAM's strict intake rules so the maker
+Pre-export validator — mirrors GuildModel's strict intake rules so the maker
 catches problems in-app rather than at DXF import time.
 
 Scene units are mm (1 scene unit = 1 mm), so all coordinates are used
@@ -9,7 +9,7 @@ import math
 from ..document import Curve, Layer, MACHINED_LAYERS
 
 
-_CLOSURE_TOL_MM = 0.1   # GuildCAM auto-closes within 0.1 mm
+_CLOSURE_TOL_MM = 0.1   # GuildModel auto-closes within 0.1 mm
 
 
 def _endpoint_gap_mm(curve: Curve) -> float:
@@ -25,9 +25,9 @@ def validate(
     mirror_on: bool,
     workspace_type: str = "front",
 ) -> tuple[list[str], list[str]]:
-    """Return (errors, warnings).  Errors mean "not GuildCAM-ready" and drive
+    """Return (errors, warnings).  Errors mean "not GuildModel-ready" and drive
     the readiness dot, but they no longer block DXF export — the maker decides
-    when geometry is complete and GuildCAM's intake is the final gate.
+    when geometry is complete and GuildModel's intake is the final gate.
 
     Layer-count rules depend on the workspace:
       front    — OUTLINE ×1, LENS ≥1 (any count: aviators with a bridge opening
@@ -90,7 +90,7 @@ def validate(
             else:
                 warnings.append(
                     f"{c.layer.value} contour marked open but endpoints are "
-                    f"within {_CLOSURE_TOL_MM} mm — GuildCAM will auto-close."
+                    f"within {_CLOSURE_TOL_MM} mm — GuildModel will auto-close."
                 )
 
     return errors, warnings

@@ -16,6 +16,8 @@ from PySide6.QtCore import QObject, Signal, QPointF, Qt
 from PySide6.QtGui  import QPen, QColor, QFont, QBrush
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QLineEdit
 
+from .. import theme
+
 
 _AMBER = "#ffd580"
 
@@ -23,22 +25,14 @@ _AMBER = "#ffd580"
 class _PointMoveHud(QWidget):
     """Floating overlay shown in PICK_TO stage with X/Y destination fields."""
 
-    _STYLE = (
-        "_PointMoveHud { background: rgba(20,20,20,220); border: 1px solid #e67e22; "
-        "border-radius: 4px; }"
-        "QLabel { color: #e0e0e0; }"
-        "QLineEdit { background: rgba(45,45,45,230); color: #f0f0f0; "
-        "border: 1px solid #606060; border-radius: 3px; padding: 2px 5px; }"
-        "QLineEdit:focus { border-color: #ffd580; color: #ffffff; }"
-    )
-
     def __init__(self, view):
         super().__init__(view)
         self._view      = view
         self._on_commit = None
         self._on_cancel = None
 
-        self.setStyleSheet(self._STYLE)
+        self.setObjectName("pointMoveHud")
+        self.setStyleSheet(theme.build_hud_qss("#pointMoveHud"))
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         lay = QHBoxLayout(self)
@@ -62,7 +56,7 @@ class _PointMoveHud(QWidget):
         lay.addWidget(self._y)
         hint = QLabel("↵ confirm  Tab switch  Esc cancel")
         hint.setFont(QFont("Segoe UI", 9))
-        hint.setStyleSheet("color: #888888;")
+        hint.setProperty("hudRole", "hint")
         lay.addWidget(hint)
 
         self._x.returnPressed.connect(self._commit)
@@ -71,6 +65,7 @@ class _PointMoveHud(QWidget):
 
     def show_for(self, vp_x: int, vp_y: int, from_x: float, from_y: float,
                  on_commit, on_cancel) -> None:
+        self.setStyleSheet(theme.build_hud_qss("#pointMoveHud"))
         self._on_commit = on_commit
         self._on_cancel = on_cancel
         self._x.setText(f"{from_x:.3f}")
@@ -79,7 +74,7 @@ class _PointMoveHud(QWidget):
         pr = self._view.rect()
         x  = min(vp_x + 14, pr.width()  - self.width()  - 4)
         y  = max(4, vp_y - self.height() - 10)
-        self.move(x, y)
+        self.move(max(0, x), y)
         self.show()
         self.raise_()
         self._x.setFocus()

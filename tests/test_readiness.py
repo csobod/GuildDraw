@@ -1,4 +1,4 @@
-"""Tests for the 'Ready for GuildCAM' readiness state machine (Qt-free)."""
+"""Tests for the 'Ready for GuildModel' readiness state machine (Qt-free)."""
 from framedraft.canvas.readiness_dot import readiness_state, OFF, AMBER, GREEN
 from framedraft.document import Layer
 
@@ -29,7 +29,7 @@ def test_amber_when_incomplete_front():
     state, tip = readiness_state([outline], mirror_on=False,
                                  workspace_type="front")
     assert state == AMBER
-    assert "Not ready for GuildCAM" in tip
+    assert "Not ready for GuildModel" in tip
     assert "LENS" in tip   # the named gap
 
 
@@ -40,7 +40,7 @@ def test_green_front_with_mirror_doubling():
     state, tip = readiness_state([outline, lens], mirror_on=True,
                                  workspace_type="front")
     assert state == GREEN
-    assert "Ready for GuildCAM" in tip
+    assert "Ready for GuildModel" in tip
 
 
 def test_green_hinge():

@@ -2,7 +2,7 @@
 
 A focused, open-source 2D drafting application for acetate / horn eyewear
 design. Draw a frame front, temples, and hinge pockets; verify them against a
-calibrated face photo; export clean DXF for CNC machining (GuildCAM) — and
+calibrated face photo; export clean DXF for CNC machining (GuildModel) — and
 nothing else.
 
 Built with Python + PySide6 (Qt 6). Scene units are true millimetres (1 scene
@@ -13,8 +13,8 @@ complete and tested (221-test suite). rc3a adds a per-type snap palette with
 intersection/tangent/perpendicular/grid snapping, a millimetre grid overlay,
 full appearance customization (canvas themes, per-layer colours, vignette),
 Ctrl+S, and a starter hinge library (see *New in rc3a* below). Final
-1.0 sign-off is gated on the GuildCAM hardware round-trip (cutting a physical
-frame from exported DXF), which is pending GuildCAM's redevelopment.
+1.0 sign-off is gated on the GuildModel hardware round-trip (cutting a physical
+frame from exported DXF), which is pending GuildModel's redevelopment.
 
 ## Highlights
 
@@ -173,10 +173,10 @@ against the host's system libraries.
 ## Documentation
 
 - **[User guide](docs/USER-GUIDE.md)** — tool reference, hotkeys, workflows,
-  GuildCAM handoff.
+  GuildModel handoff.
 - **[BUILDPLAN.md](BUILDPLAN.md)** — roadmap and engineering history.
 
-## DXF export contract (GuildCAM)
+## DXF export contract (GuildModel)
 
 - DXF R2000 (AC1015), SPLINE entities — exact cubic Bézier → B-spline.
 - Units: true mm at 1:1 (`$INSUNITS = 4` by convention).

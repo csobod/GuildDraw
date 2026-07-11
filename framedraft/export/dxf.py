@@ -4,9 +4,9 @@ DXF R2000 export using ezdxf.
 Scene units are mm (1 scene unit = 1 mm), so coordinates are written
 directly into the DXF with no unit conversion.
 
-Contract (confirmed against GuildCAM Session 5):
+Contract (confirmed against GuildModel Session 5):
   - R2000 (AC1015) with SPLINE entities (exact cubic Bézier → cubic B-spline).
-  - $INSUNITS = 4 (mm) as a convention signal; GuildCAM ignores it.
+  - $INSUNITS = 4 (mm) as a convention signal; GuildModel ignores it.
   - One closed entity per outline; endpoints within 0.1 mm for closure.
   - Strict layer vocabulary: OUTLINE (×1), LENS (>=1), BRIDGE, HINGE, REF.
   - Do NOT flatten splines to polylines.

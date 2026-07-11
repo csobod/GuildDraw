@@ -83,11 +83,15 @@ class DimTool(QObject):
         return True
 
     def handle_move(self, pos: QPointF, use_snap: bool = True):
-        if not self.active or self._pt_a is None:
+        if not self.active:
             return
         if self._snap:
+            # Query even while hovering for the FIRST point so the snap
+            # indicator shows before point A is placed — it used to appear
+            # only for the second click (RC4 M26.1).
             pos = self._snap.snap(pos, [], self._view, use_snap)
-        self._repaint_rubber(pos)
+        if self._pt_a is not None:
+            self._repaint_rubber(pos)
 
     def handle_key(self, key) -> bool:
         if not self.active:

@@ -3,9 +3,9 @@
 A focused, open-source 2D drafting application for acetate / horn eyewear design.
 Built on Python + PySide6 (Qt 6). Single purpose: give a maker all the tools to
 draw a frame half, mirror it, verify it against a face photo, and export clean DXF
-for GuildCAM — and nothing else.
+for GuildModel — and nothing else.
 
-> **Integration status:** GuildCAM intake questions resolved against GuildCAM
+> **Integration status:** GuildModel intake questions resolved against GuildModel
 > source, Session 5 (2026-06-04). See §4, §6, §8a, and §13.
 
 ---
@@ -66,7 +66,7 @@ for GuildCAM — and nothing else.
 
 - **Snap along curve segments** — on-curve snap targets at parametric positions on spline/line segments (nearest point on curve), required for connecting OUTLINE to LENS geometry for scallop and extrusion; see Known issues
 - **Asymmetric export** — two distinct LENS entities for non-symmetric frames (open question in §13)
-- **GuildCAM round-trip validation** (Phase 8) — pending hardware cut
+- **GuildModel round-trip validation** (Phase 8) — pending hardware cut
 
 ### Upcoming — Next Sprint (Phases 18–21)
 
@@ -269,7 +269,7 @@ A tool that lets a maker:
 10. Work across **tabbed workspaces** — frame front, temple, and hinge pocket.
 11. Build a **personal hinge library** — save pocket designs and import them into any workspace.
 12. Save three artifacts per workspace: an **SVG** (editable master with full session state), a
-    **PNG** render, and a **DXF** that GuildCAM consumes with splines intact.
+    **PNG** render, and a **DXF** that GuildModel consumes with splines intact.
 
 Explicit non-goals: text, gradients, layers-as-art, filters, anything not related to
 eyewear drafting.
@@ -301,21 +301,21 @@ PySide6 (Qt 6 binding for Python). Tested on:
 
 ---
 
-## 4. File format / export contract (confirmed against GuildCAM)
+## 4. File format / export contract (confirmed against GuildModel)
 
 ### DXF — R2000 (AC1015) with SPLINE entities
 
-GuildCAM accepts DXF R12–R2018 via ezdxf; handles `SPLINE` natively, tessellating
+GuildModel accepts DXF R12–R2018 via ezdxf; handles `SPLINE` natively, tessellating
 at **0.01 mm chord tolerance**. SPLINE is the preferred path; do not pre-flatten.
 
 ### Units — true mm at 1:1
 
-GuildCAM reads raw coordinates as mm; does **not** read `$INSUNITS`. Set
+GuildModel reads raw coordinates as mm; does **not** read `$INSUNITS`. Set
 `$INSUNITS = 4` by convention. App calibration (§5) is the sole scale authority.
 
 ### Closed contours + strict layers
 
-GuildCAM auto-closes contours whose endpoints are within **0.1 mm**.
+GuildModel auto-closes contours whose endpoints are within **0.1 mm**.
 
 | Layer     | Required count | Machined? |
 |-----------|----------------|-----------|
@@ -366,7 +366,7 @@ viewers (Inkscape, browsers); geometry is authoritative from the metadata JSON.
 
 ## 5. Real-world scale
 
-GuildCAM has no calibration. The app establishes **px-per-mm** via:
+GuildModel has no calibration. The app establishes **px-per-mm** via:
 
 - 2-point landmark click on the face photo + real distance entry, **or**
 - Direct numeric entry in the Calibration panel.
@@ -525,7 +525,7 @@ Visible, toggleable, non-exported:
 - Apical radius guide: arc at the top of the bridge.
 - Boxing guide: A×B lens box with DBL (distance between lenses) separation.
 
-All dark-mode aware. Values stored in SVG forming metadata (not machined in GuildCAM v1).
+All dark-mode aware. Values stored in SVG forming metadata (not machined in GuildModel v1).
 
 ### Mirror
 
@@ -659,7 +659,7 @@ framedraft/
 - ✅ **Phase 6b** — Multi-select (rubber-band), Join operation, Settings dialog.
 - ✅ **Phase 6c** — Undo/Redo (snapshot, 100 steps) + Revision Timeline (persisted bookmarks).
 - ✅ **Phase 7** — Packaging: PyInstaller one-folder Windows build (`dist/GuildDraw/GuildDraw.exe`, ~174 MB); `framedraft.spec` + `requirements-dev.txt` added; `__version__ = "0.7.0"`.
-- ⬜ **Phase 8** — GuildCAM validation: round-trip real DXFs; confirm layer counts,
+- ⬜ **Phase 8** — GuildModel validation: round-trip real DXFs; confirm layer counts,
   closure, symmetric-flag behavior.
 - ✅ **Phase 9** — Dimension lines: `DimTool` two-click placement; `DimItem` renders line + ticks + label; draggable offset with extension lines; snaps to curve nodes; selectable/deletable; persisted in SVG `"dims"` metadata key.
 - ✅ **Phase 10** — Node insert/delete: double-click on curve segment inserts node (de Casteljau split for splines, parametric interpolation for lines); click NodeDot to select (red highlight) then Del removes it.
@@ -701,7 +701,7 @@ framedraft/
   splines and lines; required for OUTLINE→LENS scallop/extrusion connections.
 
 Usable internal alpha: **complete**. Phases 0–17 done; Phase 7 (PyInstaller packaging) done.
-Phase 8 (GuildCAM round-trip validation) pending hardware cut.
+Phase 8 (GuildModel round-trip validation) pending hardware cut.
 Phase 18 (on-curve snap) is the next technical priority. Known UX bugs listed above.
 
 ---
@@ -727,23 +727,23 @@ guild preference.
 
 ## 13. Open questions
 
-**Resolved (GuildCAM Session 5):**
+**Resolved (GuildModel Session 5):**
 
 1. DXF intake — R2000 + SPLINE; tessellated at 0.01 mm; R12 fallback dropped.
-2. Units — mm at 1:1; `$INSUNITS` ignored by GuildCAM, set to 4 by convention.
+2. Units — mm at 1:1; `$INSUNITS` ignored by GuildModel, set to 4 by convention.
 3. Closed contours + strict layers — 1 OUTLINE, 2 LENS; validator enforces.
-4. Bridge angle / apical radius — forming metadata, not machined in GuildCAM v1.
-5. Calibration — none in GuildCAM; fully app responsibility.
+4. Bridge angle / apical radius — forming metadata, not machined in GuildModel v1.
+5. Calibration — none in GuildModel; fully app responsibility.
 6. Mirror — live, about vertical centerline; default workflow.
 
 **Still to confirm:**
 
 - **Symmetric flag vs. two exported LENS entities.** With `symmetric = True` (default
-  in GuildCAM), GuildCAM re-derives OS by mirroring OD on every rebuild. For
+  in GuildModel), GuildModel re-derives OS by mirroring OD on every rebuild. For
   symmetric frames (mirror on) this is harmless. For intentionally **asymmetric**
   exports (mirror off), confirm whether importing two distinct LENS entities sets
-  `symmetric = False`, or whether GuildCAM overwrites the exported OS anyway. If the
-  latter, asymmetric frames require a manual `symmetric = False` on the GuildCAM
+  `symmetric = False`, or whether GuildModel overwrites the exported OS anyway. If the
+  latter, asymmetric frames require a manual `symmetric = False` on the GuildModel
   project side.
 - **Guild-standard defaults** for bridge angle and apical radius (supply values for
   the construction guide presets).
@@ -840,7 +840,7 @@ elif curve.kind == "arc":
 
 ### DXF export
 
-Emit DXF `ARC` / `CIRCLE` entities directly (simpler and exact). If GuildCAM has
+Emit DXF `ARC` / `CIRCLE` entities directly (simpler and exact). If GuildModel has
 trouble with these, fall back to SPLINE approximation via 4-segment Bézier circle
 (standard 0.00273% error approximation).
 
@@ -981,9 +981,9 @@ independent document that can be saved, loaded, and exported on its own.
 | **Hinge Pocket** | A single hinge cutout design | HINGE, REF |
 
 Layer notes:
-- **SCULPT** (purple) — back-surface scallop lines for GuildCAM machining; mirrored in both ghost display and DXF export.
+- **SCULPT** (purple) — back-surface scallop lines for GuildModel machining; mirrored in both ghost display and DXF export.
 - **ENGRAVING** (teal) — engraving mark guides for temple arms; not mirrored.
-- **BRIDGE** — exists in the enum but is unassigned to any workspace. Reserved for a future bridge-path offset tool (GuildCAM angled bridge cutaway).
+- **BRIDGE** — exists in the enum but is unassigned to any workspace. Reserved for a future bridge-path offset tool (GuildModel angled bridge cutaway).
 - The layer combo in the Properties sidebar is filtered to the active workspace's layer set. Drawing tools always use the currently selected layer.
 
 ### WorkspaceDocument
@@ -1075,7 +1075,7 @@ still open as before (single-tab mode, Front workspace only).
 Each tab exports independently via the existing DXF pipeline. The Frame Front DXF
 follows the existing contract (OUTLINE ×1, LENS ×2 when mirrored, etc.). The Temple
 DXF uses the same layer vocabulary; OUTLINE represents the temple arm silhouette.
-GuildCAM project setup maps each DXF to the correct stock piece.
+GuildModel project setup maps each DXF to the correct stock piece.
 
 ---
 

@@ -1,7 +1,9 @@
 """
 MeasureBar — exact-measurement input overlay.
 
-Shown at the bottom of CanvasView while the circle/arc tool wants a radius.
+A floating HUD chip shown near the circle/arc centre while the tool wants a
+radius (same pattern as the Move / Point Move HUDs — it used to be a
+full-width bar pinned at the bottom of the view, behind the scroll bar).
 The user types an exact radius (or diameter) in mm and presses Enter to
 confirm the circle radius or lock the arc radius without lifting the mouse.
 
@@ -21,6 +23,8 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QLabel, QLineEdit, QPushButton,
 )
+
+from .. import theme
 
 
 def _parse_float(text: str) -> float | None:
@@ -70,30 +74,10 @@ class MeasureBar(QWidget):
 
     commit_radius = Signal(float)
 
-    _STYLE_BG = (
-        "MeasureBar { background: rgba(20, 20, 20, 210); "
-        "border-top: 1px solid rgba(255,255,255,40); }"
-    )
-    _STYLE_EDIT = (
-        "QLineEdit { background: rgba(45, 45, 45, 230); color: #f0f0f0; "
-        "border: 1px solid #606060; border-radius: 3px; padding: 2px 5px; }"
-        "QLineEdit:focus { border-color: #ffd580; color: #ffffff; }"
-    )
-    _STYLE_LABEL = "QLabel { color: #bbbbbb; }"
-    _STYLE_HINT  = "QLabel { color: #666666; font-size: 9px; }"
-    _STYLE_BTN = (
-        "QPushButton { background: rgba(55, 55, 55, 220); color: #bbbbbb; "
-        "border: 1px solid #606060; border-radius: 3px; "
-        "padding: 2px 8px; min-width: 0; }"
-        "QPushButton:hover  { background: rgba(75, 75, 75, 220); }"
-        "QPushButton:checked { background: #ffd580; color: #1f1f1f; "
-        "border-color: #d4a840; }"
-    )
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("MeasureBar")
-        self.setStyleSheet(self._STYLE_BG)
+        self._apply_style()
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         font = QFont("Segoe UI", 10)
@@ -104,25 +88,21 @@ class MeasureBar(QWidget):
         layout.setSpacing(6)
 
         self._lbl_rad   = QLabel("Radius:")
-        self._lbl_rad.setStyleSheet(self._STYLE_LABEL)
 
         self._rad_edit  = _NumEdit(90)
-        self._rad_edit.setStyleSheet(self._STYLE_EDIT)
         self._rad_edit.setPlaceholderText("—")
         self._rad_edit.setToolTip("Exact radius (mm). Press Enter to confirm.")
 
         self._lbl_rad_mm = QLabel("mm")
-        self._lbl_rad_mm.setStyleSheet(self._STYLE_LABEL)
 
         self._diam_btn  = QPushButton("⇄ Diam")
         self._diam_btn.setCheckable(True)
         self._diam_btn.setChecked(False)
-        self._diam_btn.setStyleSheet(self._STYLE_BTN)
         self._diam_btn.setToolTip("Toggle Radius ↔ Diameter display.")
         self._diam_btn.toggled.connect(self._on_diam_toggled)
 
         self._hint = QLabel("↵ place  |  Esc = back to canvas")
-        self._hint.setStyleSheet(self._STYLE_HINT)
+        self._hint.setProperty("hudRole", "hint")
 
         for w in (self._lbl_rad, self._rad_edit, self._lbl_rad_mm,
                   self._diam_btn, self._hint):
@@ -137,13 +117,39 @@ class MeasureBar(QWidget):
 
         self.hide()
 
+    def _apply_style(self):
+        """Token-driven HUD chip styling (theme.build_hud_qss) plus the
+        Diameter-toggle button, which gets the field treatment."""
+        self.setStyleSheet(
+            theme.build_hud_qss("#MeasureBar")
+            + f'#MeasureBar QLabel[hudRole="hint"] {{ font-size: 9px; }}'
+            f"#MeasureBar QPushButton {{ "
+            f"background: {theme.color('hud.field_bg')}; "
+            f"color: {theme.color('hud.ink')}; "
+            f"border: 1px solid {theme.color('hud.field_border')}; "
+            f"border-radius: 3px; padding: 2px 8px; min-width: 0; }}"
+            f"#MeasureBar QPushButton:checked {{ "
+            f"background: {theme.color('hud.accent')}; color: #1f1f1f; }}"
+        )
+
     # ------------------------------------------------------------------
     # Show / hide
     # ------------------------------------------------------------------
 
-    def show_radius(self):
-        """Show the bar (radius entry)."""
-        self._reposition()
+    def show_radius(self, anchor_scene=None):
+        """Show the chip near *anchor_scene* (the circle/arc centre in scene
+        mm); with no anchor it sits in the bottom-left corner, clear of the
+        scroll bars."""
+        self._apply_style()
+        self.adjustSize()
+        parent = self.parent()
+        if parent is not None:
+            if anchor_scene is not None:
+                vp = parent.mapFromScene(anchor_scene)
+                self._move_clamped(vp.x() + 18, vp.y() + 18)
+            else:
+                self._move_clamped(
+                    8, parent.height() - self.sizeHint().height() - 24)
         self.show()
         self.raise_()
 
@@ -188,13 +194,17 @@ class MeasureBar(QWidget):
         if parent is not None:
             parent.setFocus()
 
-    def _reposition(self):
-        """Stretch bar to full parent width and place it at the bottom."""
+    def reposition(self):
+        """Keep the chip inside the viewport — CanvasView calls this on
+        resize. The ONE reposition path."""
+        self._move_clamped(self.x(), self.y())
+        self.raise_()
+
+    def _move_clamped(self, x: int, y: int):
         parent = self.parent()
         if parent is None:
             return
         self.adjustSize()
-        w = parent.width()
-        h = self.sizeHint().height()
-        self.setFixedWidth(w)
-        self.move(0, parent.height() - h)
+        x = max(0, min(x, parent.width() - self.width() - 4))
+        y = max(0, min(y, parent.height() - self.height() - 4))
+        self.move(x, y)

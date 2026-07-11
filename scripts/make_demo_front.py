@@ -2,7 +2,7 @@
 
 Produces a wayfarer-ish front: two superellipse lenses (LENS, mirror-doubled
 at export like the app does) and an outline derived by offsetting the lens
-pair 4.5 mm and bridging the nose (OUTLINE). Used to feed GuildCAM's
+pair 4.5 mm and bridging the nose (OUTLINE). Used to feed GuildModel's
 DXF → mesh pipeline with representative GuildDraw output.
 
 Run:  .venv\\Scripts\\python scripts\\make_demo_front.py [out.dxf]
