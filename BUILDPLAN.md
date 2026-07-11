@@ -3,10 +3,10 @@
 A focused, open-source 2D drafting application for acetate / horn eyewear design.
 Built on Python + PySide6 (Qt 6). Single purpose: give a maker all the tools to
 draw a frame front, temples, and hinge pockets, verify them against a face photo,
-and export clean DXF for GuildCAM — and nothing else.
+and export clean DXF for GuildModel — and nothing else.
 
 > **This document is the v1.0 roadmap.** The full v0.x history — every completed
-> phase (0–19), the resolved GuildCAM intake Q&A, and the detailed feature specs —
+> phase (0–19), the resolved GuildModel intake Q&A, and the detailed feature specs —
 > is archived verbatim at **`docs/BUILDPLAN-v0.9-archive.md`**. Sections of the
 > archive are referenced below as *(archive §N)*.
 
@@ -16,7 +16,7 @@ and export clean DXF for GuildCAM — and nothing else.
 bevel + lens-locked boxing, M12 snap/lock auto-resize (+ chain, DBL, outline-lock),
 M13 drill holes + Pockets/Holes library + OMA `DRILLE`, M14 release engineering +
 `v1.0.0-rc2` installer. **Uncommitted, pending user review/commit + tag.** 1.0
-still gated on GuildCAM hardware round-trip)*
+still gated on GuildModel hardware round-trip)*
 
 **Working:** all drawing tools (line, spline, circle, arc), node/handle editing,
 snapping (nodes/handles/midpoints/quadrants/mirror/origin), trim/split/offset,
@@ -29,7 +29,7 @@ layers panel + groups, on-curve snap, clipboard + Transform dialog, OMA lens-tra
 import/export (TRCFMT format 1), frame fill overlay, ENGRAVING text objects,
 print/PDF at 1:1 scale.
 
-**Not yet built:** GuildCAM hardware round-trip (blocked on the GuildCAM
+**Not yet built:** GuildModel hardware round-trip (blocked on the GuildModel
 redevelopment), BRIDGE layer tooling.
 
 **Code health:** ~10,900 lines; geometry core is solid. The M1 bug list is fixed
@@ -47,25 +47,25 @@ interchange (`export/oma.py`, Qt-free, 16 tests incl. the <0.05 mm round-trip
 criterion) with File > Import/Export wiring. v0.9.8 shipped M8: frame fill
 overlay, re-editable ENGRAVING `TextObject`s (`textpath.py`, Text tool,
 DXF-time outline conversion), and 1:1 print/PDF with a 50 mm verification
-ruler (suite: 88). Next: M9 GuildCAM validation + release.
+ruler (suite: 88). Next: M9 GuildModel validation + release.
 
 ---
 
 ## 1. Goal & scope *(unchanged — archive §1)*
 
 Draw a frame half → mirror it → verify on a calibrated face photo → export DXF
-that GuildCAM machines without manual repair. Temples and hinge pockets get the
+that GuildModel machines without manual repair. Temples and hinge pockets get the
 same treatment in their own workspaces.
 
 Explicit non-goals: gradients, layers-as-art, filters, general-purpose vector
 editing, anything not related to eyewear drafting.
 
-## 2. Export contract (GuildCAM — confirmed, do not break)
+## 2. Export contract (GuildModel — confirmed, do not break)
 
 - **DXF R2000 (AC1015), SPLINE entities** — exact cubic Bézier → B-spline
-  (`ezdxf.math.bezier_to_bspline`). Never pre-flatten. GuildCAM tessellates at
+  (`ezdxf.math.bezier_to_bspline`). Never pre-flatten. GuildModel tessellates at
   0.01 mm.
-- **Units: true mm at 1:1.** GuildCAM ignores `$INSUNITS`; we set 4 by convention.
+- **Units: true mm at 1:1.** GuildModel ignores `$INSUNITS`; we set 4 by convention.
 - **Closed contours**: endpoints within **0.1 mm** auto-close.
 - **Strict layers**: `OUTLINE` ×1, `LENS` ≥1 (*2026-06-17:* at least one lens
   required — the classic pair is two, but aviators and similar carry more, so
@@ -76,7 +76,7 @@ editing, anything not related to eyewear drafting.
 - Full details and resolved Q&A: archive §4, §13.
 
 **Open contract question (carried over):** asymmetric frames — does importing two
-distinct LENS entities set `symmetric = False` in GuildCAM, or does it overwrite
+distinct LENS entities set `symmetric = False` in GuildModel, or does it overwrite
 the OS lens? Resolve during M8 hardware validation.
 
 ---
@@ -91,7 +91,7 @@ being able to trust saves, undo, and the test suite.
 > **2026-06-09 replan:** OMA lens-trace import/export was promoted from the
 > Tier B candidate list to its own pre-1.0 milestone (M7) — opticians deriving
 > frames from traced lenses is a headline workflow, not a nice-to-have.
-> Visualization moved to M8; GuildCAM validation + release became M9.
+> Visualization moved to M8; GuildModel validation + release became M9.
 
 ## M1 — Stabilization (v0.9.1) · *fix the confirmed bugs* — ✅ DONE 2026-06-09
 
@@ -377,16 +377,16 @@ place/undo/delete/edit + DXF ENGRAVING splines, and the 1:1 PDF.
 *Known gaps (accepted):* texts don't appear in the Layers-panel object tree
 and aren't copied by Ctrl+C/V — revisit on demand.
 
-## M9 — GuildCAM validation + release engineering (v1.0.0-rc1 → 1.0)
+## M9 — GuildModel validation + release engineering (v1.0.0-rc1 → 1.0)
 
-> **2026-06-10 replan:** GuildCAM is not yet built out enough for the hardware
+> **2026-06-10 replan:** GuildModel is not yet built out enough for the hardware
 > round-trip, so M9's software scope shipped as **v1.0.0-rc1** (release
 > candidate). The rc graduates to `v1.0.0` once a physical frame has been cut
-> from GuildDraw DXF on the redeveloped GuildCAM.
+> from GuildDraw DXF on the redeveloped GuildModel.
 
 1. ⏸ **Hardware round-trip** (old Phase 8): cut a real frame front + temples
    from exported DXF. Confirm layer counts, closure, spline fidelity, and
-   resolve the asymmetric-lens question (§2). **Blocked on the GuildCAM
+   resolve the asymmetric-lens question (§2). **Blocked on the GuildModel
    redevelopment — the only remaining 1.0 gate.**
 2. ✅ **Batch export** (2026-06-10) — File > Export > "Export All DXF…" writes
    `<name>_front.dxf`, `_temple_r.dxf`, `_temple_l.dxf`, `_hinge.dxf` in one
@@ -400,7 +400,7 @@ and aren't copied by Ctrl+C/V — revisit on demand.
    added since 0.9.3: library, textpath, tools.offset/point_move,
    export.oma/batch); version stamped `1.0.0-rc1`; frozen build smoke-tested.
 4. ✅ README.md + `docs/USER-GUIDE.md` (workspaces, tool reference, hotkeys,
-   snapping/layers/mirror, OMA, 1:1 print, GuildCAM handoff + validator
+   snapping/layers/mirror, OMA, 1:1 print, GuildModel handoff + validator
    rules, data-safety notes).
 5. ✅ Tag `v1.0.0-rc1`. ⏸ Tag `v1.0.0` after the hardware round-trip.
 6. ✅ **rc1b — drag-and-drop layer reassignment** (2026-06-11). Fixes the one
@@ -415,7 +415,7 @@ and aren't copied by Ctrl+C/V — revisit on demand.
    emitted `selectionChanged` into live slots — `closeEvent` now severs those
    connections) and the `QFont::setPointSize(-1)` warning from dim-label
    painting. Version stamped `1.0.0-rc1b`.
-7. ✅ **rc1c — "Ready for GuildCAM" readiness indicator + drafting round**
+7. ✅ **rc1c — "Ready for GuildModel" readiness indicator + drafting round**
    *(2026-06-15)*. Shipped the readiness dot plus a maker-reported drafting
    batch:
    - **Readiness dot** — `framedraft/canvas/readiness_dot.py`: a status-bar
@@ -423,7 +423,7 @@ and aren't copied by Ctrl+C/V — revisit on demand.
      reuses the export validator (`export/validate.py`) so the dot and the
      export gate never disagree. Per-workspace, dark-mode aware, non-blocking;
      tooltip names the gap. Tests in `tests/test_readiness.py`. *(The SCULPT
-     section-cut check stays as a validator extension for when GuildCAM's zone
+     section-cut check stays as a validator extension for when GuildModel's zone
      partition lands; the dot picks it up automatically once `validate()`
      enforces it.)*
    - **Zoom/pan** — the view now manages its own generous sceneRect
@@ -455,22 +455,22 @@ and aren't copied by Ctrl+C/V — revisit on demand.
    - Two future-RC features researched and specced (no code): SVG import and a
      BRIDGE layer — see *Post-rc1c feature proposals*.
 
-   *Original spec:* The downstream tool (GuildCAM) is gaining a subtle corner
+   *Original spec:* The downstream tool (GuildModel) is gaining a subtle corner
    traffic-light that tells the maker how close a job is to being machinable
-   (M5.2 in GuildCAM's BUILDPLAN: DXF → 3D model → G-code). We want the
+   (M5.2 in GuildModel's BUILDPLAN: DXF → 3D model → G-code). We want the
    **upstream mirror**: a small, subtle status dot in GuildDraw that, at a
-   glance, says whether the *current drawing* satisfies the GuildCAM export
+   glance, says whether the *current drawing* satisfies the GuildModel export
    contract (§2) before the maker exports — green when ready to hand off, amber
    when the design is incomplete for the castle workflow, with the gap named in
    the tooltip. It reuses the checks GuildDraw **already performs** (the handoff
    validator): OUTLINE present + closed; LENS closed (2, or the resolved
-   asymmetric case); SCULPT section cuts present (needed for GuildCAM's zone
+   asymmetric case); SCULPT section cuts present (needed for GuildModel's zone
    partition — their absence is the common "why won't it build the castle?"
    trap); HINGE optional; closure within tolerance; units mm. Surface it as a
    non-blocking indicator (export still works; this only *warns*), tooltip e.g.
-   *"Ready for GuildCAM"* / *"Missing SCULPT section cuts — GuildCAM can't
+   *"Ready for GuildModel"* / *"Missing SCULPT section cuts — GuildModel can't
    partition zones"*. Keeps the two apps symmetric: GuildDraw answers "is this
-   design ready to send?", GuildCAM answers "is this job ready to cut?".
+   design ready to send?", GuildModel answers "is this job ready to cut?".
 
 ### 1.0 release criteria (definition of done)
 
@@ -479,9 +479,9 @@ and aren't copied by Ctrl+C/V — revisit on demand.
       errors surfaced
 - [x] Test suite green (geometry, SVG round-trip, validator, DXF, batch) and run
       before every release build *(95 tests at rc1)*
-- [ ] DXF from all four workspaces imports into GuildCAM and **a physical frame
+- [ ] DXF from all four workspaces imports into GuildModel and **a physical frame
       has been cut** from GuildDraw output *(← the only open gate; blocked on
-      the GuildCAM redevelopment)*
+      the GuildModel redevelopment)*
 - [x] OMA: import → export → reimport round-trips within 0.05 mm *(synthetic;
       a real tracer file should be confirmed when one is available)*
 - [x] Repository under git with tagged releases
@@ -792,6 +792,234 @@ surface naturally. Run this LAST, so the release ships audited.
 
 ---
 
+# Road to RC4 (M23–M28)
+
+> **2026-07-10.** RC3a is in the community's hands and the first field reports
+> are in: GitHub issues #1 (Outline/Offset broken), #2 (shipped hinge library
+> doesn't reach existing installs), #3 (zoom resets the viewport inside tool
+> modes), plus the maintainer's own report that the Move / Point Move pop-ups
+> are unreadable in light mode. All four are root-caused below (verified by
+> code reading + headless repros, not guesses). Theme: *"fix what the field
+> found, then make light mode a first-class citizen."* Note: issue #2's reply
+> publicly promised the fix "by RC3b" — RC4 is that drop, whatever we stamp it.
+
+## M23 — Field-reported bug fixes (GitHub #1/#2/#3)
+
+Each fix lands with its own regression test; issues get closed with commit
+references when the release ships.
+
+### M23.1 — Zoom resets viewport while a tool is active (issue #3)
+
+- **Root cause (confirmed):** `CanvasView.mouseMoveEvent`
+  ([app.py:539](framedraft/app.py#L539)) consumes moves in the calib/dim/draw
+  tool branches without calling `super().mouseMoveEvent()`. QGraphicsView's
+  `AnchorUnderMouse` anchors `scale()` to its *internally tracked* last mouse
+  position, which only updates inside the base handler — so with any tool
+  active the anchor goes stale at wherever the cursor was before activation,
+  and every wheel tick yanks the viewport back toward that point. Select mode
+  falls through to `super()` (line 599), which is why cursor-mode zoom is
+  perfect.
+- **Fix:** anchor manually in `wheelEvent` ([app.py:412](framedraft/app.py#L412))
+  instead of trusting Qt's stale state: capture
+  `mapToScene(event.position())` before `zoom_by()`, then after scaling
+  (+ `_ensure_scroll_room()`) shift the scrollbars so that scene point maps
+  back to the same viewport pixel. Deterministic in every mode, including
+  mid-drag; `setTransformationAnchor` no longer load-bearing for the wheel.
+- **Test:** offscreen-Qt regression — activate a draw tool, send wheel events,
+  assert the scene point under the cursor is invariant across zoom steps.
+
+### M23.2 — Shipped hinge library never reaches existing installs (issue #2)
+
+- **Root cause (confirmed):** `HingeLibrary._seed_shipped`
+  ([library.py:42](framedraft/library.py#L42)) returns early if *any* `.svg`
+  exists in `~/.guilddraw/library/hinges/` — the "never resurrect a deleted
+  shipped hinge" rule implemented as "only seed an empty library". Anyone who
+  saved a hinge before RC3a (or adds one before a future starter-set update)
+  never receives shipped entries.
+- **Fix:** per-entry seed manifest at `~/.guilddraw/library/seeded.json`
+  listing shipped filenames ever offered. On init: copy each shipped hinge
+  that is neither in the manifest nor currently present (name collision with
+  a user file ⇒ skip, still record), then update the manifest. Deleted
+  entries stay deleted because the manifest remembers them; future starter-set
+  additions auto-flow to every install.
+- **Upgrade migration (one launch):** no manifest + library already contains
+  shipped-named files ⇒ assume RC3a's empty-library seed ran — prefill the
+  manifest with the full shipped set (prevents resurrection). No manifest +
+  no shipped names ⇒ seed everything missing. Only pathological case: a user
+  who deleted *all nine* Zoye hinges gets them once more — accepted.
+- **Tests:** merge-into-nonempty, no-resurrection-after-delete, collision
+  skip, RC3a-upgrade prefill.
+
+### M23.3 — Outline via Offset goes the wrong way (issue #1)
+
+- **Root cause (confirmed by headless probe):** `offset_curve`
+  ([geometry.py:710](framedraft/geometry.py#L710)) offsets along the
+  left-hand normal, so the direction of "+d" depends on node winding: on a
+  closed curve wound clockwise-on-screen, +2.8 mm lands *inside* — exactly
+  the issue screenshot (amber preview inset from the lens). Winding is an
+  accident of how the shape was drawn/imported/mirror-closed, so the tool
+  feels broken at random.
+- **Fix:** normalize semantics for **closed** curves — positive d always
+  grows the shape (outward), negative shrinks. Implementation: compute the
+  offset, compare enclosed area (shoelace over sampled points) with the
+  source; if +d shrank it, negate d and recompute. Open curves keep
+  left-normal semantics; circles/arcs already winding-independent
+  (radius ± d). Update the docstring, toolbar tooltip
+  ([app.py:2083](framedraft/app.py#L2083)), and status hint ("− for inward").
+- **Tests:** both windings × line/spline closed shapes assert outward for
+  +d; open-curve behavior unchanged; confirm against the issue repro before
+  closing.
+
+## M24 — Light-mode pop-up / overlay parity (maintainer report + audit)
+
+- **Root cause (reproduced with an offscreen render):** the app-level QSS
+  rule `QWidget { background-color: chrome.bg; … }` ([theme.py:276](framedraft/theme.py#L276))
+  paints an *opaque* background under every HUD child `QLabel`. The HUD
+  stylesheets (`_MoveHud` [move_gizmo.py:140](framedraft/canvas/move_gizmo.py#L140),
+  `_PointMoveHud` [point_move.py:26](framedraft/tools/point_move.py#L26),
+  `MeasureBar` [measure_bar.py:73](framedraft/canvas/measure_bar.py#L73))
+  set only `color: #e0e0e0` on labels — never a background — so in light
+  mode each label sits in an amber `#ffd580` box with near-white text:
+  unreadable ("To:", "X", "Y" effectively invisible). Dark mode only *looks*
+  right because `chrome.bg` (#1a1a1a) coincidentally matches the intended
+  dark chip. QLabel-based HUDs that style their own background
+  (draw/circle/offset) are unaffected.
+- **Fix:** add `hud.*` theme tokens (bg / ink / muted / border / field_bg /
+  field_ink / accent) with a shared QSS builder in `theme.py`, and move the
+  three container HUDs onto it; every child rule must set an explicit
+  (transparent) background so nothing inherits chrome. Rebuild HUD styles on
+  theme change like `snap_palette.apply_theme` does.
+- **Audit fallout to fix in the same pass:**
+  - `_MoveHud.show_for` / `_PointMoveHud.show_for` miss the `max(0, x)`
+    clamp the QLabel HUDs have — a HUD near the right edge walks off-screen
+    left ([move_gizmo.py:192](framedraft/canvas/move_gizmo.py#L192),
+    [point_move.py:80](framedraft/tools/point_move.py#L80)).
+  - Hotkey-conflict highlight `background: #ffcccc`
+    ([app.py:1445](framedraft/app.py#L1445)) keeps the theme ink — light
+    text on pink in dark mode. Set an explicit dark ink with it.
+  - Sweep remaining hardcoded chips (`#888` hint labels, dialog notes) for
+    contrast in *both* modes; snap palette + toolbar overflow are already
+    token-driven — use them as the pattern.
+- **Verify:** manual light+dark screenshot pass over every overlay: Move HUD,
+  Point Move HUD, MeasureBar, draw/circle/offset HUDs, snap palette, toolbar
+  overflow, readiness dot tooltip.
+- **New shipped viewport preset: "Dimmed"** (user request 2026-07-10) — a
+  light-mode canvas dimmer than Parchment (#faf6ee) but light enough that the
+  standard light-mode line palette (layer inks, guide + snap colors) keeps
+  working. One `VIEWPORT_PRESETS` entry ([theme.py:178](framedraft/theme.py#L178),
+  warm grey ≈ `#d8d1c3`, ink `#1f1f1f`, cross via `_mix`) + one row in the
+  Preferences combo ([app.py:1135](framedraft/app.py#L1135)). Tune the exact
+  value with a contrast check against every light-mode token (target ≥ 3:1
+  for geometry/guide/snap inks); USER-GUIDE appearance section gets the row.
+
+## M25 — Boxing-square "□" input helper (size notation A□DBL-TempleLength)
+
+Makers stamp frame sizes the industry way — `49□27-145` (A □ DBL − temple
+length) — in bookmark names, save filenames, and temple engravings. The □
+(U+25A1) has no key, so today it's a charmap/emoji-panel round-trip every
+time.
+
+- **Insert-□ hotkey** (default **Ctrl+Shift+B**, beside bookmark Ctrl+B;
+  user-assignable in Preferences ▸ Hotkeys like every other binding): an
+  `ApplicationShortcut` that types "□" into the focused Qt text widget
+  (`QLineEdit`/`QTextEdit`/`QPlainTextEdit` via `QApplication.focusWidget()`).
+  ⚠ This is the **deliberate exception** to the `_hotkey_dispatch` text-field
+  guard ([app.py:4082](framedraft/app.py#L4082)) — that guard keeps
+  single-letter tool hotkeys inert while typing; this hotkey *only* means
+  something while typing. Route it through its own dispatch (insert when a
+  text widget has focus, no-op otherwise), not through `_hotkey_dispatch`.
+- **Coverage:** bookmark naming, hinge/drill library save + rename, and the
+  engraving TextDialog are all Qt `QInputDialog`/dialog widgets — the one
+  shortcut covers them. The **native Windows Save As dialog cannot receive
+  Qt shortcuts** — instead, pre-fill the suggested filename with the size
+  string (e.g. `49□27-145.gdraw`) built from the boxing panel's live A/DBL
+  values (+ temple length when a temple workspace has one), so the □ is
+  already there. Keep the native dialog (no `DontUseNativeDialog` UX tax).
+- **Optional (cheap, same wiring): "insert size string"** — a second binding
+  or a small `□` button beside the bookmark/engraving fields that inserts the
+  *whole* `A□DBL-TempleLength` string from current boxing dims, not just the
+  glyph. Decide during build whether both bindings earn hotkey-tab rows.
+- **Verify the glyph end-to-end** (tests): `□` survives
+  `library._safe_filename` (not in the illegal set — confirm + pin),
+  bookmark round-trip through `.gdraw` SVG metadata (UTF-8), engraving
+  `textpath` outline generation yields non-empty geometry for `49□27-145`
+  in the shipped fonts, and DXF export of that engraving stays valid
+  (outlines only, so encoding never reaches the DXF).
+
+## M26 — Dimension tool round: end arrows, label clearance, first-snap fix
+
+User-reported 2026-07-10, all three confirmed in code:
+
+- **M26.1 — first snap not highlighted (bug):** `DimTool.handle_move`
+  ([tools/dim.py:85](framedraft/tools/dim.py#L85)) early-returns while
+  `_pt_a is None`, so the snap engine is never queried while hovering for the
+  *first* point — no indicator until point A is clicked (the press itself
+  still snaps, silently). Fix: in the pick-A stage, still call
+  `snap.snap(pos, [], view, use_snap)` on move (indicator only, no rubber).
+  Regression test.
+- **M26.2 — arrows at the dimension line ends:** the current "ticks"
+  ([canvas/dim.py:209](framedraft/canvas/dim.py#L209)) are drawn *along the
+  measurement axis* — collinear with the dim line, i.e. invisible as end
+  markers. Replace with filled arrowheads at A and B pointing outward along
+  the line, constant screen size (px-spec like `_TICK_PX`), color from
+  `guide.dim`/`guide.dim_selected`. When the span is too short for two
+  arrowheads + label, fall back to arrows outside the extension lines
+  (classic CAD behavior) — or dots, decide on-screen during build.
+- **M26.3 — label placement:** today the text is nudged 4 px off the line
+  with a baseline fudge (`- text_h/4`,
+  [canvas/dim.py:249](framedraft/canvas/dim.py#L249)) and collides with the
+  dim line at most angles. New layout: label rotated parallel to the dim
+  line (flipped to stay upright), centered on the midpoint, offset
+  perpendicular by `text_h/2 + gap` on a consistently chosen side (screen-up
+  relative to the line) so it clears the line at any angle/zoom.
+- **Latent fix while in there:** the screen-sized label is *not* included in
+  `boundingRect()` ([canvas/dim.py:106](framedraft/canvas/dim.py#L106)) — at
+  low zoom the text extends past the pad and can leave repaint artifacts.
+  Include the label extent (worst-case px→mm at current scale is not
+  available in boundingRect, so use a generous documented pad or
+  `prepareGeometryChange` on zoom via a cached scale hint).
+
+## M27 — Pre-drop bug audit (house pattern, scaled to the delta)
+
+M15/M22-style pass over the RC4 delta plus anything the field fixes touch
+(view/zoom code, library seeding, offset geometry, HUD styling). Seed list
+from this planning investigation:
+
+- `fitInView` callers don't clamp to `_MIN_ZOOM`/`_MAX_ZOOM` — a tiny scene
+  rect can zoom past the wheel limits ([app.py:3226](framedraft/app.py#L3226)).
+- `MeasureBar` has two competing reposition paths
+  (`CanvasView._reposition_measure_bar` and `MeasureBar._reposition`) — merge.
+- `wheelEvent` neither accepts the event explicitly nor guards zero-delta
+  (horizontal-wheel mice send `angleDelta().y() == 0` ⇒ currently zooms out).
+- Confirm `_PointMoveHud`'s advertised "Tab switch" works via the focus chain
+  (no handler exists; suspected fine, verify on-screen).
+
+## M28 — RC4 release checklist
+
+- [x] M23–M27 implemented + user-verified on-screen 2026-07-10 (258 tests,
+      ruff clean). Follow-up round from verification: □ hotkey moved to a
+      QApplication event filter (app-context QShortcuts are suppressed under
+      modal dialogs), Radius/Diameter chip floats at the circle/arc centre,
+      grid minor/major colours + major width in Preferences, hotkey-capture
+      field fixed (int(modifiers()) TypeError on current PySide6).
+      Commits still HELD for the user.
+- [x] Version stamp `1.0.0-rc4` (framedraft/__init__.py + .iss fallback)
+- [ ] README "New in rc4" + USER-GUIDE deltas (offset direction semantics,
+      hinge-library merge behavior, □ hotkey + size-string notation, Dimmed
+      preset, dimension arrows, grid appearance) — after the hardware
+      test-install
+- [x] Installer built 2026-07-10, then **rebuilt 2026-07-11** to fold in the
+      GuildCAM→GuildModel rename (readiness-dot tooltip + every other
+      mention, repo-wide). Off-drive at C:\Temp\gdbuild-rc4; 258-test gate
+      passed in the build tree both times: setup.exe (50 MB) + win64.zip
+      (68 MB) + portable .exe (68 MB) in `dist\`. Frozen exe smoke-tested
+      (title bar confirms 1.0.0-rc4); all 9 Zoye hinge SVGs verified bundled.
+- [ ] User test-install → tag `v1.0.0-rc4` + GitHub pre-release; close
+      issues #1/#2/#3 with commit refs (note #2 promised "RC3b" — say so in
+      the close comment)
+
+---
+
 # Security hardening
 
 > **2026-06-17.** Prompted by makers relaying that their IT/AV tools flag "funny
@@ -936,8 +1164,8 @@ items need a maker-demand signal first.
 
 > **2026-06-15.** Two candidates investigated for the *next* release candidate
 > (rc1d or 1.x). **Research/spec only — no code yet.** Both extend the
-> GuildDraw → GuildCAM handoff: SVG import widens what a maker can bring *in*;
-> the BRIDGE layer adds geometry GuildCAM machines.
+> GuildDraw → GuildModel handoff: SVG import widens what a maker can bring *in*;
+> the BRIDGE layer adds geometry GuildModel machines.
 
 ## Proposal A — Import external SVG (trace/reuse existing frames)
 
@@ -977,10 +1205,10 @@ first.
 closed-vs-open, transform flattening, and a curve-fidelity round-trip
 (import → native export → re-import) within tolerance.
 
-## Proposal B — BRIDGE layer (tapered-chamfer bridge path → GuildCAM)
+## Proposal B — BRIDGE layer (tapered-chamfer bridge path → GuildModel)
 
 **Why.** `Layer.BRIDGE` is already reserved in the export contract (§2) and the
-enum (`document.py`). GuildCAM machines a bridge cutaway; GuildDraw should let
+enum (`document.py`). GuildModel machines a bridge cutaway; GuildDraw should let
 the maker *draw the path of a tapered chamfer along the bridge line* and hand it
 off, rather than describing the bridge only by the forming-spin metadata
 (`FormingMetadata.bridge_angle_deg`). This is the "castle towers/bridge"
@@ -1004,9 +1232,9 @@ with width/depth spinboxes in the Properties panel. Display the chamfer envelope
 as a translucent pink ribbon (offset the centerline by ±width via the existing
 `offset_curve`) so the maker sees the cut footprint.
 
-**Export.** Emit the centerline (and, if GuildCAM wants the envelope, the offset
+**Export.** Emit the centerline (and, if GuildModel wants the envelope, the offset
 edges) on the DXF **BRIDGE** layer — already a machined layer in the contract
-(§2), so no contract change. Confirm with GuildCAM whether it wants the
+(§2), so no contract change. Confirm with GuildModel whether it wants the
 centerline + params or the pre-offset envelope during the round-trip.
 
 **Validator.** BRIDGE is optional; when present, require an open centerline with
@@ -1041,6 +1269,6 @@ framedraft/
 - Update the **Status snapshot** and check off milestone tables in this file as
   work lands; move completed milestone detail to the archive if it grows stale.
 - Bug fixes land with a regression test when the code is testable without Qt.
-- The GuildCAM export contract (§2) is frozen; changes require a round-trip test.
+- The GuildModel export contract (§2) is frozen; changes require a round-trip test.
 - Known-issue findings live in this file; session-to-session context lives in
   Claude's project memory.
