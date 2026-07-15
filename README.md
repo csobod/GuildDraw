@@ -8,13 +8,13 @@ nothing else.
 Built with Python + PySide6 (Qt 6). Scene units are true millimetres (1 scene
 unit = 1 mm) end to end: what you draw is what gets cut.
 
-**Status: v1.0.0-rc4 — release candidate.** All drafting features are
-complete and tested (258-test suite). rc4 is a field-fixes-and-polish round:
-three community-reported bugs, light-mode readability for every floating
-pop-up, a reworked dimension tool, a grid appearance panel, and a size-notation
-hotkey (see *New in rc4* below). Final 1.0 sign-off is gated on the GuildModel
-hardware round-trip (cutting a physical frame from exported DXF), which is
-pending GuildModel's redevelopment.
+**Status: v1.0.0 — first stable release.** All drafting features are complete
+and tested (342-test suite), and the full hardware round-trip is proven:
+physical frames have been cut on GuildModel from GuildDraw-exported DXF. The 1.0 round rebuilt the offset engine on a
+curve-fitting core, added the Rebuild tool for imported DXF outlines, made
+node drags stable under mid-drag zoom, and finished the interchange story:
+print-quality PNG export, a catalog PDF sheet, bevel-aware OMA import *and*
+export, and face photos embedded in shared project files (see *New in 1.0*).
 
 ## Highlights
 
@@ -40,6 +40,37 @@ pending GuildModel's redevelopment.
 - **Clean DXF out**: R2000 SPLINE entities (exact Bézier → B-spline, never
   flattened), strict layer vocabulary, per-workspace validation, and batch
   export of all four workspaces in one go.
+
+## New in 1.0
+
+- **Trustworthy Offset** — the offset engine was rewritten to follow the true
+  drawn curve (adaptive per-segment offsetting), then refit through a new
+  least-squares curve-fitting core so results stay compact and hand-editable:
+  a two-node lens outline offsets to ~8 clean nodes instead of collapsing or
+  ballooning. Fixes the community-reported offset failures (#5, #6).
+- **Rebuild tool** (`R`) — refit any spline or polyline to a target node
+  count or a millimetre tolerance, with a live achieved-deviation readout.
+  Turns a 400-point imported DXF outline into a clean editable spline in one
+  step.
+- **Rock-solid node drags** — node and handle drags no longer "fly away" when
+  the wheel grazes mid-drag; zooming *while* dragging is now safe (and
+  useful). Also fixed a crash when deleting a dimension.
+- **Print-quality PNG export** (#7) — true print resolution (150–1200 dpi
+  picker), cropped to the drawing, instead of a screen-resolution snapshot.
+- **PDF for Catalog** — front + both temples on one landscape sheet with the
+  design's name, true size when it fits; paper size, line weight, caption
+  font, and a binding-margin offset in *Preferences ▸ PDF*. Print/PDF at 1:1
+  now renders exactly what your viewport frames, in print inks.
+- **Bevel-aware OMA, both directions** — import asks whether to shrink a
+  trace from the finished (beveled) lens back to the drawn lens opening;
+  export asks whether to grow it. Round-trips exactly at the same depth.
+- **Face photos travel with the file** — `.gdraw` projects now embed the
+  reference photo: share a fit-check file and the recipient sees it, and the
+  file no longer records the photo's location on your machine.
+- **Settings scoping fix** (#4) — saving Preferences while in a temple
+  workspace no longer rewrites that workspace's stock/pad guides.
+- **[IT notes](docs/IT-NOTES.md)** — a one-page answer for IT departments:
+  no network, no persistence, exactly what the app writes to disk.
 
 ## New in rc4
 
@@ -201,6 +232,8 @@ against the host's system libraries.
 
 - **[User guide](docs/USER-GUIDE.md)** — tool reference, hotkeys, workflows,
   GuildModel handoff.
+- **[IT notes](docs/IT-NOTES.md)** — what GuildDraw does and does not do, for
+  IT departments and security reviewers.
 - **[BUILDPLAN.md](BUILDPLAN.md)** — roadmap and engineering history.
 
 ## DXF export contract (GuildModel)

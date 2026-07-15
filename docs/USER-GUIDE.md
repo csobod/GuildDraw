@@ -1,4 +1,4 @@
-# GuildDraw User Guide (v1.0.0-rc4)
+# GuildDraw User Guide (v1.0.0)
 
 GuildDraw drafts eyewear in true millimetres. Everything you draw is at 1:1
 scale; the DXF you export is what the CNC cuts.
@@ -39,6 +39,7 @@ mirror axis is the vertical through x=0.
 | Trim | `T` | Click the segment to remove between intersections |
 | Split | `X` | Split a curve at a clicked point |
 | Offset | `O` | Type a distance, amber preview, Enter confirms. On a closed shape, positive is always outward and negative is always inward, whichever way the curve was drawn |
+| Rebuild | `R` | Refit the selected spline/polyline: type a target node count (or press `Tab` and type a tolerance in mm); the HUD shows the achieved deviation live, Enter replaces the original (undoable). The way to turn a dense imported DXF outline into a clean, editable spline |
 | Point Move | `G` | Grab a point (snapped), click destination or type exact X/Y |
 | Move gizmo | `M` | Drag selection with exact-distance HUD |
 | Text | `I` | ENGRAVING text (temples only); double-click to re-edit |
@@ -143,7 +144,9 @@ symmetric contour (draw half, then Mirror Close or bake + join).
   clicking two points a known distance apart (e.g. a ruler in the photo).
   Photos sit behind geometry; lock/unlock, opacity, and rotation are in the
   sidebar. The **Frame Fill** overlay (Guides panel) renders the frame
-  silhouette over the photo for a realistic preview.
+  silhouette over the photo for a realistic preview. Saved `.gdraw` files
+  **embed** the photo, so a shared project shows it on the recipient's
+  machine — and the file never records where the photo came from on yours.
 
 ## 4. Importing & lens traces (DXF, OMA/DCS)
 
@@ -158,6 +161,17 @@ symmetric contour (draw half, then Mirror Close or bake + join).
 - **File → Export → OMA Trace…** (Frame Front) emits both lens contours plus
   HBOX/VBOX/DBL/FED computed from the geometry, and `DRILLE` records for any
   DRILL holes (mirrored into symmetric pairs), for labs and edgers.
+- **The bevel question, both directions.** A frame trace follows the bevel
+  groove of the *finished* lens — the drawn lens opening grown outward by the
+  bevel depth. Import and export each ask what you want (depth pre-filled
+  from the boxing guide's bevel setting):
+  - *Import*: **Apply Reduction** shrinks the trace back to the drawn lens
+    (the finished edges still land the file's DBL apart), or **Import As
+    Traced** keeps the finished size.
+  - *Export*: **Apply Increase** writes the finished size for labs and
+    edgers, or **Export As-Is** writes the drawn lens opening.
+  - Exporting with the increase and reimporting with the reduction at the
+    same depth round-trips exactly.
 
 ### Drill-mount holes
 
@@ -174,17 +188,24 @@ For rimless / drill-mount lenses (flat, no bevel), use the **DRILL** layer:
 
 - **Measurements panel**: live frame width, lens A/B, DBL readouts.
 - **Dimensions**: place linear dims with `D`.
-- **Print at 1:1** (File menu) or **Export PDF (1:1 scale)**: paper test-fit.
-  Every print includes a **50 mm verification ruler** — measure it; if it
-  isn't exactly 50 mm, your printer driver scaled the page (disable
-  "fit to page").
+- **Print at 1:1** (File menu) or **File → Export → PDF (1:1 scale)…**: paper
+  test-fit. Both render **what your viewport currently frames** at exact
+  1:1 in print-friendly inks. Every print includes a **50 mm verification
+  ruler** — measure it; if it isn't exactly 50 mm, your printer driver
+  scaled the page (disable "fit to page").
+- **File → Export → PDF for Catalog…**: the frame front and both temples on
+  one landscape sheet with the design's name — true size when it fits.
+  Paper size, line weight, caption font, and a vertical offset (for a
+  binding margin) live in *Preferences ▸ PDF*.
+- **File → Export → PNG…** renders at a chosen print resolution
+  (150–1200 dpi), cropped to the drawing.
 
 ## 6. Exporting for GuildModel
 
 1. Make sure each populated workspace passes validation (export runs it
    automatically and explains any failure).
-2. **File → Export → Export DXF…** exports the active workspace, or
-   **Export All DXF…** writes every populated workspace in one go:
+2. **File → Export → DXF…** exports the active workspace, or
+   **All DXF…** writes every populated workspace in one go:
    `<name>_front.dxf`, `<name>_temple_r.dxf`, `<name>_temple_l.dxf`,
    `<name>_hinge.dxf`. Nothing is written unless all populated workspaces
    validate.
@@ -224,6 +245,10 @@ What the validator enforces:
   colours (light + dark) are on the **Layers** tab.
 - Preferences (theme, toolbar, hotkeys, guide defaults) are in
   `~/.guilddraw/prefs.json`.
+- **For your IT department**: [IT-NOTES.md](IT-NOTES.md) documents what
+  GuildDraw does and does not do (no network, no background processes,
+  exactly what it writes to disk) and why unsigned builds sometimes trip
+  antivirus heuristics.
 
 ## 8. Fixed shortcuts
 
