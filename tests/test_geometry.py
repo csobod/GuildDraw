@@ -144,6 +144,28 @@ def test_extract_wrapping_segment_on_closed_polyline():
 
 # -------------------------------------------------------------------- offset
 
+def _dist_to_sampled(px, py, pts):
+    """Distance from (px, py) to the polyline through pts (with projection)."""
+    best = float("inf")
+    for (ax, ay), (bx, by) in zip(pts, pts[1:], strict=False):
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        if L2 < 1e-18:
+            d2 = (px - ax) ** 2 + (py - ay) ** 2
+        else:
+            t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+            d2 = (px - ax - dx * t) ** 2 + (py - ay - dy * t) ** 2
+        best = min(best, d2)
+    return math.sqrt(best)
+
+
+def max_parallel_error(src, off, d, n_src=64, n_off=32):
+    """Worst |distance(offset point → source curve) − |d|| over the offset."""
+    src_pts = [(x, y) for x, y, _ in sample_curve(src, n_src)]
+    return max(abs(_dist_to_sampled(x, y, src_pts) - abs(d))
+               for x, y, _ in sample_curve(off, n_off))
+
+
 def test_offset_line_left_normal():
     c = line([(0, 0), (10, 0)])
     off = offset_curve(c, 2.0)
@@ -160,7 +182,11 @@ def test_offset_preserves_structure():
     s = spline([(0, -20), (20, 0), (0, 20), (-20, 0)], closed=True)
     off = offset_curve(s, 3.0)
     assert off.kind == "spline" and off.closed is True
-    assert len(off.nodes) == len(s.nodes)
+    assert off.layer == s.layer
+    # M31.1 refits the offset to a compact node set — it must stay parallel
+    # without exploding the node count (a lens outline stays a handful of nodes).
+    assert max_parallel_error(s, off, 3.0) < 0.05
+    assert len(off.nodes) <= 12
 
 
 # ------------------------------------------------------- conic → spline
@@ -185,12 +211,107 @@ def test_arc_to_spline_endpoints_and_accuracy():
 
 
 @pytest.mark.parametrize("d", [2.0, -2.0])
-def test_offset_distance_roughly_constant(d):
+def test_offset_spline_is_truly_parallel(d):
+    """GitHub issue #6 — the offset must track the drawn curve (handles
+    included) everywhere, not just at the nodes."""
     s = spline([(0, -20), (20, 0), (0, 20), (-20, 0)], closed=True)
+    assert max_parallel_error(s, offset_curve(s, d), d) < 0.05
+
+
+@pytest.mark.parametrize("d", [1.0, 2.5, -1.5])
+def test_offset_custom_handles_parallel(d):
+    """Hand-tuned (non-Catmull) handles are part of the shape the offset
+    must follow — the old node-polygon offset discarded them."""
+    s = spline([(0, -22), (28, -15), (33, 5), (15, 24), (-20, 18), (-30, -8)],
+               closed=True)
+    from framedraft.document import ControlPoint
+    s.nodes[1].cp_out = ControlPoint(s.nodes[1].x + 9, s.nodes[1].y + 6)
+    s.nodes[1].cp_in  = ControlPoint(s.nodes[1].x - 9, s.nodes[1].y - 6)
+    s.nodes[3].cp_out = ControlPoint(s.nodes[3].x - 12, s.nodes[3].y + 1)
+    s.nodes[3].cp_in  = ControlPoint(s.nodes[3].x + 12, s.nodes[3].y - 1)
+    assert max_parallel_error(s, offset_curve(s, d), d) < 0.05
+
+
+def test_offset_reduces_nodes_end_to_end():
+    """M31.1: offset_curve refits its own Tiller–Hanson result to a compact,
+    editable node set — a two-node closed lens offsets to ≤10 nodes, not ~28,
+    while staying parallel."""
+    from framedraft.geometry import _offset_spline
+    from framedraft.document import Curve, SplineNode, ControlPoint, Layer
+    r, k = 20.0, (4.0 / 3.0) * 20.0
+    a = SplineNode(x=r, y=0.0);  a.cp_out = ControlPoint(r, k);   a.cp_in = ControlPoint(r, -k)
+    b = SplineNode(x=-r, y=0.0); b.cp_out = ControlPoint(-r, -k); b.cp_in = ControlPoint(-r, k)
+    lens = Curve(kind="spline", layer=Layer.LENS, nodes=[a, b], closed=True)
+
+    raw = _offset_spline(lens, 2.0)
+    off = offset_curve(lens, 2.0)
+    assert len(off.nodes) <= 10 < len(raw.nodes)
+    assert off.closed is True
+    assert max_parallel_error(lens, off, 2.0) < 0.05
+
+
+@pytest.mark.parametrize("d", [2.0, -2.0, 5.0])
+def test_offset_two_node_closed_spline(d):
+    """GitHub issue #5 — a closed spline with only two nodes (circle drawn
+    with two handle-controlled points) must offset to a real ring, not a line."""
+    from framedraft.document import Curve, SplineNode, ControlPoint, Layer
+    r, k = 20.0, (4.0 / 3.0) * 20.0     # single-cubic semicircle handles
+    a = SplineNode(x=r, y=0.0)
+    a.cp_out = ControlPoint(r, k);   a.cp_in = ControlPoint(r, -k)
+    b = SplineNode(x=-r, y=0.0)
+    b.cp_out = ControlPoint(-r, -k); b.cp_in = ControlPoint(-r, k)
+    c = Curve(kind="spline", layer=Layer.LENS, nodes=[a, b], closed=True)
+
+    off = offset_curve(c, d)
+    ys = [y for _x, y, _t in sample_curve(off, 32)]
+    xs = [x for x, _y, _t in sample_curve(off, 32)]
+    assert max(ys) - min(ys) > 1.0, "offset collapsed to a line (issue #5)"
+    assert max_parallel_error(c, off, d) < 0.05
+    assert ((max(xs) - min(xs)) > 2 * r) == (d > 0), "wrong offset direction"
+
+
+@pytest.mark.parametrize("d", [2.0, -2.0])
+def test_offset_open_spline_parallel_and_endpoints(d):
+    s = spline([(0, 0), (15, 12), (30, -12), (45, 0)], closed=False)
     off = offset_curve(s, d)
-    # node-to-node displacement should be |d| within a loose tolerance
-    for a, b in zip(s.nodes, off.nodes, strict=True):
-        assert abs(math.hypot(b.x - a.x, b.y - a.y) - abs(d)) < 0.5
+    assert off.closed is False
+    assert max_parallel_error(s, off, d) < 0.05
+    # endpoints displaced exactly |d| from the source endpoints
+    for t in (0.0, 1.0):
+        sx, sy = point_at_t(s, t)
+        ox, oy = point_at_t(off, t)
+        assert abs(math.hypot(ox - sx, oy - sy) - abs(d)) < 1e-6
+
+
+def test_offset_spline_g1_smooth():
+    """GitHub issue #6 — no kinks: wherever the source is smooth, cp_in/node/
+    cp_out of the offset must stay collinear."""
+    s = spline([(0, -20), (20, 0), (0, 20), (-20, 0)], closed=True)
+    off = offset_curve(s, 2.0)
+    for nd in off.nodes:
+        if not (nd.cp_in and nd.cp_out):
+            continue
+        v1 = (nd.x - nd.cp_in.x, nd.y - nd.cp_in.y)
+        v2 = (nd.cp_out.x - nd.x, nd.cp_out.y - nd.y)
+        l1, l2 = math.hypot(*v1), math.hypot(*v2)
+        if l1 < 1e-9 or l2 < 1e-9:
+            continue
+        sin_kink = abs(v1[0] * v2[1] - v1[1] * v2[0]) / (l1 * l2)
+        assert math.degrees(math.asin(min(1.0, sin_kink))) < 1.0
+
+
+def test_offset_corner_spline_bevels_and_stays_closed():
+    """Broken-handle corners get a straight bevel join; result stays closed."""
+    s = spline([(0, 0), (30, 0), (30, 30), (0, 30)], closed=True)
+    for nd in s.nodes:
+        nd.cp_in = nd.cp_out = None     # straight segments, hard corners
+    off = offset_curve(s, 2.0)
+    assert off.closed is True
+    src_pts = [(x, y) for x, y, _ in sample_curve(s, 64)]
+    dists = [_dist_to_sampled(x, y, src_pts) for x, y, _ in sample_curve(off, 32)]
+    # bevel chords the corner arc: distance stays within [d·cos45°, d]
+    assert min(dists) > 2.0 * math.cos(math.radians(45)) - 0.05
+    assert max(dists) < 2.05
 
 
 _DIAMOND      = [(0, -20), (20, 0), (0, 20), (-20, 0)]
@@ -206,7 +327,10 @@ def test_offset_closed_positive_is_outward_any_winding(pts, kind):
     c = make(pts, closed=True)
     outward = offset_curve(c, 2.8)
     inward  = offset_curve(c, -2.8)
-    for src, out, inn in zip(c.nodes, outward.nodes, inward.nodes, strict=True):
-        r = math.hypot(src.x, src.y)
-        assert math.hypot(out.x, out.y) > r, "positive offset went inward"
-        assert math.hypot(inn.x, inn.y) < r, "negative offset went outward"
+    src_r = [math.hypot(x, y) for x, y, _ in sample_curve(c, 16)]
+    out_r = [math.hypot(x, y) for x, y, _ in sample_curve(outward, 16)]
+    in_r  = [math.hypot(x, y) for x, y, _ in sample_curve(inward, 16)]
+    assert min(out_r) > min(src_r) - 1e-6 and max(out_r) > max(src_r), \
+        "positive offset went inward"
+    assert max(in_r) < max(src_r) + 1e-6 and min(in_r) < min(src_r), \
+        "negative offset went outward"

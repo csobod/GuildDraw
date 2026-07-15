@@ -707,15 +707,384 @@ def split_curve_at_t(curve: Curve,
 # Offset
 # ---------------------------------------------------------------------------
 
+_OFFSET_TOL_MM    = 0.02  # max deviation of the offset from true parallel (mm)
+_OFFSET_MAX_DEPTH = 8     # bezier subdivision limit per source segment
+_OFFSET_JOIN_TOL  = 0.02  # adjacent segment offsets closer than this merge (mm)
+
+
 def _abs_polygon_area(nodes) -> float:
     """|shoelace area| of the node polygon — winding-independent size proxy
-    used to normalize offset direction on closed curves."""
+    used to normalize offset direction on closed polylines."""
     n = len(nodes)
     s = 0.0
     for i in range(n):
         a, b = nodes[i], nodes[(i + 1) % n]
         s += a.x * b.y - b.x * a.y
     return abs(s) / 2.0
+
+
+def _signed_area_pts(pts) -> float:
+    """Shoelace signed area of an (x, y) point loop."""
+    n = len(pts)
+    s = 0.0
+    for i in range(n):
+        x0, y0 = pts[i][0], pts[i][1]
+        x1, y1 = pts[(i + 1) % n][0], pts[(i + 1) % n][1]
+        s += x0 * y1 - x1 * y0
+    return s / 2.0
+
+
+def _unit(dx: float, dy: float):
+    """Unit vector (dx, dy)/|·|, or None for a (near-)zero vector."""
+    L = math.hypot(dx, dy)
+    if L < 1e-12:
+        return None
+    return (dx / L, dy / L)
+
+
+def _cubic_tangent(p0, p1, p2, p3, t: float):
+    """Unit tangent of a cubic at t, falling back to the chord when the
+    derivative degenerates (coincident control points)."""
+    u = 1.0 - t
+    dx = 3*u*u*(p1[0]-p0[0]) + 6*u*t*(p2[0]-p1[0]) + 3*t*t*(p3[0]-p2[0])
+    dy = 3*u*u*(p1[1]-p0[1]) + 6*u*t*(p2[1]-p1[1]) + 3*t*t*(p3[1]-p2[1])
+    return _unit(dx, dy) or _unit(p3[0]-p0[0], p3[1]-p0[1]) or (1.0, 0.0)
+
+
+def _end_tangents(p0, p1, p2, p3):
+    """Unit tangents at t=0 and t=1 with the standard degenerate fallbacks
+    (a retracted handle falls through to the next control point)."""
+    t0 = (_unit(p1[0]-p0[0], p1[1]-p0[1])
+          or _unit(p2[0]-p0[0], p2[1]-p0[1])
+          or _unit(p3[0]-p0[0], p3[1]-p0[1]) or (1.0, 0.0))
+    t1 = (_unit(p3[0]-p2[0], p3[1]-p2[1])
+          or _unit(p3[0]-p1[0], p3[1]-p1[1])
+          or _unit(p3[0]-p0[0], p3[1]-p0[1]) or (1.0, 0.0))
+    return t0, t1
+
+
+def _line_intersect(a, ad, b, bd):
+    """Intersection of lines a + s·ad and b + u·bd, or None if near-parallel."""
+    det = ad[0] * bd[1] - ad[1] * bd[0]
+    if abs(det) < 1e-9:
+        return None
+    s = ((b[0] - a[0]) * bd[1] - (b[1] - a[1]) * bd[0]) / det
+    return (a[0] + ad[0] * s, a[1] + ad[1] * s)
+
+
+def _offset_cubic_th(p0, p1, p2, p3, d: float):
+    """Tiller–Hanson offset candidate for one cubic.
+
+    Endpoints are displaced exactly d along the curve normal; the interior
+    control points come from intersecting the translated control-polygon legs,
+    so tangent directions are preserved (G1 with the neighbours). Accuracy is
+    enforced by the caller's error check + subdivision, not here.
+    """
+    t0, t1 = _end_tangents(p0, p1, p2, p3)
+    q0 = (p0[0] - t0[1] * d, p0[1] + t0[0] * d)
+    q3 = (p3[0] - t1[1] * d, p3[1] + t1[0] * d)
+
+    mid = _unit(p2[0] - p1[0], p2[1] - p1[1])
+    if mid is None:
+        # No interior leg — carry the handle vectors over unchanged.
+        q1 = (q0[0] + (p1[0] - p0[0]), q0[1] + (p1[1] - p0[1]))
+        q2 = (q3[0] + (p2[0] - p3[0]), q3[1] + (p2[1] - p3[1]))
+        return [q0, q1, q2, q3]
+
+    m0 = (p1[0] - mid[1] * d, p1[1] + mid[0] * d)   # translated middle leg
+    q1 = _line_intersect(q0, t0, m0, mid)
+    q2 = _line_intersect(q3, t1, m0, mid)
+    # Miter blow-up guard: a wild intersection (near-parallel legs) only wastes
+    # subdivisions — replace it with the plain translated control point.
+    lim = 4.0 * abs(d)
+    if q1 is None or math.hypot(q1[0]-p1[0], q1[1]-p1[1]) > lim + math.hypot(p1[0]-p0[0], p1[1]-p0[1]):
+        q1 = (p1[0] - t0[1] * d, p1[1] + t0[0] * d)
+    if q2 is None or math.hypot(q2[0]-p2[0], q2[1]-p2[1]) > lim + math.hypot(p3[0]-p2[0], p3[1]-p2[1]):
+        q2 = (p2[0] - t1[1] * d, p2[1] + t1[0] * d)
+    return [q0, q1, q2, q3]
+
+
+def _offset_ok(src, cand, d: float, tol: float = _OFFSET_TOL_MM) -> bool:
+    """True when *cand* tracks the exact offset of *src* (point + normal·d)
+    within tol at several interior parameters."""
+    p0, p1, p2, p3 = src
+    for t in (0.2, 0.35, 0.5, 0.65, 0.8):
+        sx, sy = _bezier_eval(p0, p1, p2, p3, t)
+        tx, ty = _cubic_tangent(p0, p1, p2, p3, t)
+        cx, cy = _bezier_eval(cand[0], cand[1], cand[2], cand[3], t)
+        if math.hypot(cx - (sx - ty * d), cy - (sy + tx * d)) > tol:
+            return False
+    return True
+
+
+def _offset_segment(p0, p1, p2, p3, d: float, out: list, depth: int = 0) -> None:
+    """Append cubic(s) approximating the offset of p0..p3, subdividing the
+    source until the Tiller–Hanson candidate is within tolerance."""
+    cand = _offset_cubic_th(p0, p1, p2, p3, d)
+    if depth >= _OFFSET_MAX_DEPTH or _offset_ok((p0, p1, p2, p3), cand, d):
+        out.append(cand)
+        return
+    left, right = split_bezier_at_t(p0, p1, p2, p3, 0.5)
+    _offset_segment(left[0],  left[1],  left[2],  left[3],  d, out, depth + 1)
+    _offset_segment(right[0], right[1], right[2], right[3], d, out, depth + 1)
+
+
+def _offset_winding_d(curve: Curve, d_mm: float) -> float:
+    """Winding-corrected offset distance: +d must grow a closed shape whatever
+    the node winding. The signed area of the SAMPLED curve (not the node
+    polygon, which is degenerate for the two-node closed spline of GitHub issue
+    #5) gives the true winding — positive area ⇒ the left-hand normal points
+    inward, so flip d."""
+    if curve.closed:
+        area = _signed_area_pts([(x, y) for x, y, _ in sample_curve(curve)])
+        if area > 0:
+            return -d_mm
+    return d_mm
+
+
+def _assemble_offset_cubics(cubics: list, closed: bool,
+                            layer, line_weight: float) -> Curve:
+    """Build an offset Curve from an ordered cubic list. Consecutive cubics
+    that meet (gap ≤ _OFFSET_JOIN_TOL) share a smooth node; a real gap — a
+    source corner — is bridged with a straight bevel (two handle-less nodes)."""
+    nodes: List[SplineNode] = []
+    first = SplineNode(x=cubics[0][0][0], y=cubics[0][0][1])
+    first.cp_out = ControlPoint(*cubics[0][1])
+    nodes.append(first)
+    for prev, nxt in zip(cubics, cubics[1:], strict=False):
+        gap = math.hypot(nxt[0][0] - prev[3][0], nxt[0][1] - prev[3][1])
+        if gap <= _OFFSET_JOIN_TOL:
+            nd = SplineNode(x=(prev[3][0] + nxt[0][0]) / 2.0,
+                            y=(prev[3][1] + nxt[0][1]) / 2.0)
+            nd.cp_in  = ControlPoint(*prev[2])
+            nd.cp_out = ControlPoint(*nxt[1])
+            nodes.append(nd)
+        else:
+            e = SplineNode(x=prev[3][0], y=prev[3][1])
+            e.cp_in = ControlPoint(*prev[2])
+            s = SplineNode(x=nxt[0][0], y=nxt[0][1])
+            s.cp_out = ControlPoint(*nxt[1])
+            nodes.append(e)
+            nodes.append(s)
+    last = cubics[-1]
+    if closed:
+        gap = math.hypot(last[3][0] - nodes[0].x, last[3][1] - nodes[0].y)
+        if gap <= _OFFSET_JOIN_TOL:
+            nodes[0].cp_in = ControlPoint(*last[2])
+        else:
+            e = SplineNode(x=last[3][0], y=last[3][1])
+            e.cp_in = ControlPoint(*last[2])
+            nodes.append(e)   # bevel across the seam back to nodes[0]
+    else:
+        e = SplineNode(x=last[3][0], y=last[3][1])
+        e.cp_in = ControlPoint(*last[2])
+        nodes.append(e)
+
+    return Curve(kind="spline", layer=layer, nodes=nodes,
+                 closed=closed, line_weight=line_weight)
+
+
+def _offset_spline(curve: Curve, d_mm: float) -> Curve:
+    """Accurate Tiller–Hanson spline offset: every bezier segment is offset
+    against the drawn curve itself (handles included), not the node polygon, so
+    the result is parallel within _OFFSET_TOL_MM and G1-smooth wherever the
+    source is. Node-heavy by nature (one node per subdivision) — offset_curve
+    refits it down via the M31 engine, keeping this as the backstop."""
+    import copy as _copy
+
+    ns = _n_segs(curve)
+    d = _offset_winding_d(curve, d_mm)
+
+    cubics: list = []
+    for i in range(ns):
+        a, b = _seg_nodes(curve, i)
+        p0, p1, p2, p3 = _seg_pts(a, b)
+        if max(abs(px - p0[0]) + abs(py - p0[1])
+               for px, py in (p1, p2, p3)) < 1e-9:
+            continue   # zero-length segment (coincident nodes) — skip
+        _offset_segment(p0, p1, p2, p3, d, cubics)
+    if not cubics:
+        return _copy.deepcopy(curve)
+
+    return _assemble_offset_cubics(cubics, curve.closed,
+                                   curve.layer, curve.line_weight)
+
+
+# ---- Offset node reduction (M31.1) ----------------------------------------
+
+_OFFSET_CORNER_RAD  = math.radians(1.0)   # tangent break above this = a corner
+_OFFSET_FIT_PER_SEG = 24                   # exact-offset samples per source seg
+
+
+def _tangent_break(curve: Curve, i: int) -> float:
+    """Turn angle (radians) between the incoming and outgoing tangents at node
+    i — handles when present, neighbour nodes otherwise. Large ⇒ a source
+    corner where the offset breaks (and gets a bevel)."""
+    nodes = curve.nodes
+    n = len(nodes)
+    node = nodes[i]
+    vin = (_unit(node.x - node.cp_in.x, node.y - node.cp_in.y)
+           if node.cp_in is not None else None)
+    if vin is None:
+        prev = nodes[(i - 1) % n]
+        vin = _unit(node.x - prev.x, node.y - prev.y)
+    vout = (_unit(node.cp_out.x - node.x, node.cp_out.y - node.y)
+            if node.cp_out is not None else None)
+    if vout is None:
+        nxt = nodes[(i + 1) % n]
+        vout = _unit(nxt.x - node.x, nxt.y - node.y)
+    if vin is None or vout is None:
+        return 0.0
+    return abs(math.atan2(vin[0] * vout[1] - vin[1] * vout[0],
+                          vin[0] * vout[0] + vin[1] * vout[1]))
+
+
+def _smooth_runs(curve: Curve):
+    """Partition the source segments into maximal runs with no corner between
+    them. Returns (runs, has_corner); each run is an ordered segment-index
+    list. For a closed source with corners the runs wrap, starting after a
+    corner so every run is a clean open span."""
+    ns = _n_segs(curve)
+    n = len(curve.nodes)
+    if curve.closed:
+        corner = [_tangent_break(curve, i) > _OFFSET_CORNER_RAD for i in range(n)]
+        if not any(corner):
+            return [list(range(ns))], False
+        start = next(i for i in range(n) if corner[i])
+        runs, run = [], []
+        for k in range(ns):
+            si = (start + k) % ns
+            run.append(si)
+            if corner[(si + 1) % n]:
+                runs.append(run)
+                run = []
+        if run:
+            runs.append(run)
+        return runs, True
+
+    corner = [False] * n
+    for i in range(1, n - 1):
+        corner[i] = _tangent_break(curve, i) > _OFFSET_CORNER_RAD
+    runs, run = [], []
+    for si in range(ns):
+        run.append(si)
+        if corner[si + 1]:
+            runs.append(run)
+            run = []
+    if run:
+        runs.append(run)
+    return runs, any(corner)
+
+
+def _exact_offset_points(curve: Curve, seg_indices: list, d: float,
+                         closed_loop: bool) -> List[Tuple[float, float]]:
+    """Dense EXACT offset points (source point + left-normal·d) along the given
+    contiguous source segments. closed_loop omits the final endpoint so the
+    points form a seam-free loop for a closed fit."""
+    pts: List[Tuple[float, float]] = []
+    m = len(seg_indices)
+    for k, si in enumerate(seg_indices):
+        a, b = _seg_nodes(curve, si)
+        p0, p1, p2, p3 = _seg_pts(a, b)
+        last = (k == m - 1)
+        count = _OFFSET_FIT_PER_SEG + (1 if (last and not closed_loop) else 0)
+        for j in range(count):
+            t = j / _OFFSET_FIT_PER_SEG
+            x, y = _bezier_eval(p0, p1, p2, p3, t)
+            tx, ty = _cubic_tangent(p0, p1, p2, p3, t)
+            pts.append((x - ty * d, y + tx * d))
+    return pts
+
+
+def _curve_cubics(c: Curve) -> list:
+    """Extract the cubic control-point list from a fitted spline Curve."""
+    nodes = c.nodes
+    cubics = []
+    segs = list(range(len(nodes) - 1))
+    if c.closed and len(nodes) >= 2:
+        segs.append(len(nodes) - 1)   # wrap seam
+    for i in segs:
+        a, b = nodes[i], nodes[(i + 1) % len(nodes)]
+        p0 = (a.x, a.y)
+        p1 = (a.cp_out.x, a.cp_out.y) if a.cp_out else p0
+        p3 = (b.x, b.y)
+        p2 = (b.cp_in.x, b.cp_in.y) if b.cp_in else p3
+        cubics.append([p0, p1, p2, p3])
+    return cubics
+
+
+def _point_polyline_dist(p, poly) -> float:
+    best = float("inf")
+    for a, b in zip(poly, poly[1:], strict=False):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L2 = dx * dx + dy * dy
+        if L2 < 1e-18:
+            d2 = (p[0] - a[0]) ** 2 + (p[1] - a[1]) ** 2
+        else:
+            t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2))
+            d2 = (p[0] - a[0] - dx * t) ** 2 + (p[1] - a[1] - dy * t) ** 2
+        if d2 < best:
+            best = d2
+    return math.sqrt(best)
+
+
+def _offset_matches(reduced: Curve, reference: Curve) -> bool:
+    """True when the reduced offset stays within a small band of the Tiller–
+    Hanson reference everywhere (two-sided). Catches a fit that self-intersected
+    on an inward offset past the curvature limit — there we keep TH instead."""
+    tol = max(_OFFSET_TOL_MM * 5.0, 0.08)
+    pa = [(x, y) for x, y, _ in sample_curve(reduced, _OFFSET_FIT_PER_SEG)]
+    pb = [(x, y) for x, y, _ in sample_curve(reference, _OFFSET_FIT_PER_SEG)]
+    if len(pa) < 2 or len(pb) < 2:
+        return False
+    if max(_point_polyline_dist(p, pb) for p in pa) > tol:
+        return False
+    if max(_point_polyline_dist(p, pa) for p in pb) > tol:
+        return False
+    return True
+
+
+def _reduce_offset_nodes(curve: Curve, d_mm: float, th: Curve):
+    """Reproduce the Tiller–Hanson offset *th* with far fewer nodes by fitting
+    the EXACT offset (source point + normal·d — never the TH output, so the
+    error budgets don't stack). Returns a reduced Curve, or None to keep TH
+    (a fit that saved nothing, or drifted — e.g. a self-intersecting inward
+    offset past the curvature limit)."""
+    try:
+        from .fitting import fit_curve
+
+        d = _offset_winding_d(curve, d_mm)
+        runs, has_corner = _smooth_runs(curve)
+
+        if curve.closed and not has_corner:
+            pts = _exact_offset_points(curve, runs[0], d, closed_loop=True)
+            if len(pts) < 4:
+                return None
+            reduced = fit_curve(pts, tol_mm=_OFFSET_TOL_MM, closed=True,
+                                layer=curve.layer,
+                                line_weight=curve.line_weight).curve
+        else:
+            cubics: list = []
+            for run in runs:
+                pts = _exact_offset_points(curve, run, d, closed_loop=False)
+                if len(pts) < 2:
+                    continue
+                cubics += _curve_cubics(
+                    fit_curve(pts, tol_mm=_OFFSET_TOL_MM, closed=False,
+                              layer=curve.layer,
+                              line_weight=curve.line_weight).curve)
+            if not cubics:
+                return None
+            reduced = _assemble_offset_cubics(cubics, curve.closed,
+                                              curve.layer, curve.line_weight)
+
+        if len(reduced.nodes) >= len(th.nodes):
+            return None   # no saving — keep the backstop
+        if _offset_matches(reduced, th):
+            return reduced
+        return None
+    except Exception:
+        return None
 
 
 def offset_curve(curve: Curve, d_mm: float) -> Curve:
@@ -725,20 +1094,25 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
     shrinks it — independent of node winding (GitHub issue #1: the old
     left-normal rule sent +d inward on screen-clockwise shapes).
     Open curves: positive d = left-hand normal of the node order.
-    Result has the same kind, layer, and node count as the input.
-    Circles and arcs are offset analytically (radius ± d).
+
+    Splines are offset against the true drawn curve — each bezier segment is
+    offset with adaptive subdivision until it is parallel within
+    _OFFSET_TOL_MM (GitHub issues #5/#6: the old node-polygon offset discarded
+    the handles, collapsing two-node closed splines to a line and drifting off
+    the curve between nodes). That Tiller–Hanson result is then refit through
+    the M31 cubic-fitting engine — sampling the EXACT offset, not the TH output,
+    so the error budgets don't stack — to return a compact, editable curve
+    (M31.1); if the refit saves nothing or drifts (a self-intersecting inward
+    offset past the curvature limit) the TH result is returned unchanged.
+    Corners (broken handles) get a straight bevel join and stay sharp across the
+    refit. Circles and arcs are offset analytically (radius ± d).
     """
     import copy as _copy
 
     if d_mm == 0.0:
         return _copy.deepcopy(curve)
 
-    if curve.kind == "circle":
-        c = _copy.deepcopy(curve)
-        c.radius = max(0.0, (c.radius or 0.0) + d_mm)
-        return c
-
-    if curve.kind == "arc":
+    if curve.kind in ("circle", "arc"):
         c = _copy.deepcopy(curve)
         c.radius = max(0.0, (c.radius or 0.0) + d_mm)
         return c
@@ -749,6 +1123,11 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
         return _copy.deepcopy(curve)
 
     closed = curve.closed
+
+    if curve.kind != "line":
+        th = _offset_spline(curve, d_mm)
+        reduced = _reduce_offset_nodes(curve, d_mm, th)
+        return reduced if reduced is not None else th
 
     def _seg_normal(ax: float, ay: float, bx: float, by: float):
         """Left-hand unit normal of segment a→b."""
@@ -785,48 +1164,14 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
             out.append(SplineNode(x=ox, y=oy))
         return out
 
-    def _spline_nodes(d: float) -> List[SplineNode]:
-        out: List[SplineNode] = []
-        for i in range(n):
-            nd = nodes[i]
-            if closed:
-                prev = nodes[(i - 1) % n]
-                nxt  = nodes[(i + 1) % n]
-            else:
-                prev = nodes[max(0, i - 1)]
-                nxt  = nodes[min(n - 1, i + 1)]
-            n1 = _seg_normal(prev.x, prev.y, nd.x, nd.y)
-            n2 = _seg_normal(nd.x, nd.y, nxt.x, nxt.y)
-            if i == 0 and not closed:
-                nx, ny = n2
-            elif i == n - 1 and not closed:
-                nx, ny = n1
-            else:
-                nx = n1[0] + n2[0]
-                ny = n1[1] + n2[1]
-                L = math.hypot(nx, ny)
-                if L < 1e-9:
-                    nx, ny = n1
-                else:
-                    nx /= L
-                    ny /= L
-            out.append(SplineNode(x=nd.x + nx * d, y=nd.y + ny * d))
-        return out
-
-    build = _line_nodes if curve.kind == "line" else _spline_nodes
-    new_nodes = build(d_mm)
+    new_nodes = _line_nodes(d_mm)
     if closed and n >= 3:
         # Normalize direction: +d must grow the shape whatever the winding.
         grew = _abs_polygon_area(new_nodes) > _abs_polygon_area(nodes)
         if grew != (d_mm > 0):
-            new_nodes = build(-d_mm)
+            new_nodes = _line_nodes(-d_mm)
 
-    if curve.kind == "line":
-        return Curve(kind="line", layer=curve.layer, nodes=new_nodes,
-                     closed=closed, line_weight=curve.line_weight)
-
-    compute_catmull_handles(new_nodes, closed)
-    return Curve(kind="spline", layer=curve.layer, nodes=new_nodes,
+    return Curve(kind="line", layer=curve.layer, nodes=new_nodes,
                  closed=closed, line_weight=curve.line_weight)
 
 

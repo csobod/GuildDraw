@@ -33,6 +33,47 @@ _NS  = "http://www.w3.org/2000/svg"
 _XNS = "http://www.w3.org/XML/1998/namespace"
 
 
+# ---------- face-image path privacy helpers ----------
+# A standalone .svg can't embed binary photos the way .gdraw does, so its
+# metadata stores a document-relative path when the image lives under the
+# document's folder, else just the basename — never the author's absolute
+# C:\Users\<name>\… path (which leaked into shared files).
+
+def portable_face_images(face_images: list, doc_path: str) -> list:
+    """Return FaceImage copies whose paths carry no personal directory info."""
+    import dataclasses
+    doc_dir = os.path.dirname(os.path.abspath(doc_path))
+    out = []
+    for fi in face_images or []:
+        p = fi.path
+        if not p or not os.path.isabs(p):
+            out.append(fi)
+            continue
+        try:
+            rel = os.path.relpath(p, doc_dir)
+        except ValueError:                       # different drive
+            rel = None
+        if rel is None or rel.startswith(".."):
+            rel = os.path.basename(p)
+        out.append(dataclasses.replace(fi, path=rel.replace(os.sep, "/")))
+    return out
+
+
+def resolve_face_images(face_images: list, doc_path: str) -> None:
+    """Resolve relative FaceImage paths against the document's folder,
+    in place. Honored only when the result stays inside that folder, so a
+    crafted file can't point at arbitrary local images. Absolute paths pass
+    through unchanged (pre-1.0 files; honored downstream only if they exist)."""
+    doc_dir = os.path.dirname(os.path.abspath(doc_path))
+    for fi in face_images or []:
+        p = fi.path
+        if not p or os.path.isabs(p):
+            continue
+        cand = os.path.normpath(os.path.join(doc_dir, p))
+        if cand.startswith(doc_dir + os.sep) and os.path.isfile(cand):
+            fi.path = cand
+
+
 # ---------- path-data helpers ----------
 
 def _path_d(curve: Curve) -> str:

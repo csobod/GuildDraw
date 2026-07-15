@@ -24,6 +24,7 @@ _HIDDEN_FRAMEDRAFT = [
     "framedraft.geometry",
     "framedraft.boxing",
     "framedraft.resize",
+    "framedraft.fitting",
     "framedraft.prefs",
     "framedraft.theme",
     "framedraft.icons",
@@ -48,6 +49,7 @@ _HIDDEN_FRAMEDRAFT = [
     "framedraft.tools.split",
     "framedraft.tools.offset",
     "framedraft.tools.point_move",
+    "framedraft.tools.rebuild",
     "framedraft.tools.text",
     "framedraft.export.svg",
     "framedraft.export.dxf",
@@ -57,6 +59,7 @@ _HIDDEN_FRAMEDRAFT = [
     "framedraft.export.gdraw",
     "framedraft.export.oma",
     "framedraft.export.batch",
+    "framedraft.export.catalog_pdf",
 ]
 
 # Qt modules this app never touches — excluded to keep the bundle lean.

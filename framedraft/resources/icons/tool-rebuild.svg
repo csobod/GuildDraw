@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+  <!-- dense / rough source curve (faint, dashed) -->
+  <path d="M2,8 C4,4.7 5.7,7.8 8,6.2 C10.3,4.6 11.7,7.6 14,6 C15.6,4.9 16.8,6 18,5.2" stroke-width="1.3" stroke-opacity="0.4" stroke-dasharray="1.7,1.3"/>
+  <!-- clean rebuilt curve -->
+  <path d="M2,15 C6,10 14,10 18,14" stroke-width="1.6"/>
+  <!-- the few rebuilt nodes -->
+  <circle fill="currentColor" stroke="none" cx="2" cy="15" r="1.35"/>
+  <circle fill="currentColor" stroke="none" cx="10" cy="11.1" r="1.35"/>
+  <circle fill="currentColor" stroke="none" cx="18" cy="14" r="1.35"/>
+</svg>

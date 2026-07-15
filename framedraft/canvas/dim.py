@@ -76,6 +76,17 @@ class DimItem(QGraphicsItem):
         # zoom moves far enough that the old pad no longer covers the label.
         self._br_scale   = 1.0
         self._label_w_px = 90.0
+        # Deferred bounds-sync timer. It MUST be owned (not a fire-and-forget
+        # QTimer.singleShot on this non-QObject item): a pending singleShot
+        # could fire on a DELETED item and crash — PySide marshals the call
+        # into freed C++ memory before any Python guard runs. That was the
+        # "delete a dimension → app closes" segfault. The item↔timer connection
+        # keeps the wrapper alive while a sync is pending, and itemChange()
+        # stops it the instant the item leaves the scene.
+        self._bounds_timer = QTimer()
+        self._bounds_timer.setSingleShot(True)
+        self._bounds_timer.setInterval(0)
+        self._bounds_timer.timeout.connect(self._sync_bounds)
 
     # ------------------------------------------------------------------
     # Geometry helpers
@@ -247,48 +258,68 @@ class DimItem(QGraphicsItem):
                 painter.drawEllipse(pt, r_mm, r_mm)
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
-        # ── label: parallel to the dim line, floating clear above it ──
+        # ── label: parallel to the dim line, on the side AWAY from the
+        # measured geometry (the direction the dim line was offset toward), so
+        # the number never sits crammed between the object and its dim line. ──
         dist_mm = math.hypot(dx_m, dy_m)
         label   = f"{dist_mm:.2f} mm"
         A_s = t_painter.map(A)
         B_s = t_painter.map(B)
+        P0_s = t_painter.map(P0)                      # a geometry anchor (screen)
         mid = QPointF((A_s.x() + B_s.x()) / 2, (A_s.y() + B_s.y()) / 2)
-        ang = math.degrees(math.atan2(B_s.y() - A_s.y(), B_s.x() - A_s.x()))
-        if ang > 90.0 or ang <= -90.0:
-            ang += 180.0   # keep the text upright
+        lx, ly = B_s.x() - A_s.x(), B_s.y() - A_s.y()
+        L = math.hypot(lx, ly) or 1.0
+        ux, uy = lx / L, ly / L                       # unit along the dim line
+        px, py = -uy, ux                              # screen perpendicular
+        # Flip the perpendicular so it points away from the geometry: the
+        # geometry sits on the −offset side, so mid→P0 has a component toward it.
+        if px * (P0_s.x() - mid.x()) + py * (P0_s.y() - mid.y()) > 0:
+            px, py = -px, -py
 
-        painter.save()
-        painter.resetTransform()
-        painter.translate(mid)
-        painter.rotate(ang)
+        ang = math.degrees(math.atan2(uy, ux))
+        if ang > 90.0 or ang <= -90.0:
+            ang += 180.0                              # keep the text upright
 
         font = QFont("Segoe UI")   # no point size — pixel-sized below
         font.setPixelSize(_LABEL_PX)
-        painter.setFont(font)
-        painter.setPen(QPen(color))
-
         fm = QFontMetrics(font)
         self._label_w_px = float(fm.horizontalAdvance(label))
-        # Baseline gap + descent above the line: the whole text box clears
-        # the dim line by _LABEL_GAP_PX at any angle and zoom.
+        text_h = fm.ascent() + fm.descent()
+        # Push the label centre off the line by the gap + half its height, on
+        # the away side, then draw it centred and upright.
+        gap = _LABEL_GAP_PX + text_h / 2.0
+        cx, cy = mid.x() + px * gap, mid.y() + py * gap
+
+        painter.save()
+        painter.resetTransform()
+        painter.translate(cx, cy)
+        painter.rotate(ang)
+        painter.setFont(font)
+        painter.setPen(QPen(color))
         painter.drawText(
-            QPointF(-self._label_w_px / 2.0,
-                    -(_LABEL_GAP_PX + fm.descent())), label)
+            QPointF(-self._label_w_px / 2.0, fm.ascent() - text_h / 2.0), label)
         painter.restore()
 
         # Screen-sized decorations moved relative to scene mm — refresh the
         # cached scale (and the bounding rect derived from it) off-paint.
         if abs(scale - self._br_scale) > 0.2 * self._br_scale:
             self._br_scale = scale
-            QTimer.singleShot(0, self._sync_bounds)
+            self._bounds_timer.start()   # owned + cancelled on removal
 
     def _sync_bounds(self):
-        # Queued from paint — the item (a non-QObject, so no parent-cancelled
-        # timers) may have been removed AND C++-deleted before this fires.
-        import shiboken6
-        if shiboken6.isValid(self) and self.scene() is not None:
+        # Only ever fires while the item is in a scene (the timer is stopped in
+        # itemChange the moment it is removed), so this runs on a live item.
+        if self.scene() is not None:
             self.prepareGeometryChange()
             self.update()
+
+    def itemChange(self, change, value):
+        # Leaving the scene (removed or deleted): cancel any pending bounds
+        # sync so its timer can never fire on a dead item.
+        if (change == self.GraphicsItemChange.ItemSceneChange
+                and value is None):
+            self._bounds_timer.stop()
+        return super().itemChange(change, value)
 
     # ------------------------------------------------------------------
     # Drag interaction — updates dim.offset on mouse move

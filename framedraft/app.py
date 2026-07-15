@@ -14,9 +14,9 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QComboBox, QMessageBox,
     QDialog, QCheckBox, QHBoxLayout, QInputDialog, QListWidget, QListWidgetItem,
     QScrollArea, QTabWidget, QLineEdit, QTreeWidget, QTreeWidgetItem,
-    QColorDialog, QAbstractItemView, QRubberBand,
+    QColorDialog, QAbstractItemView, QRubberBand, QDialogButtonBox,
 )
-from PySide6.QtCore import Qt, QPointF, QSize, QTimer, Signal, QRect, QPoint
+from PySide6.QtCore import Qt, QPointF, QSize, QTimer, Signal, QRect, QRectF, QPoint
 from PySide6.QtGui import (
     QAction, QActionGroup, QColor, QBrush, QIcon, QPainter, QPen, QPixmap,
 )
@@ -45,6 +45,7 @@ from .tools.trim import TrimTool
 from .tools.fillet import FilletTool
 from .tools.split import SplitTool
 from .tools.offset import OffsetTool
+from .tools.rebuild import RebuildSplineTool
 from .tools.point_move import PointMoveTool
 from .tools.text import TextTool, TextDialog
 from .pinnable_toolbar import PinnableToolBar
@@ -109,6 +110,7 @@ _TOOLBAR_ACTION_DEFS = [
     ("trim",         "Trim",                    True),
     ("split_curve",  "Split Curve",             True),
     ("offset",       "Offset",                  True),
+    ("rebuild",      "Rebuild Spline",          True),
     ("point_move",   "Point Move",              True),
     ("ghost",        "Ghost (mirror toggle)",   True),
     ("guides",       "Guides",                  True),
@@ -142,6 +144,7 @@ _HOTKEY_ACTION_DEFS = [
     ("trim",         "Trim tool"),
     ("split_curve",  "Split Curve tool"),
     ("offset",       "Offset tool"),
+    ("rebuild",      "Rebuild Spline tool"),
     ("point_move",   "Point Move tool"),
     ("text",         "Text tool"),
     ("snap_node_ep", "Snap Node to Endpoint"),
@@ -802,6 +805,7 @@ class WorkspaceState:
         self.fillet_tool = FilletTool(parent_win)
         self.split_tool  = SplitTool(parent_win)
         self.offset_tool     = OffsetTool(parent_win)
+        self.rebuild_tool    = RebuildSplineTool(parent_win)
         self.point_move_tool = PointMoveTool(parent_win)
         self.text_tool       = TextTool(parent_win)
 
@@ -1460,6 +1464,97 @@ class SettingsDialog(QDialog):
         hk_lay.addWidget(non_reassignable)
         hk_lay.addStretch()
 
+        # ═══════════════════════════════════════════════════════════════════
+        # Tab 6 — Catalog PDF
+        # ═══════════════════════════════════════════════════════════════════
+        from PySide6.QtWidgets import QFontComboBox
+        from PySide6.QtGui import QFont
+        from .document import WORKSPACE_LAYERS as _WS_LAYERS
+
+        cat_outer = QWidget()
+        cat_lay   = QVBoxLayout(cat_outer)
+        cat_lay.setSpacing(8)
+        cat_lay.setContentsMargins(16, 16, 16, 8)
+        cat_scroll = QScrollArea()
+        cat_scroll.setWidgetResizable(True)
+        cat_scroll.setWidget(cat_outer)
+        tabs.addTab(cat_scroll, "PDF")
+
+        cat_cfg = {**_pm.DEFAULTS["catalog_pdf"],
+                   **(prefs.get("catalog_pdf") or {})}
+
+        cat_intro = QLabel(
+            "Settings for the PDF/print exports. The line weight and vertical "
+            "offset apply to “PDF for Catalog”, “PDF (1:1)” and “Print (1:1)”; "
+            "the caption and layer choices below are for the catalog sheet.")
+        cat_intro.setWordWrap(True)
+        cat_lay.addWidget(cat_intro)
+
+        cat_form = QFormLayout()
+        cat_form.setSpacing(6)
+        cat_lay.addLayout(cat_form)
+
+        self._cat_paper = QComboBox()
+        self._cat_paper_choices = [("a5", "A5 (landscape)"),
+                                   ("half_letter", "Half-Letter (landscape)")]
+        for _k, _lbl in self._cat_paper_choices:
+            self._cat_paper.addItem(_lbl, _k)
+        self._cat_paper.setCurrentIndex(
+            next((i for i, (k, _l) in enumerate(self._cat_paper_choices)
+                  if k == cat_cfg["paper"]), 0))
+        cat_form.addRow("Paper size:", self._cat_paper)
+
+        self._cat_lw = QDoubleSpinBox()
+        self._cat_lw.setRange(0.1, 3.0)
+        self._cat_lw.setSingleStep(0.1)
+        self._cat_lw.setDecimals(2)
+        self._cat_lw.setSuffix(" mm")
+        self._cat_lw.setValue(float(cat_cfg["line_weight_mm"]))
+        cat_form.addRow("Line weight:", self._cat_lw)
+
+        self._cat_offset = QDoubleSpinBox()
+        self._cat_offset.setRange(-100.0, 100.0)
+        self._cat_offset.setSingleStep(1.0)
+        self._cat_offset.setDecimals(1)
+        self._cat_offset.setSuffix(" mm")
+        self._cat_offset.setValue(float(cat_cfg.get("content_offset_mm", 0.0)))
+        self._cat_offset.setToolTip(
+            "Shift the drawing down (+) or up (−) on the page; the file-name "
+            "caption stays put. Use it to clear a binding/spine margin when "
+            "several pages are bound into a catalog. 0 = centred.")
+        cat_form.addRow("Frame vertical offset:", self._cat_offset)
+
+        self._cat_font = QFontComboBox()
+        self._cat_font.setCurrentFont(QFont(cat_cfg["caption_font"]))
+        cat_form.addRow("Caption font:", self._cat_font)
+
+        self._cat_caption_chk = QCheckBox("Print the design file name (caption)")
+        self._cat_caption_chk.setChecked(bool(cat_cfg["caption"]))
+        cat_lay.addWidget(self._cat_caption_chk)
+
+        self._cat_scale_chk = QCheckBox(
+            "Print a scale note  (off = true page scale, as rendered)")
+        self._cat_scale_chk.setChecked(bool(cat_cfg["show_scale"]))
+        cat_lay.addWidget(self._cat_scale_chk)
+
+        def _cat_layer_group(title, ws_key, selected):
+            box = QGroupBox(title)
+            v = QVBoxLayout(box)
+            checks = {}
+            for layer in _WS_LAYERS[ws_key]:
+                cb = QCheckBox(layer.value)
+                cb.setChecked(layer.value in selected)
+                v.addWidget(cb)
+                checks[layer.value] = cb
+            cat_lay.addWidget(box)
+            return checks
+
+        self._cat_front_layers = _cat_layer_group(
+            "Frame front — layers to show", "front", cat_cfg["front_layers"])
+        self._cat_temple_layers = _cat_layer_group(
+            "Temples — layers to show", "temple_r", cat_cfg["temple_layers"])
+        cat_lay.addStretch()
+
         self._check_conflicts()
 
     # ------------------------------------------------------------------
@@ -1621,6 +1716,18 @@ class SettingsDialog(QDialog):
             "pad_height_mm":        self._pad_h.value(),
             "toolbar":              toolbar,
             "hotkeys":              hotkeys,
+            "catalog_pdf": {
+                "paper":          self._cat_paper.currentData(),
+                "line_weight_mm": self._cat_lw.value(),
+                "content_offset_mm": self._cat_offset.value(),
+                "caption":        self._cat_caption_chk.isChecked(),
+                "caption_font":   self._cat_font.currentFont().family(),
+                "show_scale":     self._cat_scale_chk.isChecked(),
+                "front_layers":   [n for n, cb in self._cat_front_layers.items()
+                                   if cb.isChecked()],
+                "temple_layers":  [n for n, cb in self._cat_temple_layers.items()
+                                   if cb.isChecked()],
+            },
         }
 
 
@@ -1757,6 +1864,8 @@ class MainWindow(QMainWindow):
     @property
     def _offset_tool(self): return self._active_ws.offset_tool
     @property
+    def _rebuild_tool(self): return self._active_ws.rebuild_tool
+    @property
     def _point_move_tool(self): return self._active_ws.point_move_tool
     @property
     def _text_tool(self): return self._active_ws.text_tool
@@ -1891,6 +2000,9 @@ class MainWindow(QMainWindow):
             ws.offset_tool.offset_applied.connect(self._on_offset_applied)
             ws.offset_tool.status_message.connect(self._status.showMessage)
             ws.offset_tool.cancelled.connect(self._on_offset_cancelled)
+            ws.rebuild_tool.rebuild_applied.connect(self._on_rebuild_applied)
+            ws.rebuild_tool.status_message.connect(self._status.showMessage)
+            ws.rebuild_tool.cancelled.connect(self._on_rebuild_cancelled)
             ws.point_move_tool.moved.connect(self._on_point_moved)
             ws.point_move_tool.status_message.connect(self._status.showMessage)
             ws.text_tool.text_added.connect(self._on_text_added)
@@ -1926,6 +2038,7 @@ class MainWindow(QMainWindow):
             "trim":         self._act_trim.trigger,
             "split_curve":  self._act_split_curve.trigger,
             "offset":       self._act_offset.trigger,
+            "rebuild":      self._act_rebuild.trigger,
             "point_move":   self._act_point_move.trigger,
             "text":         self._act_text.trigger,
             "snap_node_ep": self._snap_selected_node_to_endpoint,
@@ -2220,6 +2333,15 @@ class MainWindow(QMainWindow):
             "Esc to cancel."
         )
 
+        self._act_rebuild = QAction("Rebuild", self, checkable=True)
+        self._act_rebuild.setToolTip(
+            "Rebuild Spline (R): select a spline or polyline, then type a target\n"
+            "node count (Tab switches to a tolerance in mm) and press Enter to\n"
+            "rebuild it with fewer, cleaner nodes. The HUD shows the resulting\n"
+            "max deviation live. Ideal for tidying imported DXF outlines.\n"
+            "Esc to cancel."
+        )
+
         self._act_point_move = QAction("Point\nMove", self, checkable=True)
         self._act_point_move.setToolTip(
             "Point Move (G): click a grab point on the selection, then click\n"
@@ -2247,6 +2369,7 @@ class MainWindow(QMainWindow):
         self._act_trim.triggered.connect(self._set_tool_trim)
         self._act_split_curve.triggered.connect(self._set_tool_split_curve)
         self._act_offset.triggered.connect(self._set_tool_offset)
+        self._act_rebuild.triggered.connect(self._set_tool_rebuild)
         self._act_point_move.triggered.connect(self._set_tool_point_move)
         self._act_text.triggered.connect(self._set_tool_text)
 
@@ -2255,6 +2378,7 @@ class MainWindow(QMainWindow):
                     self._act_fillet, self._act_dim,
                     self._act_text,
                     self._act_trim, self._act_split_curve, self._act_offset,
+                    self._act_rebuild,
                     self._act_point_move):
             tool_group.addAction(act)
             tb.addAction(act)
@@ -2395,6 +2519,7 @@ class MainWindow(QMainWindow):
             "trim":         self._act_trim,
             "split_curve":  self._act_split_curve,
             "offset":       self._act_offset,
+            "rebuild":      self._act_rebuild,
             "point_move":   self._act_point_move,
             "text":         self._act_text,
             "ghost":        self._act_mirror,
@@ -4306,6 +4431,7 @@ class MainWindow(QMainWindow):
             (self._act_trim,         "tool-trim"),
             (self._act_split_curve,  "tool-split-curve"),
             (self._act_offset,       "tool-offset"),
+            (self._act_rebuild,      "tool-rebuild"),
             (self._act_point_move,   "tool-point-move"),
             (self._act_text,         "tool-text"),
             (self._act_panel,        "view-sidebar"),
@@ -4359,12 +4485,14 @@ class MainWindow(QMainWindow):
         imp.addAction("DXF…", self._import_dxf)
         imp.addAction("OMA Lens Trace…", self._import_oma)
         exp = file_menu.addMenu("Export")
-        exp.addAction("Export DXF…", self._export_dxf)
-        exp.addAction("Export All DXF…", self._export_all_dxf)
-        exp.addAction("Export SVG…", self._export_svg)
-        exp.addAction("Export PNG…", self._export_png)
-        exp.addAction("Export OMA Trace…", self._export_oma)
-        exp.addAction("Export PDF (1:1 scale)…", self._export_pdf_1to1)
+        exp.addAction("DXF…", self._export_dxf)
+        exp.addAction("All DXF…", self._export_all_dxf)
+        exp.addAction("SVG…", self._export_svg)
+        exp.addAction("PNG…", self._export_png)
+        exp.addAction("OMA Trace…", self._export_oma)
+        exp.addSeparator()
+        exp.addAction("PDF (1:1 scale)…", self._export_pdf_1to1)
+        exp.addAction("PDF for Catalog…", self._export_pdf_catalog)
         file_menu.addSeparator()
         file_menu.addAction("Print at 1:1 Scale…", self._print_1to1)
         file_menu.addSeparator()
@@ -4420,6 +4548,7 @@ class MainWindow(QMainWindow):
         self._fillet_tool.deactivate()
         self._split_tool.deactivate()
         self._offset_tool.deactivate()
+        self._rebuild_tool.deactivate()
         self._point_move_tool.deactivate()
 
     def _teardown_tools(self, clear_selection: bool):
@@ -4629,6 +4758,48 @@ class MainWindow(QMainWindow):
         )
 
     def _on_offset_cancelled(self):
+        self._act_select.setChecked(True)
+        self._set_tool_select()
+
+    # ------------------------------------------------------------------
+    # Rebuild Spline tool (M31.2)
+    # ------------------------------------------------------------------
+
+    def _set_tool_rebuild(self):
+        # Capture selection before teardown (deactivation may clear it).
+        selected = [
+            item.curve for item in self.scene.selectedItems()
+            if isinstance(item, CurveItem) and not item.curve.mirrored
+        ]
+        source = selected[0] if len(selected) == 1 else None
+
+        self._teardown_tools(clear_selection=False)
+        self._rebuild_tool.activate(self.scene, self.view, source)
+        self.view.set_draw_tool(self._rebuild_tool)
+
+    def _on_rebuild_applied(self, source_curve, rebuilt_curve):
+        # Rebuild REPLACES the source: the whole point is to swap a dense/heavy
+        # curve for the clean one at the same place. Undoable, so Ctrl+Z brings
+        # the original back.
+        self._push_undo_snapshot()
+        self._edit_tool.clear()
+        self.scene.clearSelection()
+        self._active_ws.remove_curve(source_curve)
+        self._active_ws.add_curve(rebuilt_curve)
+        # Return to Select mode (re-enables ItemIsSelectable), then select the new curve.
+        self._act_select.setChecked(True)
+        self._set_tool_select()
+        self.scene.clearSelection()
+        from .canvas.items import CurveItem as _CI
+        for item in self.scene.items():
+            if isinstance(item, _CI) and item.curve is rebuilt_curve:
+                item.setSelected(True)
+                break
+        self._status.showMessage(
+            f"Rebuilt to {len(rebuilt_curve.nodes)} nodes — select + edit to refine"
+        )
+
+    def _on_rebuild_cancelled(self):
         self._act_select.setChecked(True)
         self._set_tool_select()
 
@@ -5695,7 +5866,12 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(current, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        p = dlg.to_prefs()
+        self._apply_settings(dlg.to_prefs())
+
+    def _apply_settings(self, p: dict) -> None:
+        """Apply an accepted Settings-dialog prefs dict to the live session
+        and persist it. Split from _open_settings so tests can exercise the
+        apply logic without executing the modal dialog."""
         self._prefs.update(p)   # dialog is the sole writer of startup defaults
 
         # Theme + appearance first, so a mode toggle (or the explicit refresh
@@ -5722,23 +5898,48 @@ class MainWindow(QMainWindow):
         self._default_line_weight = p["default_line_weight"]
         self._weight_spin.setValue(p["default_line_weight"])
 
-        # Startup toggles — apply immediately so the toolbar reflects the new defaults
-        self._act_mirror.setChecked(p["mirror_on_startup"])
-        self._act_guides.setChecked(p["guides_on_startup"])
-        self._act_snap.setChecked(p["snap_on_startup"])
-        self._act_smooth.setChecked(p["smooth_handles"])
-        self._act_boxing.setChecked(p["boxing_on_startup"])
-        self._act_stock.setChecked(p["stock_on_startup"])
-        self._act_pad.setChecked(p["pad_on_startup"])
-
-        # Guide dimensions
-        self._boxing_a_spin.setValue(p["boxing_a_mm"])
-        self._boxing_b_spin.setValue(p["boxing_b_mm"])
-        self._boxing_dbl_spin.setValue(p["boxing_dbl_mm"])
-        self._stock_w_spin.setValue(p["stock_width_mm"])
-        self._stock_h_spin.setValue(p["stock_height_mm"])
-        self._pad_w_spin.setValue(p["pad_width_mm"])
-        self._pad_h_spin.setValue(p["pad_height_mm"])
+        # Startup toggles + guide dimensions — these prefs describe the Frame
+        # Front workspace (temple/hinge have their own fixed stock defaults),
+        # so apply them to the front workspace ONLY. Driving the live toolbar
+        # widgets from any other tab pushed front stock/pad guides into that
+        # workspace's session state (GitHub issue #4: saving Settings inside a
+        # Temple workspace re-drew the temple stock as the frame-front stock
+        # and stranded a pad guide with no button to remove it).
+        front = self._workspaces[0]
+        if self._active_ws is front:
+            # Widgets drive the active (= front) workspace via their signals.
+            self._act_mirror.setChecked(p["mirror_on_startup"])
+            self._act_guides.setChecked(p["guides_on_startup"])
+            self._act_snap.setChecked(p["snap_on_startup"])
+            self._act_smooth.setChecked(p["smooth_handles"])
+            self._act_boxing.setChecked(p["boxing_on_startup"])
+            self._act_stock.setChecked(p["stock_on_startup"])
+            self._act_pad.setChecked(p["pad_on_startup"])
+            self._boxing_a_spin.setValue(p["boxing_a_mm"])
+            self._boxing_b_spin.setValue(p["boxing_b_mm"])
+            self._boxing_dbl_spin.setValue(p["boxing_dbl_mm"])
+            self._stock_w_spin.setValue(p["stock_width_mm"])
+            self._stock_h_spin.setValue(p["stock_height_mm"])
+            self._pad_w_spin.setValue(p["pad_width_mm"])
+            self._pad_h_spin.setValue(p["pad_height_mm"])
+        else:
+            # Write the front workspace's session state directly; the sidebar
+            # widgets stay on the active workspace's values and the front tab
+            # picks these up on activation (_restore_ws_sidebar_state).
+            front.mirror_enabled = p["mirror_on_startup"]
+            front.guides_visible = p["guides_on_startup"]
+            front.snap_enabled   = p["snap_on_startup"]
+            front.smooth_handles = p["smooth_handles"]
+            front.boxing_visible = p["boxing_on_startup"]
+            front.stock_visible  = p["stock_on_startup"]
+            front.pad_visible    = p["pad_on_startup"]
+            front.boxing_a       = p["boxing_a_mm"]
+            front.boxing_b       = p["boxing_b_mm"]
+            front.boxing_dbl     = p["boxing_dbl_mm"]
+            front.stock_w        = p["stock_width_mm"]
+            front.stock_h        = p["stock_height_mm"]
+            front.pad_w          = p["pad_width_mm"]
+            front.pad_h          = p["pad_height_mm"]
 
         # Toolbar visibility
         self._toolbar_prefs = p["toolbar"]
@@ -6503,8 +6704,9 @@ class MainWindow(QMainWindow):
     def _open_svg(self, path: str):
         """Load a single .svg into the active (Front) workspace."""
         try:
-            from .export.svg import load_svg
+            from .export.svg import load_svg, resolve_face_images
             data = load_svg(path)
+            resolve_face_images(data.get("face_images", []), path)
         except Exception as e:
             QMessageBox.critical(self, "Open failed", str(e))
             return
@@ -6806,7 +7008,7 @@ class MainWindow(QMainWindow):
         """Save the active workspace as a plain SVG (legacy format)."""
         # First flush sidebar into active ws
         self._save_ws_sidebar_state(self._active_ws)
-        from .export.svg import save_svg
+        from .export.svg import save_svg, portable_face_images
         ws = self._active_ws
         d  = self._ws_to_data_dict(ws)
         save_svg(
@@ -6816,7 +7018,7 @@ class MainWindow(QMainWindow):
             mirror          = d["mirror"],
             forming         = d["forming"],
             machined_bridge = d["machined_bridge"],
-            face_images     = d["face_images"],
+            face_images     = portable_face_images(d["face_images"], path),
             bookmarks       = d["bookmarks"],
             dims            = d["dims"],
             layers          = d["layers"],
@@ -6973,15 +7175,62 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "SVG export failed", str(e))
 
+    _PNG_DPI_CHOICES = [
+        ("150 dpi — draft",       150),
+        ("300 dpi — print",       300),
+        ("600 dpi — high detail", 600),
+        ("1200 dpi — maximum",    1200),
+    ]
+
+    def _png_content_rect(self) -> QRectF | None:
+        """Tight scene-mm bounds for the PNG export: the geometry (same bbox
+        rule as the SVG viewBox), its mirror ghost when displayed, and any
+        visible face photos. None = no content (caller falls back to sceneRect)."""
+        from .export.svg import _content_bbox
+        ws = self._active_ws
+        rect = QRectF()
+        curves = [c for c in self._doc_curves if c.nodes]
+        if curves:
+            x0, y0, x1, y1 = _content_bbox(curves)
+            rect = QRectF(x0, y0, x1 - x0, y1 - y0)
+            if self._act_mirror.isChecked():
+                if ws.workspace_type in ("temple_r", "temple_l"):
+                    ghost = QRectF(x0, -y1, x1 - x0, y1 - y0)
+                else:
+                    ax = self.scene.mirror.x if self.scene.mirror else 0.0
+                    ghost = QRectF(2 * ax - x1, y0, x1 - x0, y1 - y0)
+                rect = rect.united(ghost)
+        for i in range(self.scene.face_count()):
+            item = self.scene.get_face_item(i)
+            if item is not None and item.isVisible():
+                rect = rect.united(item.sceneBoundingRect())
+        return rect if not rect.isEmpty() else None
+
     def _export_png(self):
         path, _ = QFileDialog.getSaveFileName(
             self, "Export PNG", "", "PNG Files (*.png)"
         )
         if not path:
             return
+        labels = [lbl for lbl, _dpi in self._PNG_DPI_CHOICES]
+        dpis   = [dpi for _lbl, dpi in self._PNG_DPI_CHOICES]
+        last   = self._prefs.get("png_export_dpi", 600)
+        idx    = dpis.index(last) if last in dpis else 2
+        choice, ok = QInputDialog.getItem(
+            self, "Export PNG",
+            "Resolution (scene mm rendered at true print scale):",
+            labels, idx, False)
+        if not ok:
+            return
+        dpi = dpis[labels.index(choice)]
+        if dpi != last:
+            self._prefs["png_export_dpi"] = dpi
+            self._save_prefs()
         try:
             from .export.png import render_png
-            render_png(self.scene, path)
+            render_png(self.scene, path, dpi=dpi,
+                       rect=self._png_content_rect(),
+                       background=theme.color("canvas.bg"))
             self._status.showMessage(f"PNG exported: {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.critical(self, "PNG export failed", str(e))
@@ -7024,6 +7273,76 @@ class MainWindow(QMainWindow):
             msg += "  " + "  ".join(notes)
         self._status.showMessage(msg)
 
+    def _ask_oma_import_bevel(self, default_depth: float) -> float | None:
+        """Ask whether to shrink an imported OMA trace by the bevel depth.
+
+        Returns the depth to shrink by (0.0 = import at traced size), or
+        None if the user cancelled the import. Split out so tests can
+        monkeypatch the answer without driving a modal dialog."""
+        return self._ask_oma_bevel(
+            "Import OMA Lens Trace",
+            "A tracer follows the bevel groove of the <b>finished</b> lens — "
+            "the drawn lens shape grown outward by the bevel depth (this is "
+            "also what OMA export writes).<br><br>"
+            "Shrink the imported shape by the bevel depth to recover the "
+            "drawn lens? Importing at the same depth the file was exported "
+            "with round-trips exactly.",
+            default_depth, "Apply Reduction", "Import As Traced")
+
+    def _ask_oma_export_bevel(self, default_depth: float) -> float | None:
+        """Ask whether to grow the exported OMA trace by the bevel depth.
+
+        Returns the depth to grow by (0.0 = export the drawn lens opening
+        as-is), or None if the user cancelled the export. Split out so tests
+        can monkeypatch the answer without driving a modal dialog."""
+        return self._ask_oma_bevel(
+            "Export OMA Trace",
+            "A frame trace follows the bevel groove of the <b>finished</b> "
+            "lens, not the drawn lens opening.<br><br>"
+            "Grow the exported trace by the bevel depth so labs and edgers "
+            "receive the finished size? The depth defaults to the boxing "
+            "guide's bevel setting; HBOX/VBOX/DBL are computed from the "
+            "same geometry either way.",
+            default_depth, "Apply Increase", "Export As-Is")
+
+    def _ask_oma_bevel(self, title: str, note_html: str, default_depth: float,
+                       apply_label: str, asis_label: str) -> float | None:
+        """Shared import/export bevel-depth dialog. Returns the chosen depth,
+        0.0 for the as-is button, or None on cancel."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        lay = QVBoxLayout(dlg)
+        note = QLabel(note_html)
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Bevel depth:"))
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, 5.0)
+        spin.setDecimals(2)
+        spin.setSingleStep(0.1)
+        spin.setSuffix(" mm")
+        spin.setValue(default_depth)
+        row.addWidget(spin)
+        row.addStretch(1)
+        lay.addLayout(row)
+        btns = QDialogButtonBox()
+        b_apply = btns.addButton(apply_label, QDialogButtonBox.AcceptRole)
+        b_asis  = btns.addButton(asis_label, QDialogButtonBox.ActionRole)
+        btns.addButton(QDialogButtonBox.Cancel)
+        btns.rejected.connect(dlg.reject)
+        result: dict = {}
+        def _accept(mode):
+            result["mode"] = mode
+            dlg.accept()
+        b_apply.clicked.connect(lambda: _accept("apply"))
+        b_asis.clicked.connect(lambda: _accept("asis"))
+        b_apply.setDefault(True)
+        lay.addWidget(btns)
+        if dlg.exec() != QDialog.Accepted:
+            return None
+        return spin.value() if result.get("mode") == "apply" else 0.0
+
     def _import_oma(self):
         """File > Import > OMA Lens Trace… — traced lens shapes (from a frame
         tracer / lab DCS file) become editable LENS splines in Frame Front."""
@@ -7052,6 +7371,28 @@ class MainWindow(QMainWindow):
         dbl_vals = job.floats("DBL")
         dbl = dbl_vals[0] if dbl_vals else front.boxing_dbl
 
+        # A tracer follows the bevel groove of the FINISHED lens — the drawn
+        # lens grown outward by the bevel depth (exactly what OMA export
+        # writes). Ask whether to shrink back to the drawn lens shape.
+        shrink = self._ask_oma_import_bevel(front.bevel_depth)
+        if shrink is None:
+            return                              # cancelled
+        if shrink > 0.0:
+            try:
+                from .geometry import offset_curve as _offset
+                lenses = {side: _offset(c, -shrink)
+                          for side, c in lenses.items()}
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Bevel reduction failed",
+                    f"Could not shrink the trace by {shrink:.2f} mm "
+                    f"({e}).\nImporting at traced (finished) size instead.")
+                shrink = 0.0
+        # The file's DBL describes the finished lenses; after shrinking, the
+        # drawn nasal edges sit a bevel depth further apart on each side so
+        # the finished edges still land DBL apart.
+        dbl_place = dbl + 2.0 * shrink
+
         # Place each lens: boxing centres on y = 0, nasal edges DBL apart.
         # Side R (OD) sits at negative x — viewer's left, same convention as
         # the measurement panel's OD/OS split about the mirror axis.
@@ -7063,7 +7404,8 @@ class MainWindow(QMainWindow):
             if bb is None:
                 continue
             w  = bb[2] - bb[0]
-            tx = (-(dbl / 2 + w / 2) if side == "R" else (dbl / 2 + w / 2)) \
+            tx = (-(dbl_place / 2 + w / 2) if side == "R"
+                  else (dbl_place / 2 + w / 2)) \
                  - (bb[0] + bb[2]) / 2
             ty = -(bb[1] + bb[3]) / 2
             for nd in c.nodes:
@@ -7092,6 +7434,8 @@ class MainWindow(QMainWindow):
         msg = (f"Imported {len(lenses)} traced lens shape"
                f"{'s' if len(lenses) != 1 else ''} onto LENS "
                f"({src} {dbl:.1f} mm).")
+        if shrink > 0.0:
+            msg += f"  Bevel reduction −{shrink:.2f} mm applied."
         if job.drills:
             msg += f"  +{len(job.drills)} drill hole(s) on DRILL."
         if len(lenses) == 1:
@@ -7102,11 +7446,12 @@ class MainWindow(QMainWindow):
         """File > Export > OMA Trace… — write the two LENS contours as a
         TRCFMT format-1 DCS file for labs and edgers.
 
-        The trace describes the FINISHED lens: the drawn LENS shape grown
-        outward by the bevel depth (a frame trace follows the bevel groove,
-        not the lens opening). Flat/rimless (depth 0) traces the drawn shape
-        itself. HBOX/VBOX/DBL come from the same finished geometry, so the
-        file agrees with the boxing panel's finished A/B/DBL read-outs."""
+        A dialog asks whether the trace should describe the FINISHED lens —
+        the drawn LENS shape grown outward by the bevel depth (a frame trace
+        follows the bevel groove, not the lens opening; depth defaults to the
+        boxing guide's bevel setting) — or the drawn lens opening as-is.
+        HBOX/VBOX/DBL come from the same chosen geometry, so at the guide
+        depth the file agrees with the boxing panel's finished read-outs."""
         if self._active_ws.workspace_type != "front":
             QMessageBox.information(
                 self, "OMA export",
@@ -7145,9 +7490,12 @@ class MainWindow(QMainWindow):
         lenses.sort(key=lambda c: boxing_center(c)[0])
         od, os_lens = lenses
 
+        depth = self._ask_oma_export_bevel(max(0.0, self._active_ws.bevel_depth))
+        if depth is None:
+            return                              # cancelled
+
         # Build the job before asking for a filename — the tracer rejects
         # non-star-shaped contours and we want that error first.
-        depth = max(0.0, self._active_ws.bevel_depth)
         try:
             job = OmaJob()
             boxes = {}
@@ -7195,7 +7543,10 @@ class MainWindow(QMainWindow):
         try:
             with open(path, "w", encoding="ascii", newline="") as f:
                 f.write(build_oma(job))
-            self._status.showMessage(f"OMA trace exported: {os.path.basename(path)}")
+            size = (f"finished lens (+{depth:.2f} mm bevel)" if depth > 0.0
+                    else "drawn lens opening (as-is)")
+            self._status.showMessage(
+                f"OMA trace exported: {os.path.basename(path)} — {size}.")
         except Exception as e:
             QMessageBox.critical(self, "OMA export failed", str(e))
 
@@ -7205,80 +7556,109 @@ class MainWindow(QMainWindow):
 
     _PRINT_PAD_MM = 5.0
 
+    def _view_source_rect(self):
+        """The scene-mm rectangle currently framed in the viewport (WYSIWYG)."""
+        return self.view.mapToScene(self.view.viewport().rect()).boundingRect()
+
     def _print_1to1(self):
         from PySide6.QtPrintSupport import QPrinter, QPrintDialog
-        content = self.scene.geometry_rect()
-        if content.isNull():
+        if not self._has_visible_geometry():
             QMessageBox.information(
                 self, "Print at 1:1",
-                "Nothing to print — this workspace has no geometry.")
+                "Nothing to print — this workspace has no visible geometry.")
             return
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         dlg = QPrintDialog(printer, self)
         dlg.setWindowTitle("Print at 1:1 Scale")
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        self._render_1to1(printer, content)
+        self._render_1to1(printer, self._view_source_rect())
 
     def _export_pdf_1to1(self):
         from PySide6.QtPrintSupport import QPrinter
-        content = self.scene.geometry_rect()
-        if content.isNull():
+        if not self._has_visible_geometry():
             QMessageBox.information(
                 self, "Export PDF",
-                "Nothing to export — this workspace has no geometry.")
+                "Nothing to export — this workspace has no visible geometry.")
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export PDF (1:1 scale)", "", "PDF Files (*.pdf)")
+            self, "Export PDF (current view, 1:1)", "", "PDF Files (*.pdf)")
         if not path:
             return
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
         printer.setOutputFileName(path)
         try:
-            self._render_1to1(printer, content)
+            self._render_1to1(printer, self._view_source_rect())
             self._status.showMessage(f"PDF exported at 1:1: {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.critical(self, "PDF export failed", str(e))
 
-    def _render_1to1(self, printer, content):
-        """Paint the workspace geometry at exactly 1 mm = 1 mm paper scale,
-        centred on the page, with a 50 mm verification ruler.
+    def _has_visible_geometry(self) -> bool:
+        return any(c.nodes and not c.mirrored and self.scene.is_layer_visible(c.layer)
+                   for c in self._doc_curves)
 
-        Scene units are mm, so scale = printer px/mm. If the geometry is
-        larger than the printable area it is cropped equally on all sides
-        (still 1:1) and a warning is shown.
+    def _render_1to1(self, printer, source):
+        """Paint the CURRENT VIEW at exactly 1 mm = 1 mm paper scale.
+
+        Renders the visible-layer geometry (and its mirror ghost) currently
+        framed in the viewport, drawn as clean vectors in each layer's colour
+        at the uniform PDF line weight from Settings ▸ PDF, shifted by the
+        vertical frame offset. A 50 mm ruler verifies the scale. Content larger
+        than the page is cropped 1:1.
         """
         from PySide6.QtCore import QRectF as _QRectF
         from PySide6.QtPrintSupport import QPrinter
+        from .canvas.items import build_path
+        from .geometry import mirror_curve
 
-        src = content.adjusted(-self._PRINT_PAD_MM, -self._PRINT_PAD_MM,
-                               self._PRINT_PAD_MM,  self._PRINT_PAD_MM)
+        cfg    = self._prefs.get("catalog_pdf", {})
+        lw_mm  = float(cfg.get("line_weight_mm", 0.6))
+        off_mm = float(cfg.get("content_offset_mm", 0.0))
+
         px_mm_x = printer.logicalDpiX() / 25.4
         px_mm_y = printer.logicalDpiY() / 25.4
         page = printer.pageRect(QPrinter.Unit.DevicePixel)
 
-        target_w = src.width()  * px_mm_x
-        target_h = src.height() * px_mm_y
+        target_w = source.width()  * px_mm_x
+        target_h = source.height() * px_mm_y
         clipped = target_w > page.width() or target_h > page.height()
         target = _QRectF((page.width()  - target_w) / 2,
-                         (page.height() - target_h) / 2,
+                         (page.height() - target_h) / 2 + off_mm * px_mm_y,
                          target_w, target_h)
+
+        # Visible-layer geometry + mirror ghost (guides/photos never print).
+        vis = [c for c in self._doc_curves
+               if c.nodes and not c.mirrored and self.scene.is_layer_visible(c.layer)]
+        draw = list(vis)
+        if self._act_mirror.isChecked() and self.scene.mirror is not None:
+            horizontal = self._active_ws.workspace_type in ("temple_r", "temple_l")
+            axis_x = self.scene.mirror.x
+            draw += [mirror_curve(c, axis_x, horizontal=horizontal) for c in vis]
 
         self.scene.clearSelection()
         self._edit_tool.clear()
         painter = QPainter(printer)
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            hidden = self.scene.begin_print()
-            try:
-                # IgnoreAspectRatio: target is already built from exact
-                # px/mm in each axis, so the scale stays true even when
-                # the device DPI differs horizontally vs vertically.
-                self.scene.render(painter, target, src,
-                                  Qt.AspectRatioMode.IgnoreAspectRatio)
-            finally:
-                self.scene.end_print(hidden)
+            painter.save()
+            painter.setClipRect(target)              # crop to the framed view
+            painter.translate(target.left(), target.top())
+            painter.scale(px_mm_x, px_mm_y)          # 1 mm = 1 mm
+            painter.translate(-source.left(), -source.top())
+            cos_w = lw_mm * px_mm_x                   # cosmetic px == lw_mm on paper
+            for c in draw:
+                # Always the light-mode (print) layer inks — dark-mode inks are
+                # pale and would wash out on white paper.
+                pen = QPen(QColor(theme.default_layer_color(c.layer.value, False)))
+                pen.setCosmetic(True)
+                pen.setWidthF(cos_w)
+                pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawPath(build_path(c))
+            painter.restore()
 
             # 50 mm verification ruler, bottom-left of the printable area
             pen = QPen(QColor("#000000"))
@@ -7301,9 +7681,66 @@ class MainWindow(QMainWindow):
 
         if clipped:
             self._status.showMessage(
-                "Printed at 1:1 — geometry larger than the page, edges cropped.")
+                "Printed at 1:1 — view larger than the page, edges cropped.")
         else:
             self._status.showMessage("Printed at 1:1 scale.")
+
+    # ------------------------------------------------------------------
+    # PDF for Catalog (front + both temples on one sheet + the design name)
+    # ------------------------------------------------------------------
+
+    def _catalog_component_curves(self, ws, layer_names) -> list:
+        """Selected-layer geometry for one workspace, INCLUDING the mirror ghost
+        so the full frame (not just the drawn half) reaches the catalog."""
+        from .geometry import mirror_curve
+        wanted = set(layer_names)
+        base = [c for c in ws.doc_curves
+                if c.layer.value in wanted and not c.mirrored and c.nodes]
+        out = list(base)
+        if ws.mirror_enabled and ws.scene.mirror is not None:
+            horizontal = ws.workspace_type in ("temple_r", "temple_l")
+            axis_x = ws.scene.mirror.x
+            out += [mirror_curve(c, axis_x, horizontal=horizontal) for c in base]
+        return out
+
+    def _gather_catalog_components(self) -> dict:
+        cfg = self._prefs.get("catalog_pdf", {})
+        front_layers  = cfg.get("front_layers", ["OUTLINE", "LENS"])
+        temple_layers = cfg.get("temple_layers", ["OUTLINE"])
+        front, temple_r, temple_l = self._workspaces[0], self._workspaces[1], self._workspaces[2]
+        return {
+            "front":    self._catalog_component_curves(front, front_layers),
+            "temple_r": self._catalog_component_curves(temple_r, temple_layers),
+            "temple_l": self._catalog_component_curves(temple_l, temple_layers),
+        }
+
+    def _export_pdf_catalog(self):
+        # Flush the live sidebar into the active workspace so its curves are current.
+        self._save_ws_sidebar_state(self._active_ws)
+        components = self._gather_catalog_components()
+        if not any(components.values()):
+            QMessageBox.information(
+                self, "PDF for Catalog",
+                "Nothing to export — the front and temple workspaces have no "
+                "geometry on the selected layers (set them in "
+                "Settings ▸ Catalog PDF).")
+            return
+        base = (os.path.splitext(os.path.basename(self._current_path))[0]
+                if self._current_path else "")
+        suggested = f"{base}.pdf" if base else "catalog.pdf"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "PDF for Catalog", suggested, "PDF Files (*.pdf)")
+        if not path:
+            return
+        caption = base or os.path.splitext(os.path.basename(path))[0]
+        try:
+            from .export.catalog_pdf import export_catalog_pdf
+            export_catalog_pdf(path, components, self._prefs.get("catalog_pdf", {}),
+                               caption)
+            self._status.showMessage(
+                f"Catalog PDF exported: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.critical(self, "Catalog PDF export failed", str(e))
 
     # ------------------------------------------------------------------
     # Persistent preferences
@@ -7373,7 +7810,53 @@ class MainWindow(QMainWindow):
         self._update_info_label()
 
 
+_CRASH_FP = None
+
+
+def _install_crash_logger():
+    """Record any fatal error to ~/.guilddraw/crash.log.
+
+    Covers both a Python exception escaping a Qt slot/virtual (which PySide6
+    routes through sys.excepthook, and may then abort) and a hard C-level fault
+    — faulthandler writes on the signal at the C level, so a segfault that
+    would otherwise vanish with unflushed buffers still leaves a trace. Cheap,
+    always-on, and only writes when something goes wrong."""
+    global _CRASH_FP
+    import datetime
+    import faulthandler
+    import pathlib
+    import traceback
+    try:
+        d = pathlib.Path.home() / ".guilddraw"
+        d.mkdir(parents=True, exist_ok=True)
+        _CRASH_FP = open(d / "crash.log", "a", buffering=1, encoding="utf-8")
+        _CRASH_FP.write(
+            f"\n=== session {datetime.datetime.now():%Y-%m-%d %H:%M:%S} "
+            f"v{__version__} ===\n")
+        _CRASH_FP.flush()
+        faulthandler.enable(file=_CRASH_FP, all_threads=True)
+    except Exception:
+        _CRASH_FP = None
+
+    _prev_hook = sys.excepthook
+
+    def _hook(exc_type, exc, tb):
+        try:
+            if _CRASH_FP is not None:
+                _CRASH_FP.write(
+                    f"\n--- unhandled exception "
+                    f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} ---\n")
+                traceback.print_exception(exc_type, exc, tb, file=_CRASH_FP)
+                _CRASH_FP.flush()
+        except Exception:
+            pass
+        _prev_hook(exc_type, exc, tb)
+
+    sys.excepthook = _hook
+
+
 def main():
+    _install_crash_logger()
     app = QApplication(sys.argv)
     app.setApplicationName("GuildDraw")
     app.setApplicationDisplayName("GuildDraw")

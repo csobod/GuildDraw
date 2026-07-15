@@ -1,4 +1,5 @@
 import math
+import os
 
 from PySide6.QtWidgets import QGraphicsPathItem, QGraphicsEllipseItem, QStyleOptionGraphicsItem
 from PySide6.QtGui import QPen, QBrush, QColor, QPainterPath, QPainterPathStroker
@@ -6,6 +7,38 @@ from PySide6.QtCore import Qt
 
 from ..document import Curve, Layer, ControlPoint
 from .. import theme
+
+
+# ---------- drag flight recorder (M32.3) ----------
+# Ships DISABLED. Set GUILDDRAW_DRAG_LOG=1 to log every node/handle drag step
+# and dump context on any anomalous single-event jump (> ~40 screen px), so a
+# residual "fly-away" report becomes diagnosable instead of "can't reproduce".
+_DRAG_LOG = os.environ.get("GUILDDRAW_DRAG_LOG", "") not in ("", "0", "false", "False")
+
+
+def _record_drag_step(kind: str, layer, prev, target, event) -> None:
+    import sys
+    dx, dy = target[0] - prev[0], target[1] - prev[1]
+    jump_mm = math.hypot(dx, dy)
+    view = None
+    w = event.widget()
+    if w is not None:
+        view = w.parentWidget()
+    scale = 1.0
+    if view is not None and hasattr(view, "transform"):
+        m = abs(view.transform().m11())
+        if m > 1e-9:
+            scale = m
+    jump_px = jump_mm * scale
+    sp = event.scenePos()
+    print(f"[draglog] {kind} layer={getattr(layer, 'value', layer)} "
+          f"step={jump_mm:.3f}mm ({jump_px:.1f}px) "
+          f"scenePos=({sp.x():.2f},{sp.y():.2f})", file=sys.stderr)
+    if jump_px > 40.0:
+        hb = view.horizontalScrollBar().value() if view is not None else "?"
+        vb = view.verticalScrollBar().value() if view is not None else "?"
+        print(f"[draglog] !! JUMP >40px scale={scale:.4f} "
+              f"hbar={hb} vbar={vb} prev={prev} target={target}", file=sys.stderr)
 
 # ---------- theme colour functions ----------
 # All colors resolve through framedraft.theme (the single palette source);
@@ -201,7 +234,15 @@ class NodeDot(QGraphicsEllipseItem):
         self._on_snap        = on_snap    # (QPointF) -> QPointF; called during drag
         self._on_drag_end    = on_drag_end
         self._node_selected  = False
-        self.setFlag(self.GraphicsItemFlag.ItemIsMovable, True)
+        # Explicit scene-coordinate drag state (see mousePressEvent). We do NOT
+        # use ItemIsMovable: Qt's built-in movable drag re-derives the step
+        # through the view's CURRENT device transform, so a mid-drag zoom/pan
+        # (a grazed wheel tick, touchpad inertia, middle-button pan) poisoned
+        # the reference and sent the dot flying toward the anchor — the M32
+        # "fly-away" report. scenePos()-based dragging is transform-independent.
+        self._drag_active = False
+        self._grab_dx     = 0.0
+        self._grab_dy     = 0.0
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, False)
         self.setFlag(self.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.setAcceptHoverEvents(True)
@@ -245,16 +286,39 @@ class NodeDot(QGraphicsEllipseItem):
         super().hoverLeaveEvent(event)
 
     def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            event.ignore()
+            return
         if self._on_clicked:
             self._on_clicked(self)
         if self._on_drag_start:
             self._on_drag_start()
-        super().mousePressEvent(event)
+        # Grab offset in SCENE coords: the node keeps its position relative to
+        # the cursor for the whole drag, whatever the view transform does.
+        gp = event.scenePos()
+        self._grab_dx = self.pos().x() - gp.x()
+        self._grab_dy = self.pos().y() - gp.y()
+        self._drag_active = True
+        event.accept()   # become the mouse grabber (no ItemIsMovable to do it)
+
+    def mouseMoveEvent(self, event):
+        if not self._drag_active:
+            event.ignore()
+            return
+        gp = event.scenePos()
+        tx, ty = gp.x() + self._grab_dx, gp.y() + self._grab_dy
+        if _DRAG_LOG:
+            _record_drag_step("node", self._curve.layer,
+                              (self.pos().x(), self.pos().y()), (tx, ty), event)
+        # setPos fires itemChange → snap adjustment + model commit (below).
+        self.setPos(tx, ty)
+        event.accept()
 
     def mouseReleaseEvent(self, event):
+        self._drag_active = False
         if self._on_drag_end:
             self._on_drag_end()
-        super().mouseReleaseEvent(event)
+        event.accept()
 
     def itemChange(self, change, value):
         if change == self.GraphicsItemChange.ItemPositionChange:
@@ -303,7 +367,11 @@ class HandleDot(QGraphicsEllipseItem):
         self._updating      = False        # re-entrant guard for set_pos_silent
         self._sibling: "HandleDot | None" = None
         self._smooth        = True         # symmetric mode by default
-        self.setFlag(self.GraphicsItemFlag.ItemIsMovable, True)
+        # Explicit scene-coordinate drag state (mirrors NodeDot — no
+        # ItemIsMovable, so a mid-drag zoom/pan can't send the handle flying).
+        self._drag_active = False
+        self._grab_dx     = 0.0
+        self._grab_dy     = 0.0
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, False)
         self.setFlag(self.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.setAcceptHoverEvents(True)
@@ -343,9 +411,32 @@ class HandleDot(QGraphicsEllipseItem):
         super().hoverLeaveEvent(event)
 
     def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            event.ignore()
+            return
         if self._on_drag_start:
             self._on_drag_start()
-        super().mousePressEvent(event)
+        gp = event.scenePos()
+        self._grab_dx = self.pos().x() - gp.x()
+        self._grab_dy = self.pos().y() - gp.y()
+        self._drag_active = True
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if not self._drag_active:
+            event.ignore()
+            return
+        gp = event.scenePos()
+        tx, ty = gp.x() + self._grab_dx, gp.y() + self._grab_dy
+        if _DRAG_LOG:
+            _record_drag_step("handle", self._curve.layer,
+                              (self.pos().x(), self.pos().y()), (tx, ty), event)
+        self.setPos(tx, ty)
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_active = False
+        event.accept()
 
     def itemChange(self, change, value):
         if (change == self.GraphicsItemChange.ItemPositionHasChanged

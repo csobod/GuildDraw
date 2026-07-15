@@ -104,6 +104,14 @@ def _mirror_path(curve: Curve, mirror) -> QPainterPath:
 class FrameScene(QGraphicsScene):
     def __init__(self):
         super().__init__()
+        # Linear item lookup instead of the default BSP tree. GuildDraw scenes
+        # hold at most a few hundred items, so O(n) hit-testing is free — and it
+        # removes an entire class of crash: an item whose Python boundingRect()
+        # changes with zoom (DimItem's screen-sized label) mutates its geometry
+        # without the prepareGeometryChange() the BSP tree needs to stay
+        # consistent, so deleting it left a dangling pointer in the index that
+        # segfaulted on the next repaint ("delete a dimension → app closes").
+        self.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.NoIndex)
         self.setSceneRect(_DEFAULT_RECT)
         self._face_items:        list[QGraphicsPixmapItem] = []
         self._face_drag_offsets: list[QPointF]            = []

@@ -24,6 +24,7 @@ class DimTool(QObject):
         self._snap   = None
         self._pt_a:  QPointF | None = None
         self._preview_items: list   = []
+        self._hover_marker = None   # follows the (snapped) cursor in pick-A
 
     @property
     def active(self) -> bool:
@@ -65,6 +66,7 @@ class DimTool(QObject):
             pos = self._snap.snap(pos, [], self._view, use_snap)
 
         if self._pt_a is None:
+            self._clear_hover_marker()
             self._pt_a = pos
             self._draw_point_marker(pos)
             self.status_message.emit(
@@ -92,6 +94,11 @@ class DimTool(QObject):
             pos = self._snap.snap(pos, [], self._view, use_snap)
         if self._pt_a is not None:
             self._repaint_rubber(pos)
+        else:
+            # No rubber-band yet in the pick-A phase, so give the first point
+            # its own clear feedback: a crosshair that follows the (snapped)
+            # cursor showing exactly where point 1 will land.
+            self._update_hover_marker(pos)
 
     def handle_key(self, key) -> bool:
         if not self.active:
@@ -116,6 +123,30 @@ class DimTool(QObject):
         dot.setZValue(101)
         self._preview_items.append(dot)
 
+    def _update_hover_marker(self, pos: QPointF):
+        """Live crosshair at the pending first point (pick-A phase only)."""
+        self._clear_hover_marker()
+        if self._scene is None:
+            return
+        from PySide6.QtGui import QPainterPath
+        R = 7
+        path = QPainterPath()
+        path.moveTo(-R, 0); path.lineTo(R, 0)
+        path.moveTo(0, -R); path.lineTo(0, R)
+        pen = QPen(QColor("#7a5c2e"), 1.5)
+        pen.setCosmetic(True)
+        item = self._scene.addPath(path, pen)
+        item.setPos(pos)
+        item.setFlag(item.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        item.setZValue(101)
+        self._hover_marker = item
+
+    def _clear_hover_marker(self):
+        if self._hover_marker is not None:
+            if self._scene:
+                self._scene.removeItem(self._hover_marker)
+            self._hover_marker = None
+
     def _repaint_rubber(self, pos: QPointF):
         # Remove only the rubber-band line (keep the first-point marker)
         for item in self._preview_items[1:]:
@@ -131,6 +162,7 @@ class DimTool(QObject):
         self._preview_items.append(line)
 
     def _clear_preview(self):
+        self._clear_hover_marker()
         if self._scene:
             for item in self._preview_items:
                 try:

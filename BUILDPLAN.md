@@ -384,10 +384,10 @@ and aren't copied by Ctrl+C/V — revisit on demand.
 > candidate). The rc graduates to `v1.0.0` once a physical frame has been cut
 > from GuildDraw DXF on the redeveloped GuildModel.
 
-1. ⏸ **Hardware round-trip** (old Phase 8): cut a real frame front + temples
-   from exported DXF. Confirm layer counts, closure, spline fidelity, and
-   resolve the asymmetric-lens question (§2). **Blocked on the GuildModel
-   redevelopment — the only remaining 1.0 gate.**
+1. ✅ **Hardware round-trip** (old Phase 8): cut a real frame front + temples
+   from exported DXF. *(2026-07-15: maintainer confirms numerous frames cut
+   on GuildModel — gate closed. The asymmetric-lens question (§2) resolves
+   whenever an asymmetric frame is actually cut; no longer release-blocking.)*
 2. ✅ **Batch export** (2026-06-10) — File > Export > "Export All DXF…" writes
    `<name>_front.dxf`, `_temple_r.dxf`, `_temple_l.dxf`, `_hinge.dxf` in one
    go. Qt-free `export/batch.py` (BatchWorkspace/check_batch/write_batch):
@@ -479,9 +479,9 @@ and aren't copied by Ctrl+C/V — revisit on demand.
       errors surfaced
 - [x] Test suite green (geometry, SVG round-trip, validator, DXF, batch) and run
       before every release build *(95 tests at rc1)*
-- [ ] DXF from all four workspaces imports into GuildModel and **a physical frame
-      has been cut** from GuildDraw output *(← the only open gate; blocked on
-      the GuildModel redevelopment)*
+- [x] DXF from all four workspaces imports into GuildModel and **a physical frame
+      has been cut** from GuildDraw output *(✅ 2026-07-15: maintainer confirms
+      numerous frames cut on GuildModel — the last 1.0 gate is closed)*
 - [x] OMA: import → export → reimport round-trips within 0.05 mm *(synthetic;
       a real tracer file should be confirmed when one is available)*
 - [x] Repository under git with tagged releases
@@ -658,6 +658,7 @@ the Releases URL in the browser — deferred, not required.
 - **Open question (deliberate):** OMA *import* still places the trace directly
   on LENS with no bevel shrink, so export→import grows by 2·depth. Decide
   whether import should shrink by the current bevel preset (or ask the maker).
+  *→ RESOLVED 2026-07-15 (V1 pre-release round): import now asks the maker.*
 
 ## M16 — Central theme module (enabler for M17/M18) — ✅ DONE (2026-07-03, `17ef12e`)
 
@@ -1020,6 +1021,334 @@ from this planning investigation:
 
 ---
 
+# Road to V1 — curve quality (M29–M32)
+
+> **2026-07-12.** RC4 is out and the second field round is in: GitHub issues
+> #4 (Settings save corrupts the temple stock guide), #5 (offset of a two-node
+> closed spline collapses to a line), #6 (offset not smooth — same root as #5),
+> #7 (PNG export is a low-res snapshot). #5/#6 make Offset — a key frame-design
+> tool — unusable, so offset quality + PNG export are the V1 gate. Theme:
+> *"the offset must be trustworthy, and everything that leaves the app must
+> look professional."*
+
+## M29 — Field-reported bug fixes (GitHub #4/#5/#6/#7) — ✅ DONE 2026-07-12 (held)
+
+- **#5/#6 — offset rewrite** (root cause confirmed): the old `offset_curve`
+  displaced *node positions* along node-polygon chord normals and rebuilt every
+  handle with Catmull-Rom — it never followed the drawn curve between nodes,
+  and a two-node closed spline (zero-area node polygon) degenerated to a line.
+  Replaced with an adaptive per-segment **Tiller–Hanson** offset
+  (`geometry._offset_spline`): each bezier segment's control polygon is
+  translated leg-by-leg, checked against the exact offset (point + normal·d)
+  at five parameters, and subdivided until within `_OFFSET_TOL_MM` (0.02 mm,
+  max depth 8). Winding from the *sampled* curve's signed area (+d always
+  grows closed shapes — preserves the M23.3 semantics), bevel joins at
+  broken-handle corners, G1 at every merged node. Line/circle/arc paths
+  unchanged. Trade-off accepted for the fix round: node count grows with
+  curvature (a 2-node closed lens at d=2 mm → ~28 nodes) — **M30/M31 exist to
+  claw that back.**
+- **#7 — PNG export**: was `sceneRect` at 96 units/inch (≈1.5 px/mm, whole
+  frame ≈ a thousand pixels). Now true print scale (px = mm·dpi/25.4), cropped
+  to a content rect (SVG `_content_bbox` + mirror-ghost reflection + visible
+  face photos), theme canvas background, 8192 px side cap, resolution picker
+  (150/300/600/1200 dpi) persisted as `png_export_dpi` (default 600).
+- **#4 — Settings leak**: `_open_settings` drove the live toolbar widgets
+  after save, pushing front-frame stock/pad prefs into whichever workspace was
+  active. Post-dialog body extracted to `_apply_settings(p)` (testable);
+  guide/toggle defaults now apply to the **front workspace only** — via the
+  widgets when front is active, else written straight to front session state.
+- Tests 258 → 273 (offset parallelism ≤0.05 mm sample-based, two-node-closed
+  regression, G1 check, real-MainWindow settings tests with prefs redirected
+  to tmp); ruff clean; user-verified on-screen. **Commits HELD.**
+
+## M30 — Shared cubic-fitting engine (research → build) — ✅ DONE 2026-07-12 (held)
+
+**Built:** `framedraft/fitting.py` (Qt-free) — Schneider least-squares core
+(chord-length parameterisation, prescribed-end-tangent control-point solve,
+Newton–Raphson reparameterisation, recursive split at max-error) behind
+`fit_curve(points, *, tol_mm | n_nodes, closed, corner_angle_deg=30, layer,
+line_weight) -> FitResult(curve, max_deviation_mm)`. Tolerance mode does corner
+detection (tangent-angle jump) → sharp nodes, G1 everywhere else incl. the
+closed seam (central-difference seam tangent). Budget mode places exactly N
+nodes by a blended arc-length/curvature measure, single-cubic LS fit per span,
+G1 internal knots; up-samples sparse input so the exact-N contract always
+holds; reports the achieved deviation. Endpoints interpolated exactly.
+`tests/test_fitting.py` (24 tests): API guards, endpoint interpolation,
+tolerance-never-exceeded across tol steps, closed-seam G1, custom-handle
+tracking, circle→≤8 nodes, corner preservation, budget exact-N (open+closed,
+N=2..15) + more-nodes-never-worse + sparse up-sample. **Acceptance MET:** the
+M29 two-node-lens offset (28 nodes) refits at 0.02 mm to **8 nodes** (71 % cut,
+≥60 % gate; ≤10 target) at 0.018 mm deviation. 297 tests green, ruff clean.
+Not yet wired into Offset or a tool — that is M31. **Commits HELD.** Design
+notes 1 (Schneider) + 2 (curvature-aware splits) from the research below were
+enough; 3 (Levien/kurbo moment-matching) not needed.
+
+### Original plan (for reference)
+
+**Problem.** The M29 offset is accurate but node-heavy (~28 nodes for a
+2-node lens outline at 0.02 mm tolerance). Node count matters: makers refine
+offsets by hand, and every downstream consumer (DXF, OMA, GuildModel) carries
+the segments. Separately, DXFs imported from other CAD apps arrive as dense
+polylines/segment soup that users must rebuild by hand today.
+
+**Research summary (2026-07-12).** Three graded approaches, best-understood
+first:
+
+1. **Schneider curve fitting (Graphics Gems 1990) — the reliable workhorse.**
+   Least-squares fit of cubic beziers to sampled points with chord-length
+   parameterization + Newton–Raphson reparameterization; recursive split at
+   the max-error point when tolerance fails. Battle-tested (Inkscape,
+   paper.js `simplify()`, many ports — reference C at
+   [FitCurves.c](https://www.realtimerendering.com/resources/GraphicsGems/gems/FitCurves.c)).
+   Gives near-minimal segments for a tolerance, prescribed end tangents give
+   G1 joins, corner detection = tangent-angle threshold. This is the engine
+   both consumers below need.
+2. **Better split-point selection — cheap upgrade to either path.** Split at
+   inflections + curvature extrema instead of blind midpoint bisection
+   ([Gasiulis, fast cubic offsetting](https://gasiulis.name/cubic-curve-offsetting/));
+   nodes land at shape features (nice editing semantics) and counts drop
+   without new math.
+3. **Levien/kurbo parallel curves + path simplify — the cutting edge.**
+   Per-segment fit constrained by endpoints/tangents + matching **area and
+   x-moment** (Green's theorem), quartic solve for the remaining freedoms;
+   cusp detection via interval arithmetic; Fréchet-style error by normal-ray
+   projection. O(n⁶) convergence vs Tiller–Hanson's O(n²) → near-minimal
+   segments ([parallel beziers](https://raphlinus.github.io/curves/2022/09/09/parallel-beziers.html),
+   [bezpath simplify](https://raphlinus.github.io/curves/2023/04/18/bezpath-simplify.html)).
+   Substantially harder to implement reliably (quartic solver, moment
+   integrals, cusp intervals) — **stretch goal only if 1+2 disappoint.**
+
+**Decision (proposed):** build one Qt-free `framedraft/fitting.py` engine —
+Schneider least-squares core with curvature-aware initial split points,
+prescribed end tangents, corner preservation — with two modes:
+
+- **Tolerance mode:** min nodes such that max deviation ≤ tol (mm).
+- **Budget mode:** exactly N nodes (curvature/arc-length-weighted placement,
+  least-squares spans, iterate); *reports* the achieved max deviation — the
+  UI shows it, the maker decides.
+
+**Tasks**
+- `fit_spline(samples, *, tol_mm | n_nodes, closed, corners) -> Curve` +
+  max-deviation report; corner detection (tangent-angle threshold, default
+  ~30°) splits fit regions so corners survive.
+- Property tests: fit(sample(curve)) ≤ tol for the M29 offset fixtures,
+  eyewires with hand-tuned handles, circles/arcs, corner shapes; budget mode
+  returns exactly N and honest error numbers; closed-curve seam G1.
+- Acceptance: on the M29 fixtures, tolerance-mode refit of the offset output
+  at 0.02 mm cuts node count ≥ 60 % (target: 2-node lens offset lands ≤ 10
+  nodes) with sample-based parallelism tests still green.
+
+## M31 — Fitting-engine consumers — ✅ DONE 2026-07-12 (held)
+
+**M31.1 built** (`geometry.py`): `offset_curve` now computes the Tiller–Hanson
+offset as before, then `_reduce_offset_nodes` refits it — sampling the EXACT
+offset (source point + normal·d via `_exact_offset_points`, never the TH output,
+so error budgets don't stack) at `_OFFSET_TOL_MM` through `fit_curve`. Smooth
+closed sources fit as one closed loop; open/cornered sources fit per smooth run
+(`_smooth_runs` splits at tangent breaks) and re-assemble through the shared
+`_assemble_offset_cubics` (bevels at corners, kept sharp). Validated two-sided
+against the TH result (`_offset_matches`); on no-saving or drift (self-
+intersecting inward offset past the curvature limit) it returns TH unchanged.
+Refactored out `_offset_winding_d` + `_assemble_offset_cubics` (shared by TH and
+reduction). End-to-end: the two-node lens offset is now **8 nodes, not ~28**,
+still parallel ≤0.05 mm. All M29 offset tests green (structure test updated:
+node count now *reduced*, asserted parallel + ≤12-node ceiling).
+
+**M31.2 built** (`tools/rebuild.py` + `app.py` wiring): `RebuildSplineTool` in
+the Offset mold — select a spline/polyline, **R** or the toolbar **Rebuild**
+button, type a target **node count** (default) or **Tab** → tolerance in mm,
+amber live preview + HUD showing achieved **Δ deviation in mm**, Enter applies.
+Full wiring: per-workspace instance, `focusNextPrevChild`-friendly Tab, hotkey
+`R` (was free), Settings Toolbar+Hotkeys rows (DEFS-driven), `_deactivate_
+cursor_tools`. **Decision — REPLACE, not keep-original** (the plan said "original
+untouched", but for the headline use — swap a dense imported DXF for a clean
+curve — replacing in place is the expected behaviour; it's undoable, so Ctrl+Z
+restores). 10 tool tests + engine tests; 308 total green, ruff clean.
+Verified end-to-end in the real MainWindow (40-node polyline → 6-node spline,
+original replaced, undo restores). **Toolbar icon** `resources/icons/
+tool-rebuild.svg` (faint rough source curve → clean curve with 3 bold nodes;
+echoes the offset icon's two-curve device) added + registered in
+`_apply_toolbar_icons`. **Commits HELD.**
+
+### Original plan (for reference)
+
+### M31.1 — Offset node reduction
+
+Pipe the offset through the engine: sample the **exact** offset (source
+point + normal·d — not the Tiller–Hanson output, so error budgets don't
+stack), then tolerance-mode fit at `_OFFSET_TOL_MM`. Keep the M29 TH pipeline
+as the sampling backbone + fallback if the fit fails; bevel corners become
+fit-region boundaries so they stay sharp. Watch inward offsets near the
+curvature limit (self-intersecting exact offset) — the M29 subdivision
+behavior is the backstop there. Regression: all M29 offset tests unchanged,
+plus node-count ceilings per fixture.
+
+### M31.2 — Rebuild Spline tool
+
+One-shot tool in the Offset mold (select curve → tool → HUD → live preview →
+Enter): type a **target point count** (budget mode; Tab or a second keystroke
+switches to tolerance mode), amber preview + live **max-deviation readout in
+mm** so the maker sees exactly what a lower point count costs. Applies as a
+new curve (undoable, same layer/closed state), original untouched — same
+`offset_applied`-style wiring. Works on any spline/polyline: rebuilding an
+imported DXF (dense polyline → few-node editable spline) is the headline use
+case — it converts existing frame libraries from other applications into
+native GuildDraw curves.
+
+- UI details to decide during build: hotkey — **R is free** in the default
+  registry (L/S/C/A/F/D/T/X/O/G/I/E/M/J taken); toolbar slot + icon; whether
+  the deviation readout also colors (green/amber/red vs tolerance bands).
+- Follow-on candidates (backlog, demand-driven): offer Rebuild automatically
+  after a dense DXF import ("imported outline has 400 points — rebuild?");
+  use the engine to clean OMA trace imports (currently Catmull through raw
+  trace points).
+
+## M32 — Spline drag stability (node/handle "fly-away") — ✅ DONE 2026-07-13 (held)
+
+**Root cause CONFIRMED = H1.** Fixed by taking `NodeDot`/`HandleDot`
+([canvas/items.py](framedraft/canvas/items.py)) off Qt's built-in
+`ItemIsMovable` drag (which re-derives each step through the view's *current*
+device transform → mid-drag zoom/pan poisoned the reference and flung the dot
+toward the anchor). They now drive movement from explicit
+`mousePress/Move/Release` using `event.scenePos()` + a grab offset captured at
+press — transform-independent by construction, and with the M23.1
+anchored-wheel-zoom a mid-drag zoom keeps the scene point under the cursor
+fixed, so the dot never jumps. Same proven pattern as the whole-curve drag and
+move gizmo; snap callback, `about_to_modify` undo hook, and smooth-sibling
+reflection preserved (setPos still fires `itemChange`). **M32.2:** the
+mirror-axis magnet ([tools/edit.py](framedraft/tools/edit.py)
+`_make_ep_snap_fn`) is now scoped to open-curve end nodes only
+(`is_open_endpoint`), so an interior node of a closed eyewire near the bridge
+no longer snaps to dead-centre (the milder H2 flavour). **M32.3:** a
+`GUILDDRAW_DRAG_LOG=1` flight recorder (ships disabled) logs each drag step and
+dumps context (view scale, scrollbars) on any single-event jump >40 px, so a
+residual report stays diagnosable. **Verify:** 9 new tests in
+`tests/test_drag_stability.py` (transform-independent invariant across a
+mid-drag `view.scale`, grab-offset tracking, handle sibling reflection, axis
+magnet scoping, no-`ItemIsMovable` structural guard); a QTest end-to-end
+through the real CanvasView drove a node drag + mid-drag wheel-zoom and it
+tracked the cursor to 0.06 mm (no fly-away). 317 tests green, ruff clean, GUI
+launched clean. **Commits HELD.**
+
+### Original plan (for reference)
+
+> **Maintainer report 2026-07-12:** while dragging a spline node or handle it
+> sometimes "flies out of view while still being handled by the mouse, and
+> snaps somewhere toward the center." Intermittent; affects node dots AND
+> handle dots; releasing, re-clicking wherever it landed, and dragging back
+> always works. Suspected compounding factors: snaps, mixed
+> symmetric/asymmetric handles. This is a trust bug — investigated by code
+> reading 2026-07-12; hypotheses below are ranked, with a designed
+> confirm-first repro (house rule: confirm before building).
+
+**H1 (primary) — Qt built-in drag on untransformable dots.** `NodeDot` and
+`HandleDot` are `ItemIgnoresTransformations` + `ItemIsMovable`
+([items.py:204](framedraft/canvas/items.py#L204), [306](framedraft/canvas/items.py#L306))
+and ride Qt's *built-in* movable-drag machinery. For untransformable items Qt
+computes every drag step by mapping the **button-down screen position through
+the view's *current* device transform** — so any viewport change mid-drag
+poisons the reference: the residual delta becomes a large bogus vector applied
+on every subsequent move (the dot "flies"), and `itemChange →
+ItemPositionHasChanged` commits each wild position straight into the model.
+Mid-drag viewport changes are easy to hit without noticing: **wheel = zoom**
+in GuildDraw (a grazed wheel tick, or touchpad two-finger scroll *inertia*
+events still arriving as the drag starts), middle-button pan during a left
+drag, window resize. Fits every observed fact: intermittent; nodes + handles
+only (whole-curve drag uses the hand-rolled scene-coordinate delta path,
+[app.py:639](framedraft/app.py#L639), and never misbehaves); landing point
+correlates with the viewport shift ("toward the center"); re-click always
+works (fresh button-down reference).
+
+**H2 (secondary, the mild "snaps toward center" flavor)** — the endpoint
+drag-snap's mirror-axis magnet ([edit.py:263](framedraft/tools/edit.py#L263))
+applies to **every** dragged node, including interior nodes of closed
+eyewires: within 12 px of the axis the node yanks to x = 0 (dead center at
+the bridge). Stated intent was "re-snapping a moved *endpoint* back to the
+axis" — scope it to open-curve end nodes (index 0/last, open curves only),
+matching the endpoint-target rule right above it.
+
+**H3 (instrument, not yet implicated)** — mid-drag model writers that could
+compound: smooth-sibling reflection (`set_pos_silent` guard looks sound),
+`_schedule_boxing_follow` / outline-lock auto-resize mutating curves during a
+drag, stale `NodeDot._index` after node insert/delete if dots ever survive a
+rebuild.
+
+**Plan**
+- **M32.0 confirm:** offscreen repro — press on a NodeDot via QTest, inject a
+  `wheelEvent` mid-drag, continue the move, assert the node tracks the cursor
+  (expected: FAILS against today's code, confirming H1). Same for HandleDot.
+- **M32.1 structural fix:** take node/handle drags off Qt's built-in movable
+  path — explicit `mousePress/Move/Release` on the dots using
+  `event.scenePos()` (view-computed, transform-independent) minus a grab
+  offset captured at press. Same proven pattern as the whole-curve drag and
+  the move gizmo. Mid-drag zoom/pan becomes safe *by construction* (and
+  zoom-while-editing turns into a feature, not a hazard). Keep the
+  `about_to_modify` undo hook, ep-snap callback, and smooth-sibling behavior
+  byte-identical.
+- **M32.2:** scope the mirror-axis magnet per H2 (+ indicator only for real
+  endpoint snaps).
+- **M32.3 flight recorder (ships disabled):** `GUILDDRAW_DRAG_LOG=1` logs
+  per-event proposed dot positions; any single-event jump > ~40 px dumps
+  context (view transform, scrollbar values, recent wheel/pan events) — so
+  any *remaining* field report becomes pin-downable instead of "could not
+  reproduce."
+- **Tests:** the M32.0 repros become regressions; axis-magnet scope tests
+  (interior node near axis must NOT snap; open endpoint must); smooth-mode
+  sibling reflection invariants under drag.
+
+---
+
+# V1 pre-release polish round — ✅ DONE 2026-07-15 (held)
+
+> Outcome of the 2026-07-15 V1-readiness audit (328 tests → **339**, ruff
+> clean). Code found sound; this round closed the deliberate open questions
+> and privacy items before the 1.0 stamp.
+
+- **OMA bevel dialogs, both directions (closes the M15 open question).**
+  Import now shows a dialog (`_ask_oma_import_bevel`): a tracer describes the
+  *finished* lens, so the maker chooses **Apply Reduction** (shrink by an
+  editable bevel depth, pre-filled from the front workspace's bevel setting —
+  `offset_curve` at −depth, trustworthy since M29/M31), **Import As Traced**,
+  or Cancel. Placement compensates: drawn nasal edges land `DBL + 2·depth`
+  apart so the *finished* edges sit exactly DBL apart. **Export got the
+  symmetric ask** (same session, user request): it used to grow the trace by
+  the workspace bevel depth *silently*; `_ask_oma_export_bevel` now offers
+  **Apply Increase** (finished size, guide-default depth) / **Export As-Is**
+  (drawn lens opening) / Cancel — both dialogs share one builder
+  (`_ask_oma_bevel`), HBOX/VBOX/DBL follow the chosen geometry, and the
+  status bar names which size was written. Export→import at the same depth
+  round-trips exactly. Drill holes are absolute binocular coords —
+  unaffected. Tests: `tests/test_oma_bevel_import.py` (7: Qt-free
+  finished-trace round trip, real-MainWindow import placement + export
+  HBOX/DBL at both answers, full GUI export→import round trip).
+- **Face-photo path privacy (security item 2).** `.gdraw` now **embeds** face
+  photos as zip members (`images/<tab>_<i>_<basename>`); metadata carries only
+  the member name, never the author's absolute `C:\Users\<name>\…` path, and a
+  shared file shows the photo on the recipient's machine. On load, members
+  extract to `~/.guilddraw/imagecache/<doc-key>/`. A vanished source stores
+  basename only. Plain-`.svg` saves store a doc-relative path (or basename);
+  relative paths resolve only *inside* the document's folder (traversal
+  rejected). Old files with absolute paths load unchanged. Autosave/recovery
+  inherits all of it (same `save_gdraw` path). Tests:
+  `tests/test_face_privacy.py` (embed/strip, vanished source, legacy
+  pass-through, portable/resolve helpers incl. traversal rejection).
+- **IT-facing explainer (security item 4)** — `docs/IT-NOTES.md`: what the app
+  does/doesn't do (no network — QtNetwork not even bundled, no persistence, no
+  subprocess/eval, writes only `~/.guilddraw/` + saved documents), why unsigned
+  PyInstaller builds trip AV heuristics, and how to verify (source, netstat,
+  VirusTotal).
+- **Hidden-imports convention** — `framedraft.fitting`,
+  `framedraft.tools.rebuild`, `framedraft.export.catalog_pdf` added to
+  `build_common.py` (they were reachable via static imports, so the rc5 build
+  worked, but the every-module list must not drift).
+- **Still open for the 1.0 stamp:** ~~hardware round-trip release criterion~~
+  *(✅ 2026-07-15: confirmed — numerous frames cut on GuildModel)*;
+  README/USER-GUIDE to 1.0; version stamp `1.0.0` + installer rebuild; close
+  GH #4–#7 with commit refs on release. Maintainer decision 2026-07-15:
+  **no further pre-releases — straight to the v1.0.0 release.**
+
+---
+
 # Security hardening
 
 > **2026-06-17.** Prompted by makers relaying that their IT/AV tools flag "funny
@@ -1083,7 +1412,10 @@ implement; each wants a regression test.
    minimal). Regression tests in `tests/test_svg_roundtrip.py` (billion-laughs,
    plain DOCTYPE, oversized file). *(No XXE path — ElementTree doesn't resolve
    external entities — so this was DoS-only.)*
-2. **Sanitize `face_images[].path` on load.** A loaded `.gdraw` carries absolute
+2. ✅ **Sanitize `face_images[].path`** *(2026-07-15, V1 pre-release round —
+   went further than sanitizing: photos are embedded in the .gdraw, relative
+   paths honored only inside the document's folder; see that section).*
+   *Original finding:* A loaded `.gdraw` carries absolute
    image paths ([svg.py:165](framedraft/export/svg.py#L165)) that the app
    `QPixmap()`-loads if the file exists ([app.py:5358](framedraft/app.py#L5358)).
    Impact is local-only (no network = no exfil): a malicious file can surface an
@@ -1095,10 +1427,10 @@ implement; each wants a regression test.
    `mkstemp` file then re-reads it; an in-memory buffer removes the temp churn
    and a small TOCTOU window. (ZIP reads are already safe — members are read by
    name into temp, never `extractall`, so no zip-slip.)
-4. **Ship an IT-facing explainer** — a one-page "what GuildDraw does and does
-   not do" (writes only to `~/.guilddraw/`, no network, no persistence) plus a
-   VirusTotal link, so makers can answer their IT departments directly. Fold
-   into `docs/` next to the user guide.
+4. ✅ **Ship an IT-facing explainer** *(2026-07-15 — `docs/IT-NOTES.md`)* — a
+   one-page "what GuildDraw does and does not do" (writes only to
+   `~/.guilddraw/`, no network, no persistence) plus a VirusTotal link, so
+   makers can answer their IT departments directly.
 
 ---
 

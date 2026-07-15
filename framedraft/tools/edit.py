@@ -232,8 +232,12 @@ class EditTool(QObject):
     # Endpoint drag-snap
     # ------------------------------------------------------------------
 
-    def _make_ep_snap_fn(self, dragged_node):
-        """Return a per-NodeDot snap callback that captures the specific node being dragged."""
+    def _make_ep_snap_fn(self, dragged_node, is_open_endpoint: bool = False):
+        """Return a per-NodeDot snap callback that captures the specific node
+        being dragged. *is_open_endpoint* is True only for the first/last node
+        of an OPEN curve; the mirror-axis magnet is scoped to those so dragging
+        an interior node of a closed eyewire near the bridge no longer yanks it
+        to dead-centre (M32 H2)."""
         def ep_snap(pos: QPointF) -> QPointF:
             # Respect global snap toggle and Ctrl-key suspend
             if (self._ep_view is None
@@ -260,9 +264,11 @@ class EditTool(QObject):
                         if d < self._EP_SNAP_PX and d < best_d:
                             best_d, best_x, best_y = d, ep.x, ep.y
 
-            # Snap to mirror axis — allows re-snapping a moved endpoint back to the axis
+            # Snap to mirror axis — re-snapping a moved ENDPOINT back to the
+            # axis. Scoped to open-curve end nodes: an interior node (or any
+            # node of a closed curve) must never be magneted to x=0/y=0.
             mirror = getattr(self._scene, 'mirror', None)
-            if mirror is not None and getattr(mirror, 'enabled', False):
+            if is_open_endpoint and mirror is not None and getattr(mirror, 'enabled', False):
                 horizontal = getattr(mirror, '_horizontal', False)
                 if horizontal:
                     target = QPointF(pos.x(), mirror.x)
@@ -346,13 +352,15 @@ class EditTool(QObject):
             return
 
         node_dots: dict[int, NodeDot] = {}
-        for i in range(len(curve.nodes)):
+        n_nodes = len(curve.nodes)
+        for i in range(n_nodes):
             dragged_node = curve.nodes[i]
+            is_open_endpoint = (not curve.closed) and i in (0, n_nodes - 1)
             dot = NodeDot(
                 curve, i, self._node_moved,
                 on_drag_start = self.about_to_modify.emit,
                 on_clicked    = self._on_node_clicked,
-                on_snap       = self._make_ep_snap_fn(dragged_node),
+                on_snap       = self._make_ep_snap_fn(dragged_node, is_open_endpoint),
                 on_drag_end   = self._hide_ep_indicator,
             )
             self._scene.addItem(dot)

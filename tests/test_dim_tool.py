@@ -47,6 +47,77 @@ def test_dim_snap_still_queried_after_first_point():
     assert snap.calls == before + 1
 
 
+def test_first_point_hover_shows_then_clears_marker():
+    """Pick-A phase gets a live crosshair (its own feedback, since there is no
+    rubber-band yet); placing the first point removes it."""
+    snap = _RecordingSnap()
+    tool = DimTool()
+    scene = FrameScene()
+    tool.activate(scene, None, snap=snap)
+
+    assert tool._hover_marker is None
+    tool.handle_move(QPointF(5.0, 5.0))
+    assert tool._hover_marker is not None
+    assert tool._hover_marker.scene() is scene
+
+    tool.handle_press(QPointF(5.0, 5.0))          # place point A
+    assert tool._hover_marker is None             # marker gone once A is set
+
+
+def test_hover_marker_cleared_on_deactivate():
+    snap = _RecordingSnap()
+    tool = DimTool()
+    tool.activate(FrameScene(), None, snap=snap)
+    tool.handle_move(QPointF(3.0, 3.0))
+    assert tool._hover_marker is not None
+    tool.deactivate()
+    assert tool._hover_marker is None
+
+
+def test_scene_uses_noindex_for_dim_delete_crash_safety():
+    """Regression for the 'delete a dimension → app closes' segfault.
+
+    DimItem's Python boundingRect() changes with zoom (its screen-sized label),
+    which mutates the item's geometry without the prepareGeometryChange() a BSP
+    item index needs to stay consistent — so removing it left a dangling
+    pointer that faulted on the next index query. FrameScene uses NoIndex so
+    that whole class of crash can't happen."""
+    import gc
+
+    from PySide6.QtWidgets import QGraphicsScene
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtCore import QRectF
+    from framedraft.canvas.dim import DimItem
+    from framedraft.document import DimLine
+
+    scene = FrameScene()
+    assert scene.itemIndexMethod() == QGraphicsScene.ItemIndexMethod.NoIndex
+
+    dim = DimLine(x0=-20, y0=5, x1=20, y1=5, offset=8)
+    item = scene.add_dim(dim)
+    # paint at several scales so the DimItem's cached bound-scale keeps changing
+    for s in (0.3, 3.0, 0.1, 5.0):
+        img = QImage(200, 150, QImage.Format.Format_ARGB32)
+        img.fill(0)
+        p = QPainter(img)
+        p.scale(s, s)
+        scene.render(p, QRectF(0, 0, 200, 150), QRectF(-40, -30, 80, 60))
+        p.end()
+
+    scene.remove_dim(dim)
+    del item
+    gc.collect()
+    # querying the index + a full re-render after removal must not touch a
+    # dangling pointer (this is what crashed with a BSP index)
+    hits = scene.items(QRectF(-100, -100, 200, 200))
+    assert all(not isinstance(i, DimItem) for i in hits)
+    img = QImage(200, 150, QImage.Format.Format_ARGB32)
+    img.fill(0)
+    p = QPainter(img)
+    scene.render(p, QRectF(0, 0, 200, 150), QRectF(-40, -30, 80, 60))
+    p.end()
+
+
 def test_dim_item_paints_arrows_and_label_without_artifacts():
     """Smoke: the arrowed/rotated-label paint path runs and draws ink."""
     scene = QGraphicsScene()

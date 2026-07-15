@@ -38,6 +38,21 @@ DEFAULTS: dict = {
     "pad_on_startup":       True,
     "pad_width_mm":         45.0,
     "pad_height_mm":        45.0,
+    # PNG export resolution (true print scale: pixels = mm · dpi / 25.4)
+    "png_export_dpi":       600,
+    # PDF-for-Catalog export (front + both temples on one printable sheet)
+    "catalog_pdf": {
+        "paper":         "a5",            # "a5" | "half_letter"
+        "line_weight_mm": 0.6,            # uniform weight (catalog + 1:1 PDF/print)
+        "caption":       True,            # print the design file name
+        "caption_font":  "Courier New",   # monospace default
+        "show_scale":    False,           # print a scale note (off = true A5 scale)
+        # Vertical shift (mm) of the drawing content only — the caption stays
+        # put. Lets a maker clear a binding/spine margin. + = down, − = up.
+        "content_offset_mm": 0.0,
+        "front_layers":  ["OUTLINE", "LENS"],
+        "temple_layers": ["OUTLINE"],
+    },
     # Toolbar button visibility (False = hidden; action still works via hotkey)
     "toolbar": {
         "select":       True,   # always visible; checkbox disabled in dialog
@@ -51,6 +66,7 @@ DEFAULTS: dict = {
         "trim":         True,
         "split_curve":  True,
         "offset":       True,
+        "rebuild":      True,
         "point_move":   True,
         "text":         True,
         "ghost":        True,   # Ghost (mirror-axis toggle)
@@ -125,6 +141,7 @@ DEFAULTS: dict = {
         "trim":         "T",
         "split_curve":  "X",
         "offset":       "O",
+        "rebuild":      "R",
         "point_move":   "G",
         "text":         "I",
         "snap_node_ep": "E",
@@ -148,7 +165,7 @@ def load() -> dict:
             # files. EVERY nested dict pref must be listed here — a missing
             # entry means old files silently clobber new defaults.
             for key in ("toolbar", "hotkeys", "theme", "viewport",
-                        "snap_types"):
+                        "snap_types", "catalog_pdf"):
                 if isinstance(data.get(key), dict):
                     merged[key] = {**DEFAULTS[key], **data[key]}
                 else:
