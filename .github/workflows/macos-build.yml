@@ -1,0 +1,54 @@
+# Builds the macOS artifacts on GitHub's free macOS runners — no local Mac
+# needed. Trigger it manually (Actions tab > "macOS build" > Run workflow),
+# then download the artifacts and attach them to the GitHub release.
+#
+# One artifact per architecture (PyInstaller does not cross-compile):
+#   - macos-14 runner        -> arm64  (Apple Silicon)
+#   - macos-15-intel runner  -> x86_64 (Intel; best-effort — GitHub is
+#     winding Intel runners down, so this leg may need a new label or can
+#     be dropped when it stops working)
+name: macOS build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+            required: true
+          - runner: macos-15-intel
+            arch: x86_64
+            required: false
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ !matrix.required }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Build (test gate + .app + zip + dmg)
+        env:
+          GUILDDRAW_SKIP_SMOKE: "1"   # no window server on hosted runners
+        run: bash scripts/build_release_macos.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GuildDraw-macos-${{ matrix.arch }}
+          path: |
+            dist/GuildDraw-*-macos-*.zip
+            dist/GuildDraw-*-macos-*.dmg
+          if-no-files-found: error

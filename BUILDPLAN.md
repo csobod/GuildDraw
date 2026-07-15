@@ -1346,6 +1346,21 @@ rebuild.
   README/USER-GUIDE to 1.0; version stamp `1.0.0` + installer rebuild; close
   GH #4–#7 with commit refs on release. Maintainer decision 2026-07-15:
   **no further pre-releases — straight to the v1.0.0 release.**
+- **macOS build (2026-07-15, for the v1.0.0 release):** PyInstaller can't
+  cross-compile, so the repo now carries everything a Mac (or GitHub's free
+  macOS runners) needs: `make_icon.py` also emits a PNG-based
+  `assets/icon.icns` (validated structurally on Windows); `framedraft.spec`
+  grew a darwin-only `BUNDLE` step (GuildDraw.app, bundle id
+  `org.spectaclemakers.guilddraw`, `.gdraw` document type, min macOS 11,
+  `.ico` now Windows-gated); `scripts/build_release_macos.sh` (test gate →
+  .app → ditto-zip + drag-to-Applications DMG → launch smoke test, per-arch
+  artifact names); `.github/workflows/macos-build.yml`
+  (workflow_dispatch, macos-14 arm64 required + macos-15-intel best-effort).
+  Unsigned/un-notarized like Windows (ad-hoc signature only — Apple Silicon
+  requires one; PyInstaller applies it): first launch = right-click ▸ Open,
+  documented in README + IT-NOTES. **Untested on real macOS** — first
+  Actions run or Mac build is the verification; the Windows path is
+  untouched (darwin-guarded).
 
 ---
 

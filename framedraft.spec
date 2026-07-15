@@ -3,6 +3,7 @@
 # PyInstaller spec for GuildDraw (FrameDraft) — ONE-FOLDER build.
 # Build:  python -m PyInstaller framedraft.spec --clean
 # Output: dist/GuildDraw/GuildDraw.exe  (one-folder, Windows)
+#         dist/GuildDraw.app            (bundle, macOS — see scripts/build_release_macos.sh)
 #
 # This is the build the Inno Setup installer (installer/GuildDraw.iss) packages.
 # Analysis inputs (hidden imports, bundled data, Qt excludes) live in
@@ -37,7 +38,8 @@ exe = EXE(
     strip=False,
     upx=False,              # UPX packing trips AV/EDR heuristics — see BUILDPLAN "Security hardening"
     console=False,          # windowed — no terminal popup on Windows
-    icon=ICON_PATH if os.path.exists(ICON_PATH) else None,
+    icon=(ICON_PATH if (sys.platform == "win32" and os.path.exists(ICON_PATH))
+          else None),       # .ico is Windows-only; macOS gets .icns via BUNDLE
     contents_directory=".", # flat layout: DLLs next to the exe (avoids _internal search failures on network drives)
 )
 
@@ -51,3 +53,25 @@ coll = COLLECT(
     upx_exclude=[],
     name="GuildDraw",
 )
+
+if sys.platform == "darwin":
+    # framedraft/__init__.py is a bare version stamp — safe to import here.
+    from framedraft import __version__ as _app_version
+
+    app = BUNDLE(
+        coll,
+        name="GuildDraw.app",
+        icon="assets/icon.icns" if os.path.exists("assets/icon.icns") else None,
+        bundle_identifier="org.spectaclemakers.guilddraw",
+        version=_app_version,
+        info_plist={
+            "NSHighResolutionCapable": True,
+            "NSPrincipalClass": "NSApplication",
+            "LSMinimumSystemVersion": "11.0",
+            "CFBundleDocumentTypes": [{
+                "CFBundleTypeName": "GuildDraw Project",
+                "CFBundleTypeExtensions": ["gdraw"],
+                "CFBundleTypeRole": "Editor",
+            }],
+        },
+    )

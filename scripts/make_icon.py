@@ -1,12 +1,13 @@
-"""Render assets/icon.svg into a multi-resolution Windows .ico.
+"""Render assets/icon.svg into a multi-resolution Windows .ico + macOS .icns.
 
 Build-time helper (no Pillow dependency — uses the Qt that GuildDraw already
 ships with). Renders the SVG at the standard icon sizes and assembles a
-PNG-compressed .ico (Vista+ reads PNG entries natively).
+PNG-compressed .ico (Vista+ reads PNG entries natively) and a PNG-based
+.icns (macOS 10.7+ reads PNG entries natively).
 
     .venv\\Scripts\\python scripts\\make_icon.py
 
-Writes assets/icon.ico.
+Writes assets/icon.ico and assets/icon.icns.
 """
 from __future__ import annotations
 
@@ -18,7 +19,8 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
 from PySide6.QtGui import QGuiApplication, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
-SIZES = [256, 128, 64, 48, 32, 24, 16]
+SIZES = [512, 256, 128, 64, 48, 32, 24, 16]
+ICO_SIZES = [256, 128, 64, 48, 32, 24, 16]      # .ico caps at 256
 
 
 def render_png(renderer: QSvgRenderer, size: int) -> bytes:
@@ -62,10 +64,38 @@ def build_ico(pngs: list[tuple[int, bytes]]) -> bytes:
     return bytes(header) + bytes(entries) + bytes(image_data)
 
 
+# ICNS entry types that carry raw PNG data, by pixel size. The @2x retina
+# types (ic11–ic14) are the same pixels served for point-size-at-2x; macOS
+# picks per display. All PNG-bearing types work from macOS 10.7.
+_ICNS_TYPES = [
+    (b"icp4", 16),
+    (b"icp5", 32),
+    (b"ic11", 32),    # 16pt @2x
+    (b"icp6", 64),
+    (b"ic12", 64),    # 32pt @2x
+    (b"ic07", 128),
+    (b"ic08", 256),
+    (b"ic13", 256),   # 128pt @2x
+    (b"ic09", 512),
+    (b"ic14", 512),   # 256pt @2x
+]
+
+
+def build_icns(pngs_by_size: dict[int, bytes]) -> bytes:
+    body = bytearray()
+    for fourcc, size in _ICNS_TYPES:
+        png = pngs_by_size.get(size)
+        if png is None:
+            continue
+        body += fourcc + struct.pack(">I", 8 + len(png)) + png
+    return b"icns" + struct.pack(">I", 8 + len(body)) + bytes(body)
+
+
 def main() -> int:
     repo = Path(__file__).resolve().parent.parent
     svg_path = repo / "assets" / "icon.svg"
     ico_path = repo / "assets" / "icon.ico"
+    icns_path = repo / "assets" / "icon.icns"
     if not svg_path.exists():
         print(f"missing {svg_path}", file=sys.stderr)
         return 1
@@ -77,10 +107,16 @@ def main() -> int:
         print(f"invalid SVG: {svg_path}", file=sys.stderr)
         return 1
 
-    pngs = [(size, render_png(renderer, size)) for size in SIZES]
-    ico_path.write_bytes(build_ico(pngs))
+    pngs_by_size = {size: render_png(renderer, size) for size in SIZES}
+
+    ico_path.write_bytes(
+        build_ico([(s, pngs_by_size[s]) for s in ICO_SIZES]))
     print(f"wrote {ico_path} ({ico_path.stat().st_size} bytes, "
-          f"{len(SIZES)} sizes)")
+          f"{len(ICO_SIZES)} sizes)")
+
+    icns_path.write_bytes(build_icns(pngs_by_size))
+    print(f"wrote {icns_path} ({icns_path.stat().st_size} bytes, "
+          f"{len(_ICNS_TYPES)} entries)")
     del app  # noqa: F841 — keep the app alive until rendering is done
     return 0
 

@@ -59,7 +59,9 @@ Behavioral flags on GuildDraw are packaging artifacts, not malware:
 2. **The binaries are unsigned.** GuildDraw is a no-budget open-source
    project without an Authenticode certificate, so SmartScreen shows
    "unknown publisher" on first run and reputation-based scoring starts
-   low. This is a reputation statement, not a behavioral finding.
+   low. This is a reputation statement, not a behavioral finding. (The
+   macOS build is likewise ad-hoc signed but not notarized: Gatekeeper
+   requires right-click ▸ Open on first launch.)
 3. Releases are **not** UPX-compressed (a common heuristic trigger) —
    that was removed early in the release-candidate series.
 

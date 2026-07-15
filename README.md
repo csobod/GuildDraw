@@ -209,6 +209,31 @@ Both specs share their hidden-imports / Qt-excludes / bundled data via
 `scripts/make_icon.py` (run automatically by the release script; the build
 works without it — PyInstaller just falls back to its default icon).
 
+### macOS
+
+PyInstaller does not cross-compile, so the macOS build is made **on a Mac** —
+either your own or GitHub's free runners:
+
+- **On a Mac**: create the venv (see *Install & run*), then
+
+  ```bash
+  .venv/bin/pip install -r requirements-dev.txt
+  bash scripts/build_release_macos.sh
+  ```
+
+  It gates on the test suite, then writes `GuildDraw-<ver>-macos-<arch>.zip`
+  and a drag-to-Applications `.dmg` to `dist/` for the architecture you build
+  on (arm64 on Apple Silicon, x86_64 on Intel).
+- **Without a Mac**: the repository ships a GitHub Actions workflow
+  (*Actions ▸ macOS build ▸ Run workflow*) that builds on GitHub's macOS
+  runners and uploads the same artifacts for download.
+
+Like the Windows builds, the app is **unsigned and not notarized** (no
+certificate budget); it is ad-hoc signed, which Apple Silicon requires. On
+first launch macOS will refuse a normal double-click on a downloaded copy —
+**right-click the app ▸ Open ▸ Open** once (or
+`xattr -cr /Applications/GuildDraw.app`), and it opens normally after that.
+
 ### Linux
 
 PyInstaller is cross-platform; the same one-folder spec produces a native Linux
