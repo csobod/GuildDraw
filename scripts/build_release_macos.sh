@@ -20,8 +20,11 @@ cd "$(dirname "$0")/.."
 PY=".venv/bin/python"
 [ -x "$PY" ] || { echo "missing .venv — create it first (see header)"; exit 1; }
 
-# 1. Test gate — never ship a build from a red suite
-"$PY" -m pytest tests -q
+# 1. Test gate — never ship a build from a red suite. CI runs the suite as
+#    its own workflow step (with per-test timeouts) and sets the skip.
+if [ "${GUILDDRAW_SKIP_TESTS:-0}" != "1" ]; then
+    "$PY" -m pytest tests -q
+fi
 
 # 2. Version + arch stamps
 VERSION="$("$PY" -c 'from framedraft import __version__; print(__version__)')"

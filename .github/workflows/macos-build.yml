@@ -26,6 +26,7 @@ jobs:
             required: false
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ !matrix.required }}
+    timeout-minutes: 40             # a healthy run is ~15 min; never burn hours
     steps:
       - uses: actions/checkout@v4
 
@@ -38,10 +39,20 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+          .venv/bin/pip install pytest-timeout   # CI-only: per-test hang guard
 
-      - name: Build (test gate + .app + zip + dmg)
+      # Separate step so a hang or failure is pinned to the suite. The first
+      # run proved cocoa works on the runners (the suite ran to ~42% before
+      # one test hung), so this stays on the default platform; -v + the
+      # per-test timeout turn any hang into a named failure.
+      - name: Test gate
+        timeout-minutes: 20
+        run: .venv/bin/python -m pytest tests -v --timeout=120
+
+      - name: Build (.app + zip + dmg)
         env:
-          GUILDDRAW_SKIP_SMOKE: "1"   # no window server on hosted runners
+          GUILDDRAW_SKIP_SMOKE: "1"   # no window session for a launch check
+          GUILDDRAW_SKIP_TESTS: "1"   # the Test gate step above already ran
         run: bash scripts/build_release_macos.sh
 
       - name: Upload artifacts
