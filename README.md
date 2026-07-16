@@ -72,82 +72,21 @@ export, and face photos embedded in shared project files (see *New in 1.0*).
 - **[IT notes](docs/IT-NOTES.md)** — a one-page answer for IT departments:
   no network, no persistence, exactly what the app writes to disk.
 
-## New in rc4
-
-- **Field fixes** — wheel-zoom no longer resets the viewport while a tool is
-  active; the shipped hinge library now merges into an existing library
-  instead of only seeding an empty one; Offset on a closed shape is now
-  always outward on a positive distance and inward on negative, regardless of
-  how the curve was drawn.
-- **Light-mode pop-ups** — the Move, Point Move, and Radius/Diameter HUDs now
-  read correctly in light mode (they used to sit on the app's chrome colour
-  instead of their own background). The Radius/Diameter chip also moved from
-  a bar docked behind the scroll bar to a floating chip near the circle/arc
-  centre.
-- **Dimension tool** — the snap indicator now shows while picking the first
-  point, not just the second; dimension ends draw real arrowheads instead of
-  ticks; the length label rotates parallel to the line and floats clear of it.
-- **Grid appearance** — minor/major line colour and major line weight are now
-  set in *Preferences ▸ Appearance ▸ Grid*, alongside spacing; shipped default
-  is 2 mm spacing with a major line every 10 mm.
-- **"Dimmed" canvas preset** — a softer light-mode canvas option between
-  Parchment and the dark presets.
-- **□ hotkey** (`Ctrl+Shift+B`) — types the boxing square used in frame-size
-  notation (`49□27-145`) into bookmark names, the hinge/drill library dialogs,
-  and the engraving text dialog; Save As pre-fills an untitled project's
-  filename with the size string.
-- Renamed **GuildCAM → GuildModel** throughout, matching the downstream tool's
-  new name.
-
-## New in rc3a
-
-- **Snap palette** — a pinnable pop-out beside the Snap button with per-type
-  toggles: Endpoint, Node, Midpoint, Center, Quadrant, **Intersection** (new),
-  **Tangent** and **Perpendicular** (new; active while drawing a line/spline),
-  Handle, On-curve, Grid, Mirror axis, and Origin — plus the snap radius. The
-  Snap button stays the master on/off and holding Ctrl still suspends snapping.
-- **Millimetre grid** — a Grid toolbar toggle draws a minor/major grid over the
-  canvas (spacing and divisions in *Preferences ▸ Appearance*); an opt-in Grid
-  snap targets its intersections in empty space.
-- **Themes & appearance** — every colour now lives in one theme system: canvas
-  presets (Parchment, Blueprint, Matte Dark, Plain White, or a custom colour
-  with auto-derived ink), a vignette slider, per-layer colours for light and
-  dark mode (*Preferences ▸ Layers*), node-dot size for high-DPI displays, and
-  a compact-toolbar option.
-- **Ctrl+S saves** (Ctrl+Shift+S = Save As), shown in the File menu.
-- **Starter hinge library** — nine Zoye hinge pocket designs ship with the app
-  and seed an empty library on first run.
-- **Fixes** — intersection splits undo as one step, Mirror-Close preserves
-  hand-tuned handles, OMA export boxes/trace describe the finished (beveled)
-  lens, split-at-node endpoint corruption fixed, snap indicators no longer
-  linger after a Point Move, and two full-codebase audits' worth of smaller
-  correctness and performance work.
-
-## New in rc2
-
-- **Generic DXF import** (*File ▸ Import ▸ DXF…*) — bring in any existing DXF
-  library. Entities on recognised GuildDraw layers keep them; everything else
-  lands on the active layer for you to re-file by dragging rows in the Layers
-  panel. Handles lines, polylines (incl. bulge arcs), splines, circles, arcs,
-  and ellipses.
-- **Bevel model + lens-locked boxing** — a bevel preset (Flat/Rimless, Horn/Metal,
-  Acetate, or Custom depth) plus **Snap to lens shape**: the boxing box and a
-  bevel-offset "full lens depth" outline fit the real lens, and A/B/DBL read the
-  finished (beveled) measurements live.
-- **Measurement-driven auto-resize** — **Lock lens shape** to freeze the spline,
-  then type new A/B to restretch the lens to exact finished sizes (a chain toggle
-  links A/B proportionally), and DBL to slide it. **Lock outline to lens**
-  co-resizes the frame at a constant eyewire wall — preserving flats and corners —
-  and auto-detects open (mirrored half) vs closed (finished) outlines.
-- **Drill-mount holes** — a DRILL layer, a coordinate-entry and pattern library
-  (*Library ▸ Holes*, offsets from the lens boxing centre), and **OMA `DRILLE`
-  import/export** so drill-mount lens designs round-trip with labs.
-
 ## Download
 
-- **Prebuilt Windows builds** (installer, portable exe, and zip) are on the
-  [Releases](../../releases) page and our website — no Python needed.
-- **Build it yourself** on Windows or Linux with the steps below.
+Prebuilt builds are on the [Releases](../../releases) page and our website —
+no Python needed:
+
+- **Windows** — `-setup.exe` installer (recommended; per-user, no admin,
+  upgrades in place), or the portable `-win64.zip` / single-file `.exe`.
+- **macOS** — `.dmg` (drag to Applications) or `.zip`, in **arm64**
+  (Apple Silicon) and **x86_64** (Intel) flavours.
+
+First launch: the builds are unsigned (see [IT notes](docs/IT-NOTES.md)) — on
+Windows, SmartScreen wants *More info ▸ Run anyway* once; on macOS,
+**right-click the app ▸ Open** once.
+
+Or **build it yourself** on Windows, macOS, or Linux with the steps below.
 
 ## Install & run (from source)
 
@@ -257,6 +196,8 @@ against the host's system libraries.
 
 - **[User guide](docs/USER-GUIDE.md)** — tool reference, hotkeys, workflows,
   GuildModel handoff.
+- **How-to videos** — a tutorial series is in the works on YouTube; links
+  will land here when they're up.
 - **[IT notes](docs/IT-NOTES.md)** — what GuildDraw does and does not do, for
   IT departments and security reviewers.
 - **[BUILDPLAN.md](BUILDPLAN.md)** — roadmap and engineering history.
