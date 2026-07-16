@@ -1,4 +1,6 @@
 """Batch DXF export (M9) — path suffixing, all-or-nothing validation, writes."""
+import os
+
 import ezdxf
 
 from framedraft.document import Layer
@@ -86,9 +88,10 @@ def test_write_batch_writes_one_file_per_populated_workspace(tmp_path):
              BatchWorkspace(workspace_type="hinge", curves=[])]
     base = str(tmp_path / "myframe")
     written = write_batch(items, base)
-    assert [p.replace(str(tmp_path), "") for p in written] == [
-        r"\myframe_front.dxf", r"\myframe_temple_r.dxf",
-        r"\myframe_temple_l.dxf"]
+    # Compare basenames — separators differ per OS (\ on Windows, / on mac).
+    assert [os.path.basename(p) for p in written] == [
+        "myframe_front.dxf", "myframe_temple_r.dxf", "myframe_temple_l.dxf"]
+    assert all(os.path.dirname(p) == str(tmp_path) for p in written)
     # Front file: mirror doubling applied → 2 LENS circles, 1 OUTLINE spline.
     msp = ezdxf.readfile(written[0]).modelspace()
     assert len([e for e in msp if e.dxf.layer == "LENS"]) == 2

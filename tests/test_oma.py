@@ -84,9 +84,9 @@ def test_golden_silhouette_sample_if_present():
     assert all(d.dia == pytest.approx(1.4) for d in job.drills)
     # full round trip preserves all four DRILLE lines verbatim
     rebuilt = build_oma(job)
-    for line in sample.read_text(encoding="ascii").splitlines():
-        if line.startswith("DRILLE=B"):
-            assert line in rebuilt
+    for raw_line in sample.read_text(encoding="ascii").splitlines():
+        if raw_line.startswith("DRILLE=B"):
+            assert raw_line in rebuilt
 
 
 def test_parse_golden_file():

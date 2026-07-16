@@ -222,7 +222,7 @@ def test_snap_palette_widget_signals_and_state():
 def test_snap_palette_is_icon_only_with_named_tooltips():
     from framedraft.snap_palette import SnapPalette
     pal = SnapPalette(None)
-    for key, btn in pal._btns.items():
+    for _key, btn in pal._btns.items():
         assert btn.text() == ""                 # icon only — no text on button
         assert not btn.icon().isNull()          # …but has an icon
         assert btn.toolTip()                    # …and the name lives in the tooltip

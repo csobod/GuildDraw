@@ -62,6 +62,10 @@ def win(tmp_path, monkeypatch):
     w = MainWindow()
     QApplication.processEvents()
     yield w
+    # Tests dirty the document (imports); answer the unsaved-changes prompt
+    # before it blocks teardown — on macOS even a never-shown window gets a
+    # real closeEvent, and the modal QMessageBox would hang CI forever.
+    w._dirty = False
     w.close()
     w.deleteLater()
     QApplication.processEvents()

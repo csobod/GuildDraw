@@ -19,6 +19,10 @@ def win(tmp_path, monkeypatch):
     w = MainWindow()
     QApplication.processEvents()
     yield w
+    # Never leave the dirty flag set at close — on macOS even a never-shown
+    # window gets a real closeEvent, and the unsaved-changes QMessageBox
+    # would block CI teardown forever.
+    w._dirty = False
     w.close()
     w.deleteLater()
     QApplication.processEvents()
