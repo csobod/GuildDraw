@@ -8,13 +8,17 @@ nothing else.
 Built with Python + PySide6 (Qt 6). Scene units are true millimetres (1 scene
 unit = 1 mm) end to end: what you draw is what gets cut.
 
-**Status: v1.0.0 — first stable release.** All drafting features are complete
-and tested (342-test suite), and the full hardware round-trip is proven:
-physical frames have been cut on GuildModel from GuildDraw-exported DXF. The 1.0 round rebuilt the offset engine on a
-curve-fitting core, added the Rebuild tool for imported DXF outlines, made
-node drags stable under mid-drag zoom, and finished the interchange story:
-print-quality PNG export, a catalog PDF sheet, bevel-aware OMA import *and*
-export, and face photos embedded in shared project files (see *New in 1.0*).
+**Status: v1.1.0 — stable.** All drafting features are complete and tested
+(354-test suite), and the full hardware round-trip is proven: physical frames
+have been cut on GuildModel from GuildDraw-exported DXF. The 1.1 round teaches
+the outline layer to carry decorative openings — an aviator's bridge keyhole,
+a cut-out temple — so the readiness check and the frame-fill preview both
+understand multi-contour frames, including a half-frame closed by the mirror
+(see *New in 1.1*). The 1.0 round rebuilt the offset engine on a curve-fitting
+core, added the Rebuild tool for imported DXF outlines, made node drags stable
+under mid-drag zoom, and finished the interchange story: print-quality PNG
+export, a catalog PDF sheet, bevel-aware OMA import *and* export, and face
+photos embedded in shared project files (see *New in 1.0*).
 
 ## Highlights
 
@@ -40,6 +44,23 @@ export, and face photos embedded in shared project files (see *New in 1.0*).
 - **Clean DXF out**: R2000 SPLINE entities (exact Bézier → B-spline, never
   flattened), strict layer vocabulary, per-workspace validation, and batch
   export of all four workspaces in one go.
+
+## New in 1.1
+
+- **Aviator & cut-out frames** — the OUTLINE layer can now carry more than one
+  closed contour: the largest is the frame profile and any closed curve drawn
+  inside it is a decorative opening (an aviator's bridge keyhole, a cut-out
+  temple), matching GuildModel's intake. The readiness dot stays green for these
+  frames instead of flagging "more than one outline" (community-reported).
+- **Frame Fill understands openings and Ghost mode** — the fill preview punches
+  those openings through the frame body, and it finally works while you mirror:
+  draw one half of a frame against the mirror line and the fill closes it with
+  the live ghost. It recognises endpoints snapped together (so an unjoined half
+  still reads as closed), warns if the perimeter has a leak when you switch it
+  on, and quietly turns itself off if you break the perimeter while it's showing
+  — rather than painting something wrong.
+- **Preferences shortcut** — `Ctrl+,` opens Preferences, matching GuildSend and
+  GuildModel.
 
 ## New in 1.0
 
