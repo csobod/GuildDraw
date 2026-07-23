@@ -43,6 +43,19 @@ def test_green_front_with_mirror_doubling():
     assert "Ready for GuildModel" in tip
 
 
+def test_green_front_with_bridge_keyhole():
+    # Aviator: perimeter + a second closed OUTLINE spline inside it (the
+    # bridge keyhole) — multiple OUTLINE curves are GuildModel-ready now, so
+    # the dot stays green (the openings note rides in the tooltip warning).
+    outline = closed_diamond(cx=0.0, r=30.0, layer=Layer.OUTLINE)
+    keyhole = closed_diamond(cx=0.0, cy=5.0, r=4.0, layer=Layer.OUTLINE)
+    lens    = _front_lens(cx=-18.0)
+    state, tip = readiness_state([outline, keyhole, lens], mirror_on=True,
+                                 workspace_type="front")
+    assert state == GREEN
+    assert "Ready for GuildModel" in tip
+
+
 def test_green_hinge():
     hinge = closed_diamond(cx=0.0, r=5.0, layer=Layer.HINGE)
     state, _ = readiness_state([hinge], mirror_on=False, workspace_type="hinge")

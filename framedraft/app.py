@@ -2115,6 +2115,8 @@ class MainWindow(QMainWindow):
                 lambda ws=ws: self._schedule_layer_panel_refresh(ws))
             ws.scene.geometry_changed = (
                 lambda _curve=None, ws=ws: self._schedule_boxing_follow(ws))
+            ws.scene.fill_auto_disabled = (
+                lambda status, ws=ws: self._on_fill_auto_disabled(status, ws))
 
         # ── Toggle actions wired to dispatch helpers (lambdas evaluate _active_ws) ─
         self._act_mirror.toggled.connect(self._on_mirror_toggled)
@@ -3615,16 +3617,18 @@ class MainWindow(QMainWindow):
         ws.pad_guide.set_height(ws.pad_h)
 
         # ── Frame fill ──────────────────────────────────────────────────
-        self._fill_show_chk.blockSignals(True)
-        self._fill_show_chk.setChecked(ws.fill_visible)
-        self._fill_show_chk.blockSignals(False)
         self._fill_opacity_slider.blockSignals(True)
         self._fill_opacity_slider.setValue(round(ws.fill_opacity * 100))
         self._fill_opacity_slider.blockSignals(False)
         self._update_fill_swatch(ws.fill_color)
         ws.scene.set_fill_color(QColor(ws.fill_color))
         ws.scene.set_fill_opacity(ws.fill_opacity)
-        ws.scene.set_fill_visible(ws.fill_visible)
+        status = ws.scene.set_fill_visible(ws.fill_visible)
+        if ws.fill_visible and status != "ok":
+            ws.fill_visible = False   # saved fill-on no longer encloses a region
+        self._fill_show_chk.blockSignals(True)
+        self._fill_show_chk.setChecked(ws.fill_visible)
+        self._fill_show_chk.blockSignals(False)
 
         # (Layer list/active layer are per-workspace; _refresh_layer_panel is
         # called by _on_workspace_changed right after this restore.)
@@ -3663,8 +3667,46 @@ class MainWindow(QMainWindow):
 
     def _on_fill_visible_toggled(self, on: bool):
         ws = self._active_ws
-        ws.fill_visible = on
-        ws.scene.set_fill_visible(on)
+        if on:
+            status = ws.scene.set_fill_visible(True)
+            if status != "ok":
+                # Nothing enclosable to fill — revert the tick and explain.
+                self._fill_show_chk.blockSignals(True)
+                self._fill_show_chk.setChecked(False)
+                self._fill_show_chk.blockSignals(False)
+                ws.fill_visible = False
+                if status == "leak":
+                    QMessageBox.information(
+                        self, "Frame Fill",
+                        "The frame outline perimeter has a leak somewhere — its "
+                        "ends don't close into an enclosed region, so there's "
+                        "nothing to fill.\n\nClose the OUTLINE, or in Ghost mode "
+                        "snap the open half's endpoints onto the mirror line, "
+                        "then turn Frame Fill on again.")
+                else:  # "empty"
+                    QMessageBox.information(
+                        self, "Frame Fill",
+                        "There's no frame outline to fill yet. Draw the OUTLINE "
+                        "first, then turn Frame Fill on.")
+                return
+            ws.fill_visible = True
+        else:
+            ws.fill_visible = False
+            ws.scene.set_fill_visible(False)
+
+    def _on_fill_auto_disabled(self, status: str, ws):
+        """A geometry edit broke the OUTLINE perimeter while the fill was on;
+        the scene turned it off. Sync the checkbox and note it in the status
+        bar (quietly — no modal mid-edit)."""
+        ws.fill_visible = False
+        if ws is self._active_ws:
+            self._fill_show_chk.blockSignals(True)
+            self._fill_show_chk.setChecked(False)
+            self._fill_show_chk.blockSignals(False)
+        if status == "leak":
+            self._status.showMessage(
+                "Frame Fill turned off — the outline perimeter was broken.",
+                5000)
 
     def _on_fill_color_clicked(self):
         ws = self._active_ws
@@ -6850,7 +6892,8 @@ class MainWindow(QMainWindow):
         ws.fill_opacity = float(fill.get("opacity", 0.50))
         ws.scene.set_fill_color(QColor(ws.fill_color))
         ws.scene.set_fill_opacity(ws.fill_opacity)
-        ws.scene.set_fill_visible(ws.fill_visible)
+        if ws.scene.set_fill_visible(ws.fill_visible) != "ok":
+            ws.fill_visible = False   # a saved fill-on that no longer encloses
 
         # If this is the active workspace, sync sidebar widgets
         if ws is self._active_ws:

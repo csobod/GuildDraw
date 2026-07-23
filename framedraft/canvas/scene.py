@@ -101,6 +101,65 @@ def _mirror_path(curve: Curve, mirror) -> QPainterPath:
                                    horizontal=getattr(mirror, "_horizontal", False)))
 
 
+# Endpoint-stitch tolerance for the frame fill (mm). Two curve ends this close
+# are treated as joined, so a snapped-but-not-merged perimeter still encloses a
+# region. Matches the export validator's closure tolerance / GuildModel's
+# auto-close, so the fill's idea of "closed" agrees with the handoff contract.
+_FILL_STITCH_TOL_MM = 0.1
+
+
+def _polygonize_lines(coord_lists: list) -> tuple[list, bool]:
+    """Stitch flattened polylines into faces, tolerating snapped endpoints.
+
+    Returns ``(faces, has_leak)``: ``faces`` are Shapely polygons formed by the
+    linework (a nested opening comes back already punched into its enclosing
+    face's interior); ``has_leak`` is True when some line fails to close into a
+    ring (a dangling or half-drawn perimeter). This is what lets Frame Fill work
+    on an unjoined half whose endpoints are snapped to the mirror line — the
+    real half and its ghost share endpoints and polygonize into one face."""
+    from shapely.geometry import LineString
+    from shapely.ops import polygonize_full, unary_union, snap
+
+    # Round to 1e-6 mm before building rings: a sampled circle's closing point
+    # lands ~1e-15 off its start, which leaves the ring technically un-closed
+    # (is_ring False) so polygonize would drop it as an open edge. Rounding
+    # kills that fp noise while staying far finer than the snap tolerance.
+    lines = [LineString([(round(x, 6), round(y, 6)) for x, y in c])
+             for c in coord_lists if len(c) >= 2]
+    if not lines:
+        return [], False
+    merged = unary_union(lines)                       # node true crossings
+    merged = unary_union(snap(merged, merged,         # then close snapped gaps
+                              _FILL_STITCH_TOL_MM))
+    polys, dangles, cuts, _invalid = polygonize_full(merged)
+    faces = list(polys.geoms) if not polys.is_empty else []
+    has_leak = (not dangles.is_empty) or (not cuts.is_empty)
+    return faces, has_leak
+
+
+def _shapely_to_qpath(geom) -> QPainterPath:
+    """Convert a Shapely (Multi)Polygon to a QPainterPath, holes included.
+    Interior rings are added as their own closed subpaths; the default
+    odd-even fill rule punches them out."""
+    from shapely.geometry import Polygon
+    path = QPainterPath()
+    if geom is None or geom.is_empty:
+        return path
+    polys = geom.geoms if geom.geom_type == "MultiPolygon" else [geom]
+    for poly in polys:
+        if not isinstance(poly, Polygon):
+            continue
+        for ring in (poly.exterior, *poly.interiors):
+            pts = list(ring.coords)
+            if len(pts) < 3:
+                continue
+            path.moveTo(pts[0][0], pts[0][1])
+            for x, y in pts[1:]:
+                path.lineTo(x, y)
+            path.closeSubpath()
+    return path
+
+
 class FrameScene(QGraphicsScene):
     def __init__(self):
         super().__init__()
@@ -136,6 +195,9 @@ class FrameScene(QGraphicsScene):
         self._fill_color = QColor("#2a6099")
         self._fill_opacity: float = 0.50
         self._fill_item: QGraphicsPathItem | None = None
+        # (status) -> None; fired when a geometry edit breaks the perimeter so
+        # the fill can no longer close, so the app can untick the box + notify.
+        self.fill_auto_disabled = None
         # Coalesces hot-path fill rebuilds (add/remove/refresh fire per mouse
         # move during drags) into one boolean-ops pass per event-loop tick.
         # Child timer so a pending tick dies with the scene.
@@ -382,9 +444,26 @@ class FrameScene(QGraphicsScene):
     # Frame fill overlay (display-only — never exported)
     # ------------------------------------------------------------------
 
-    def set_fill_visible(self, on: bool):
-        self._fill_visible = bool(on)
-        self.rebuild_fill()
+    def set_fill_visible(self, on: bool) -> str:
+        """Show or hide the frame fill. Returns the readiness status the fill
+        was resolved at: ``"ok"`` (shown), ``"leak"`` (an OUTLINE perimeter is
+        present but doesn't close, so nothing is shown), or ``"empty"`` (no
+        OUTLINE geometry yet). Callers turning the fill on can inspect the
+        return to explain why it stayed off; hiding always returns ``"ok"``."""
+        if not on:
+            self._fill_visible = False
+            if self._fill_item is not None:
+                self._fill_item.setVisible(False)
+            return "ok"
+        path, status = self._compute_fill()
+        if status != "ok":
+            self._fill_visible = False
+            if self._fill_item is not None:
+                self._fill_item.setVisible(False)
+            return status
+        self._fill_visible = True
+        self._apply_fill_path(path)
+        return "ok"
 
     def set_fill_color(self, color):
         """color: QColor or '#rrggbb' string."""
@@ -400,42 +479,65 @@ class FrameScene(QGraphicsScene):
                 "color":   self._fill_color.name(),
                 "opacity": self._fill_opacity}
 
+    def outline_fill_status(self) -> str:
+        """Readiness of the OUTLINE perimeter for filling, without drawing
+        anything: ``"ok"`` / ``"leak"`` / ``"empty"`` (see set_fill_visible)."""
+        return self._compute_fill()[1]
+
     def _schedule_fill_rebuild(self):
         """Deferred rebuild_fill for the hot paths (curve add/remove/refresh)."""
         if self._fill_visible:
             self._fill_timer.start()
 
-    def rebuild_fill(self):
-        """Recompute the frame interior: union of OUTLINE (real + ghost)
-        minus LENS apertures (real + ghost). No-op while hidden so the
-        boolean path ops never run during normal editing."""
-        if not self._fill_visible:
-            if self._fill_item is not None:
-                self._fill_item.setVisible(False)
-            return
-        from .items import build_path
+    def _fill_layer_lines(self, layer: Layer) -> list:
+        """Flattened polylines for one layer's contribution to the fill: each
+        visible real curve plus, for every ghost-eligible one, its live mirror
+        image (so a half drawn against the mirror line contributes both sides).
+        Returns [] when the layer is hidden."""
+        from ..geometry import sample_curve, mirror_curve
 
-        def _vis(layer):
-            return self.is_layer_visible(layer)
-
-        combined = QPainterPath()
-        lens     = QPainterPath()
+        if not self.is_layer_visible(layer):
+            return []
+        horiz = getattr(self.mirror, "_horizontal", False) if self.mirror else False
+        lines: list = []
         for item in self._curve_items.values():
             c = item.curve
-            if c.layer == Layer.OUTLINE and _vis(c.layer):
-                combined = combined.united(build_path(c))
-            elif c.layer == Layer.LENS and _vis(c.layer):
-                lens = lens.united(build_path(c))
-        for cid, ghost in self._ghost_items.items():
-            ci = self._curve_items.get(cid)
-            if ci is None or not ghost.isVisible():
+            if c.layer != layer:
                 continue
-            if ci.curve.layer == Layer.OUTLINE:
-                combined = combined.united(ghost.path())
-            elif ci.curve.layer == Layer.LENS:
-                lens = lens.united(ghost.path())
-        combined = combined.subtracted(lens)
+            lines.append([(x, y) for x, y, _t in sample_curve(c)])
+            if self._ghost_eligible(c):
+                gc = mirror_curve(c, self.mirror.x, horizontal=horiz)
+                lines.append([(x, y) for x, y, _t in sample_curve(gc)])
+        return lines
 
+    def _compute_fill(self):
+        """Resolve the fill region. Returns ``(QPainterPath | None, status)``
+        where status is ``"ok"`` / ``"leak"`` / ``"empty"``.
+
+        The OUTLINE layer (real curves + live mirror ghosts) is stitched into
+        faces: the face with the largest outer ring is the frame profile, and
+        because a nested opening comes back already punched into that face's
+        interior, decorative holes — an aviator's bridge keyhole — fall out for
+        free. Rings that don't close leave the perimeter leaking (status
+        ``"leak"``) rather than filling something half-formed. LENS apertures
+        (also real + ghost) are then subtracted."""
+        from shapely.geometry import Polygon
+
+        outline_lines = self._fill_layer_lines(Layer.OUTLINE)
+        if not outline_lines:
+            return None, "empty"
+        faces, leak = _polygonize_lines(outline_lines)
+        if leak or not faces:
+            return None, "leak"
+
+        fill = max(faces, key=lambda f: Polygon(f.exterior).area)
+        lens_faces, _ = _polygonize_lines(self._fill_layer_lines(Layer.LENS))
+        for lf in lens_faces:
+            fill = fill.difference(lf)
+        return _shapely_to_qpath(fill), "ok"
+
+    def _apply_fill_path(self, path: QPainterPath):
+        """Paint *path* into the (lazily created) fill item and show it."""
         if self._fill_item is None:
             it = QGraphicsPathItem()
             # Above face photos (z=-1000…), below the origin cross (z=0)
@@ -448,8 +550,28 @@ class FrameScene(QGraphicsScene):
         color.setAlphaF(self._fill_opacity)
         self._fill_item.setBrush(QBrush(color))
         self._fill_item.setPen(QPen(Qt.PenStyle.NoPen))
-        self._fill_item.setPath(combined)
+        self._fill_item.setPath(path)
         self._fill_item.setVisible(True)
+
+    def rebuild_fill(self):
+        """Recompute and repaint the fill while it's visible. If a geometry
+        edit has broken the OUTLINE perimeter so it no longer encloses a
+        region, the fill can't be shown honestly — turn it off and let the app
+        know (fill_auto_disabled) rather than paint something broken. No-op
+        while hidden so the stitch never runs during normal editing."""
+        if not self._fill_visible:
+            if self._fill_item is not None:
+                self._fill_item.setVisible(False)
+            return
+        path, status = self._compute_fill()
+        if status != "ok":
+            self._fill_visible = False
+            if self._fill_item is not None:
+                self._fill_item.setVisible(False)
+            if self.fill_auto_disabled is not None:
+                self.fill_auto_disabled(status)
+            return
+        self._apply_fill_path(path)
 
     # ------------------------------------------------------------------
     # Curve management

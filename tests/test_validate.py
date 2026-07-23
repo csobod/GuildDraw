@@ -56,6 +56,37 @@ def test_missing_outline_is_an_error():
     assert any("OUTLINE" in e for e in errors)
 
 
+def test_outline_hole_inside_profile_is_accepted():
+    # Aviator bridge keyhole: a second closed OUTLINE curve inside the profile
+    # is a decorative opening (Hole1) — GuildModel cuts it, so the document is
+    # ready; the classification is surfaced as a warning, not an error.
+    keyhole = closed_diamond(0, 10, 6, layer=Layer.OUTLINE)
+    curves = [outline(), keyhole, circle(-15, 0, 10), circle(15, 0, 10)]
+    errors, warnings = validate(curves, mirror_on=False)
+    assert errors == []
+    assert any("opening" in w for w in warnings)
+
+
+def test_outline_stray_outside_profile_warns():
+    # A closed OUTLINE curve outside the profile is an authoring mistake that
+    # GuildModel ignores (largest curve wins) — mirror that: warn, don't error.
+    stray = closed_diamond(120, 0, 10, layer=Layer.OUTLINE)
+    curves = [outline(), stray, circle(-15, 0, 10), circle(15, 0, 10)]
+    errors, warnings = validate(curves, mirror_on=False)
+    assert errors == []
+    assert any("outside the profile" in w for w in warnings)
+
+
+def test_temple_cutout_outline_is_accepted():
+    # Cut-out temples carry an opening inside the arm's OUTLINE profile.
+    arm    = closed_diamond(60, 0, 50, layer=Layer.OUTLINE)
+    cutout = closed_diamond(60, 0, 8, layer=Layer.OUTLINE)
+    errors, warnings = validate([arm, cutout], mirror_on=False,
+                                workspace_type="temple_r")
+    assert errors == []
+    assert any("opening" in w for w in warnings)
+
+
 def test_open_machined_contour_with_gap_is_error():
     open_outline = line([(0, 0), (40, 0), (40, 30), (0, 29)],
                         layer=Layer.OUTLINE)          # 29 mm gap to start
