@@ -4575,7 +4575,14 @@ class MainWindow(QMainWindow):
         self._act_dark.triggered.connect(self._toggle_dark_mode)
         settings_menu.addAction(self._act_dark)
         settings_menu.addSeparator()
-        settings_menu.addAction("Preferences…", self._open_settings)
+        # Ctrl+, — the ecosystem-wide Preferences shortcut (GuildSend set the
+        # convention; GuildDraw and GuildModel now match). Kept on self: a
+        # text+slot addAction's wrapper is Python-owned in PySide6, and losing
+        # the last reference deletes the underlying QAction.
+        self._act_prefs = settings_menu.addAction(
+            "Preferences…", self._open_settings)
+        from PySide6.QtGui import QKeySequence
+        self._act_prefs.setShortcut(QKeySequence("Ctrl+,"))
 
     # ------------------------------------------------------------------
     # Tool switching
