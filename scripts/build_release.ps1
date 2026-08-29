@@ -1,6 +1,10 @@
 # GuildDraw release build — run from the repo root:
 #   powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1
 #
+# Also drives .github/workflows/windows-build.yml on GitHub's windows runners,
+# which is how the artifacts are built now that there is no Windows machine
+# here — set GUILDDRAW_SKIP_TESTS=1 when the caller has already run the suite.
+#
 # Gates on the test suite, then produces three distribution artifacts in dist\:
 #   1. GuildDraw-<version>-win64.zip     portable one-folder build (unzip + run)
 #   2. GuildDraw-<version>.exe           portable single-file build (no install)
@@ -12,9 +16,13 @@ $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 $py = Join-Path $repo ".venv\Scripts\python.exe"
 
-# 1. Test gate — never ship a build from a red suite
-& $py -m pytest tests -q
-if ($LASTEXITCODE -ne 0) { throw "Test suite failed - build aborted." }
+# 1. Test gate — never ship a build from a red suite. CI runs the suite as
+#    its own workflow step (with per-test timeouts) and sets the skip, the
+#    same arrangement scripts/build_release_macos.sh uses.
+if ($env:GUILDDRAW_SKIP_TESTS -ne "1") {
+    & $py -m pytest tests -q
+    if ($LASTEXITCODE -ne 0) { throw "Test suite failed - build aborted." }
+}
 
 # 2. Read the version stamp from the package; derive a numeric x.y.z.w for the
 #    installer's VersionInfo (strips any pre-release suffix like -rc1c).

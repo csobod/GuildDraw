@@ -1,0 +1,88 @@
+# Builds the Windows artifacts on GitHub's windows runners — no Windows
+# machine needed, which is the point: the maintainer moved to Linux after
+# v1.1, and PyInstaller does not cross-compile. Trigger it manually (Actions
+# tab > "Windows build" > Run workflow), then download the artifacts and
+# attach them to the GitHub release, the same way the macOS build works.
+#
+# Produces the same three artifacts scripts\build_release.ps1 has always made:
+#   GuildDraw-<version>-win64.zip     portable one-folder build (unzip + run)
+#   GuildDraw-<version>.exe           portable single-file build (no install)
+#   GuildDraw-<version>-setup.exe     per-user Inno Setup installer
+name: Windows build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40             # a healthy run is ~15 min; never burn hours
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The release script hardcodes .venv\Scripts\python.exe, so build the
+      # venv where it expects rather than using the runner's interpreter.
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install --upgrade pip
+          .venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-dev.txt
+          .venv\Scripts\python.exe -m pip install pytest-timeout   # CI-only: per-test hang guard
+
+      # Installed explicitly rather than trusted to the runner image: the
+      # release script only *warns* when ISCC.exe is missing and carries on,
+      # so a silently absent Inno Setup would produce a release that quietly
+      # lacks its installer. Chocolatey puts it where the script already
+      # looks (C:\Program Files (x86)\Inno Setup 6\ISCC.exe).
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Verify Inno Setup is on the path the script searches
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not at $iscc - the build would skip the installer." }
+          Write-Host "found: $iscc"
+
+      # Full suite as the gate, mirroring the macOS workflow. The thread-based
+      # timeout is deliberate: a modal dialog inside a native event loop cannot
+      # be interrupted by the default signal method. tests/conftest.py now turns
+      # an unanswered modal into a named failure, so this is the second line of
+      # defence rather than the first.
+      - name: Test gate
+        timeout-minutes: 20
+        run: .venv\Scripts\python.exe -m pytest tests -v --timeout=120 --timeout-method=thread
+
+      - name: Build (zip + portable exe + installer)
+        env:
+          GUILDDRAW_SKIP_TESTS: "1"   # the Test gate step above already ran
+        run: powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1
+
+      # The script warns instead of failing when a step produces nothing, so
+      # check the three artifacts are really there before calling it a build.
+      - name: Verify all three artifacts exist
+        shell: pwsh
+        run: |
+          $version = & .venv\Scripts\python.exe -c "from framedraft import __version__; print(__version__)"
+          $expected = @(
+            "dist\GuildDraw-$version-win64.zip",
+            "dist\GuildDraw-$version.exe",
+            "dist\GuildDraw-$version-setup.exe"
+          )
+          $missing = $expected | Where-Object { -not (Test-Path $_) }
+          if ($missing) { throw "missing artifact(s): $($missing -join ', ')" }
+          Get-Item $expected | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GuildDraw-windows-x64
+          path: |
+            dist/GuildDraw-*-win64.zip
+            dist/GuildDraw-*-setup.exe
+            dist/GuildDraw-*.exe
+          if-no-files-found: error

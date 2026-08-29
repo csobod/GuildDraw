@@ -212,7 +212,16 @@ Debian/Ubuntu: `sudo apt install libxcb-cursor0 libegl1`).
 
 ### Windows
 
-One command builds every distribution artifact (gates on the test suite first):
+PyInstaller does not cross-compile, so the Windows build is made **on Windows**
+— either your own machine or GitHub's free runners:
+
+- **Without a Windows machine**: the repository ships a GitHub Actions workflow
+  (*Actions ▸ Windows build ▸ Run workflow*) that builds on GitHub's
+  `windows-latest` runners and uploads all three artifacts for download. It
+  installs Inno Setup itself and fails the run if any artifact is missing,
+  rather than quietly shipping a release without its installer.
+- **On Windows**, one command builds every distribution artifact (gates on the
+  test suite first):
 
 ```
 .venv\Scripts\pip install -r requirements-dev.txt
@@ -229,7 +238,9 @@ It writes three files to `dist\` (version stamped from `framedraft/__version__`)
 
 The installer step needs Inno Setup (`winget install JRSoftware.InnoSetup`); the
 script warns and skips it if `ISCC.exe` isn't found, still producing the zip and
-portable exe.
+portable exe. Set `GUILDDRAW_SKIP_TESTS=1` to skip the script's own test gate
+when the caller has already run the suite — which is what the workflow does, so
+that a hung test is caught by a per-test timeout instead of the job's.
 
 Build a single artifact by hand:
 

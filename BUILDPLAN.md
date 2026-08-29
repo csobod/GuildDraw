@@ -1699,15 +1699,47 @@ the suffix-less write), `test_dialog_guard.py` (8, the hang guard itself),
 `test_packaging_inputs.py` (3, the bundle's module list).
 Suite: 354 → 509.
 
+## Windows builds move to GitHub Actions
+
+> **2026-08-29.** The maintainer moved to Linux after v1.1, so the Windows
+> artifacts had no machine to be built on: `scripts/build_release.ps1` has
+> always run locally (the RC4 entry above records it off-drive at
+> `C:\Temp\gdbuild-rc4`), and macOS was the only platform with a runner
+> workflow. PyInstaller does not cross-compile, so a Linux box cannot stand in.
+
+[`.github/workflows/windows-build.yml`](.github/workflows/windows-build.yml)
+puts Windows on the same footing as macOS: `workflow_dispatch`,
+`windows-latest`, build the venv where the release script expects it
+(`.venv\Scripts\python.exe`), test gate as its own step with the thread-based
+per-test timeout, then `build_release.ps1` with `GUILDDRAW_SKIP_TESTS=1` — the
+escape hatch the macOS script already had and the PowerShell one now matches.
+
+Two additions the macOS workflow does not need:
+
+- **Inno Setup is installed explicitly** (`choco install innosetup`) and its
+  path asserted before the build runs. The release script only *warns* when
+  `ISCC.exe` is absent and carries on, which on a runner would mean a release
+  that quietly lacks its installer. Chocolatey puts it exactly where the
+  script's search list already looks.
+- **The three artifacts are verified by name** after the build, for the same
+  reason — the script's failure mode is a warning, not an exit code.
+
+Untested until the first Actions run: the suite has not run on Windows since
+RC4 at 258 tests, and it is 509 now.
+
 ## Remaining before the 1.2.0 drop
 
 - [x] Stamp `framedraft/__init__.py`, the README status line, and the
       `.iss` version fallback to 1.2.0.
 - [x] Lift the *(in development)* marker from this section's heading.
 - [ ] Commit and tag (working agreement: one milestone per version bump).
-- [ ] Build the installer and test-install, per the M28 checklist. Add the
-      BPI button to the verification list — `load_tints` hides it silently
-      when `framedraft/resources/bpi_tints.json` is not in the bundle.
+- [x] Windows build moved to GitHub Actions (no Windows machine here any
+      more); Linux frozen bundle verified locally — starts clean, and
+      `bpi_tints.json` lands at the path its loader computes.
+- [ ] Run *Actions ▸ Windows build* and *Actions ▸ macOS build*, then
+      test-install per the M28 checklist. Add the BPI button to the
+      verification list — `load_tints` hides it silently when
+      `framedraft/resources/bpi_tints.json` is not in the bundle.
 
 ---
 
