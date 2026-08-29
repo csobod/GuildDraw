@@ -1696,8 +1696,9 @@ resolve + app wiring + the square clear button), `test_self_join.py` (13),
 filtering + inline completion + resolving), `test_catalog_pdf.py` (22, +12 for
 the fill specs and the sheet that prints them), `test_settings_png.py` (+3 for
 the suffix-less write), `test_dialog_guard.py` (8, the hang guard itself),
-`test_packaging_inputs.py` (3, the bundle's module list).
-Suite: 354 → 509.
+`test_packaging_inputs.py` (3, the bundle's module list),
+`test_hot_paths.py` (2, no imports on Qt hot paths).
+Suite: 354 → 511.
 
 ## Windows builds move to GitHub Actions
 
@@ -1726,6 +1727,41 @@ Two additions the macOS workflow does not need:
 
 Untested until the first Actions run: the suite has not run on Windows since
 RC4 at 258 tests, and it is 509 now.
+
+## The app-wide event filter imported on every event
+
+> **2026-08-29.** Found by the first CI run of the v1.2.0 tag: the macOS Intel
+> leg hung `test_settings_apply_in_temple_leaves_temple_guides_alone` until the
+> 120 s per-test timeout fired. arm64 passed; Intel is the slow leg.
+
+The timeout's stack landed in `shibokensupport/signature/loader.py`
+`feature_imported`, reached from
+`MainWindow.eventFilter` -> `from PySide6.QtCore import QEvent`, underneath
+`_refresh_theme_dependents` -> `setStyleSheet(build_qss())`.
+
+`eventFilter` is installed on the **QApplication**, so it runs for every event
+the app delivers, and a stylesheet change re-polishes every widget at once.
+Measured locally: one `_apply_settings` pushes **12,378** events through that
+filter. Each was running a Python import, and each import runs shiboken's
+`__feature__` hook. On Linux that cost throughput; on a slow Intel runner with
+a real window system generating far more events it became a stall.
+
+The import shipped in v1.1.0 — this round did not introduce it, only added a
+second branch to the same function. `QEvent` is now a module-level import and
+the filter is one `event.type()` with an early fall-through. `_apply_settings`
+went 166 ms -> 125 ms locally on the same 12,378 events, and the whole suite
+155 s -> 98 s. `_elide_fill_image_btn`, which the new Resize branch calls, no
+longer hands Qt a layout request for a label that has not changed.
+
+`test_hot_paths.py` walks the source for the shape — an import inside
+`eventFilter`, a painter, `boundingRect`, or an event handler — with one
+allowlisted exception (`KeyCaptureEdit.keyPressEvent`, which fires once per
+keystroke while recording a hotkey). Verified to fail when the import is put
+back.
+
+**Not reproducible on Linux**: offscreen finishes the same call in 125 ms. What
+is proven is that the mechanism the traceback named is gone; the Intel leg
+re-run is the verification.
 
 ## Remaining before the 1.2.0 drop
 

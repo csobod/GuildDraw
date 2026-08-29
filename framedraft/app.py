@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
     QColorDialog, QAbstractItemView, QRubberBand, QDialogButtonBox,
     QSizePolicy,
 )
-from PySide6.QtCore import Qt, QPointF, QSize, QTimer, Signal, QRect, QRectF, QPoint
+from PySide6.QtCore import (
+    Qt, QEvent, QPointF, QSize, QTimer, Signal, QRect, QRectF, QPoint,
+)
 from PySide6.QtGui import (
     QAction, QActionGroup, QColor, QBrush, QFontMetrics, QIcon, QPainter,
     QPen, QPixmap,
@@ -4074,14 +4076,16 @@ class MainWindow(QMainWindow):
         self._elide_fill_image_btn()
 
     def _elide_fill_image_btn(self):
-        btn = self._fill_image_btn
+        btn   = self._fill_image_btn
         avail = btn.width() - 12          # the frame the label sits inside
         text  = self._fill_image_full_text
-        if avail <= 0:
+        if avail > 0:
+            text = QFontMetrics(btn.font()).elidedText(
+                text, Qt.TextElideMode.ElideMiddle, avail)
+        # Reached from the app-wide filter on every resize of this button, so
+        # don't hand Qt a fresh layout request for a label that hasn't changed.
+        if btn.text() != text:
             btn.setText(text)
-            return
-        btn.setText(QFontMetrics(btn.font()).elidedText(
-            text, Qt.TextElideMode.ElideMiddle, avail))
 
     def _on_fill_style_changed(self, _index: int):
         ws = self._active_ws
@@ -5009,15 +5013,28 @@ class MainWindow(QMainWindow):
             self._shortcuts[key] = sc
 
     def eventFilter(self, obj, event):
-        # App-wide □ insertion (see _apply_hotkeys for why no QShortcut).
-        from PySide6.QtCore import QEvent
-        # getattr: the swatch button installs this filter while the side panel
-        # is built, which is before _apply_hotkeys binds the sequence.
-        if (event.type() == QEvent.Type.KeyPress
-                and _matches_key_event(getattr(self, "_square_seq", None), event)
-                and self._insert_square_char()):
-            return True
-        if (event.type() == QEvent.Type.Resize
+        """App-wide filter — installed on the QApplication, so this runs for
+        every event the app delivers. A single Settings apply pushes ~12,000
+        events through it, so it must stay one event.type() and an early
+        fall-through.
+
+        Never import inside this function. `from PySide6...` here runs
+        shiboken's import hook on every one of those events; that is what hung
+        the macOS Intel runner for the whole 120s test timeout, with the
+        traceback parked in shibokensupport feature_imported underneath
+        setStyleSheet re-polishing every widget. The import shipped in v1.1.0
+        and only ever cost throughput until a slow runner turned it into a
+        stall.
+        """
+        etype = event.type()
+        if etype == QEvent.Type.KeyPress:
+            # □ insertion (see _apply_hotkeys for why this is not a QShortcut).
+            # getattr: the swatch button installs this filter while the side
+            # panel is built, before _apply_hotkeys binds the sequence.
+            if (_matches_key_event(getattr(self, "_square_seq", None), event)
+                    and self._insert_square_char()):
+                return True
+        elif (etype == QEvent.Type.Resize
                 and obj is getattr(self, "_fill_image_btn", None)):
             self._elide_fill_image_btn()
         return super().eventFilter(obj, event)

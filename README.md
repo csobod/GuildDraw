@@ -9,7 +9,7 @@ Built with Python + PySide6 (Qt 6). Scene units are true millimetres (1 scene
 unit = 1 mm) end to end: what you draw is what gets cut.
 
 **Status: v1.2.0 — stable.** All drafting features are complete and tested
-(509-test suite), and the full hardware round-trip is proven: physical frames
+(511-test suite), and the full hardware round-trip is proven: physical frames
 have been cut on GuildModel from GuildDraw-exported DXF. The 1.2 round is about
 seeing the frame before it is cut: lens tints with a BPI colour reference, the
 frame profile filled with a real material swatch, and both of those printable
