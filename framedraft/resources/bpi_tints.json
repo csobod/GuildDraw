@@ -1,0 +1,991 @@
+{
+ "source": "https://callbpi.com/golf/index.php?route=product/category&path=65",
+ "scraped": "2026-08-22",
+ "disclaimer": "Approximate on-screen colours sampled from BPI's own product swatch images. Unofficial and not colorimetric; GuildDraw is not affiliated with Brain Power Inc. Tint names are BPI's.",
+ "tints": [
+  {
+   "name": "EVA #1",
+   "family": "EVA",
+   "hex": "#fbf6d5",
+   "note": "Now you can have the most comfortable filter to wear for all of your office and "
+  },
+  {
+   "name": "EVA #2",
+   "family": "EVA",
+   "hex": "#fbefd7",
+   "note": "Now you can have the most comfortable filter to wear for all of your office and "
+  },
+  {
+   "name": "EVA #3",
+   "family": "EVA",
+   "hex": "#f8efe8",
+   "note": "Now you can have the most comfortable filter to wear for all of your office and "
+  },
+  {
+   "name": "EVA #4",
+   "family": "EVA",
+   "hex": "#f9f2ef",
+   "note": "Now you can have the most comfortable filter to wear for all of your office and "
+  },
+  {
+   "name": "IR Blue",
+   "family": "IR",
+   "hex": "#d6e8f3",
+   "note": "Bright cyan blue"
+  },
+  {
+   "name": "Absolute Black",
+   "family": "Premium",
+   "hex": "#a8a9ad",
+   "note": "BPIs ABSOLUTE BLACK DYE\u2122 has proven to be the fastest and longest lasting Neutra"
+  },
+  {
+   "name": "Absolute Brown",
+   "family": "Premium",
+   "hex": "#d0baa2",
+   "note": "BPI's ABSOLUTE BROWN DYE\u2122 has proven to be the fastest and longest lasting brown"
+  },
+  {
+   "name": "Aviator Brown-15 3 oz bottle",
+   "family": "Premium",
+   "hex": "#bba18f",
+   "note": "A perfect dark brown with no color aberrations"
+  },
+  {
+   "name": "Aviator Gray-15",
+   "family": "Premium",
+   "hex": "#b8b9bd",
+   "note": "A perfect dark gray with no color aberrations"
+  },
+  {
+   "name": "Blue-XP",
+   "family": "Premium",
+   "hex": "#abd8f3",
+   "note": "For use on lenses that will be AR coated. Bright cyan/blue"
+  },
+  {
+   "name": "Brown-XP",
+   "family": "Premium",
+   "hex": "#c9b6aa",
+   "note": "For use on lenses that will be AR coated. Dark brown with a red overtone"
+  },
+  {
+   "name": "Golf Tint",
+   "family": "Premium",
+   "hex": "#d4c8ab",
+   "note": "The light frequency absorption was specially designed to increase the ball's con"
+  },
+  {
+   "name": "Gray-XP",
+   "family": "Premium",
+   "hex": "#a7a8ac",
+   "note": "For use on lenses that will be AR coated. Dark gray with a hint of green"
+  },
+  {
+   "name": "Green-XP",
+   "family": "Premium",
+   "hex": "#d1e8db",
+   "note": "For use on lenses that will be AR coated. Lime green color"
+  },
+  {
+   "name": "High Index Black B",
+   "family": "Premium",
+   "hex": "#a8a9ad",
+   "note": "This tint was developed for High Index lenses, black in color"
+  },
+  {
+   "name": "High Index Blue Correction",
+   "family": "Premium",
+   "hex": "#d4e7f3",
+   "note": "This tint was developed for High Index lenses, a light blue in color"
+  },
+  {
+   "name": "High Index Brown A",
+   "family": "Premium",
+   "hex": "#d0b9a1",
+   "note": "This tint was developed for High Index lenses, warm brown in color"
+  },
+  {
+   "name": "High Index Green A",
+   "family": "Premium",
+   "hex": "#dce8be",
+   "note": "This tint was developed for High Index lenses, light green in color"
+  },
+  {
+   "name": "High Index Red Correction",
+   "family": "Premium",
+   "hex": "#f2b098",
+   "note": "This tint was developed for High Index lenses, a true red in color"
+  },
+  {
+   "name": "High Index Yellow Correction",
+   "family": "Premium",
+   "hex": "#f8f6c3",
+   "note": "This tint was developed for High Index lenses, a light yellow in color"
+  },
+  {
+   "name": "Pink-XP",
+   "family": "Premium",
+   "hex": "#f5dde5",
+   "note": "For use on lenses that will be AR coated. Bright pink"
+  },
+  {
+   "name": "Skeet Tint",
+   "family": "Premium",
+   "hex": "#f6b69f",
+   "note": "For the expert who wants to increase his skill when shooting. Increased backgrou"
+  },
+  {
+   "name": "Ski Tint",
+   "family": "Premium",
+   "hex": "#e8b8a1",
+   "note": "Red/brown. It absorbs light in the ultraviolet region as well as the blue and vi"
+  },
+  {
+   "name": "Solar Black",
+   "family": "Premium",
+   "hex": "#a2a6a2",
+   "note": "The best black tint. No red with UV-IR protection"
+  },
+  {
+   "name": "Solar Brown",
+   "family": "Premium",
+   "hex": "#e8c19f",
+   "note": "A medium brown with a hint of orange"
+  },
+  {
+   "name": "Solar Gray",
+   "family": "Premium",
+   "hex": "#a4a7ac",
+   "note": "A medium to dark gray"
+  },
+  {
+   "name": "Solar Green-15",
+   "family": "Premium",
+   "hex": "#abaca0",
+   "note": "Rayban color with UV-IR protection"
+  },
+  {
+   "name": "Solar Safari",
+   "family": "Premium",
+   "hex": "#c1ad98",
+   "note": "A smoky brown color"
+  },
+  {
+   "name": "Solar Safari Sun",
+   "family": "Premium",
+   "hex": "#f3e1d1",
+   "note": "A rosy-pink color"
+  },
+  {
+   "name": "Solar Sport",
+   "family": "Premium",
+   "hex": "#deb6a5",
+   "note": "A medium brown ideal for sports"
+  },
+  {
+   "name": "Solar Vermillion",
+   "family": "Premium",
+   "hex": "#dbacc5",
+   "note": "A dusty, rose color"
+  },
+  {
+   "name": "Sport Tint",
+   "family": "Premium",
+   "hex": "#dfb49b",
+   "note": "Designed for heightened contrast ability. For general spectator activities. Exce"
+  },
+  {
+   "name": "Tennis Ball Blue",
+   "family": "Premium",
+   "hex": "#c7e6e1",
+   "note": "\r\nBP\u00aeI\r\nTennis Ball\r\nBlue\r\nis a red blocking blue color and is useful for tracki"
+  },
+  {
+   "name": "Tennis Ball Green",
+   "family": "Premium",
+   "hex": "#dedeba",
+   "note": "\r\nBPI\r\nTennis Ball\r\nGreen\r\nis a yellow green color and is useful for tracking wh"
+  },
+  {
+   "name": "Tennis Ball Magenta",
+   "family": "Premium",
+   "hex": "#e3acaa",
+   "note": "\r\nBPI\u00ae Tennis Ball\r\nMagenta\r\nis a green blocking violet / magenta color and is u"
+  },
+  {
+   "name": "Tennis Tint",
+   "family": "Premium",
+   "hex": "#fefbce",
+   "note": "Yellow that spectroscopically matches the yellow color of the tennis ball usuall"
+  },
+  {
+   "name": "Turbo Black",
+   "family": "Premium",
+   "hex": "#a8a9ad",
+   "note": "A general-purpose black dye especially formulated for use in the BPI Turbo Tinte"
+  },
+  {
+   "name": "Turbo Brown",
+   "family": "Premium",
+   "hex": "#d1b5a3",
+   "note": "A brown dye especially formulated to work in the BPI Turbo Tinters. Four ounce b"
+  },
+  {
+   "name": "Turbo G15",
+   "family": "Premium",
+   "hex": "#ababa0",
+   "note": "A gray-green G15 dye especially formulated for use in the BPI Turbo-Tinters. Fou"
+  },
+  {
+   "name": "Ultra Brown",
+   "family": "Premium",
+   "hex": "#d0b9a1",
+   "note": "Superior quality, fast tinting and long lasting. The unique chemical structure o"
+  },
+  {
+   "name": "Ultra Gray",
+   "family": "Premium",
+   "hex": "#d3d4d6",
+   "note": "Superior quality, fast tinting and long lasting. The unique chemical structure o"
+  },
+  {
+   "name": "Yellow-XP",
+   "family": "Premium",
+   "hex": "#f6f3d6",
+   "note": "For use on lenses that will be AR coated. Medium yellow"
+  },
+  {
+   "name": "Desert Glow",
+   "family": "Specialty",
+   "hex": "#f99db5",
+   "note": "Is a tint in the orange-red family that help with orange targets especially on l"
+  },
+  {
+   "name": "Drivers Tint",
+   "family": "Specialty",
+   "hex": "#e0aa06",
+   "note": "An amber brown, similar to 540 tint, but allowing more light in the blue spectru"
+  },
+  {
+   "name": "Golfer Blu",
+   "family": "Specialty",
+   "hex": "#babee1",
+   "note": "Deep blue/green. Improves definition on the fairway"
+  },
+  {
+   "name": "Molecular Catalytic Violet Glow",
+   "family": "Specialty",
+   "hex": "#d593f8",
+   "note": "Useful with green backgrounds.\u00a0 This tint is useful for those having difficulty "
+  },
+  {
+   "name": "Passion Purple",
+   "family": "Specialty",
+   "hex": "#b08af9",
+   "note": "Useful with green backgrounds.\u00a0 This tint is useful for those having \ndifficulty"
+  },
+  {
+   "name": "B&L Apricot",
+   "family": "Standard",
+   "hex": "#f7ebc8",
+   "note": "A yellow orange"
+  },
+  {
+   "name": "B&L Blue",
+   "family": "Standard",
+   "hex": "#dfeff6",
+   "note": "A light royal blue"
+  },
+  {
+   "name": "B&L Brown",
+   "family": "Standard",
+   "hex": "#f2ddcf",
+   "note": "Brown with a slight red/orange overtone"
+  },
+  {
+   "name": "B&L Fashion Lite Blue",
+   "family": "Standard",
+   "hex": "#9eacd5",
+   "note": "A dark blend of royal and navy blue"
+  },
+  {
+   "name": "B&L Fashion Lite Tan",
+   "family": "Standard",
+   "hex": "#ddb9a4",
+   "note": "Brown with an orange overtone"
+  },
+  {
+   "name": "B&L G-15",
+   "family": "Standard",
+   "hex": "#aaab9f",
+   "note": "Rayban type dark green"
+  },
+  {
+   "name": "B&L Gold",
+   "family": "Standard",
+   "hex": "#fcf5d4",
+   "note": "A yellow with an orange overtone"
+  },
+  {
+   "name": "B&L Green",
+   "family": "Standard",
+   "hex": "#dcdcb6",
+   "note": "Olive green"
+  },
+  {
+   "name": "B&L Lancer",
+   "family": "Standard",
+   "hex": "#e2adaa",
+   "note": "Red toned fuchsia"
+  },
+  {
+   "name": "B&L Lavender",
+   "family": "Standard",
+   "hex": "#b0a1cd",
+   "note": "A medium violet with a slight blue tone"
+  },
+  {
+   "name": "B&L Lilac",
+   "family": "Standard",
+   "hex": "#eeebf1",
+   "note": "Same color as the flower"
+  },
+  {
+   "name": "B&L Lime",
+   "family": "Standard",
+   "hex": "#eef1dc",
+   "note": "A chartreuse color"
+  },
+  {
+   "name": "B&L Pink",
+   "family": "Standard",
+   "hex": "#f6f0f2",
+   "note": "A soft medium pink"
+  },
+  {
+   "name": "B&L Tru-Gray",
+   "family": "Standard",
+   "hex": "#c9bdbd",
+   "note": "A medium gray with a slight pink flare"
+  },
+  {
+   "name": "B&L Yellow",
+   "family": "Standard",
+   "hex": "#f8f6c3",
+   "note": "Lemon pie yellow"
+  },
+  {
+   "name": "Black",
+   "family": "Standard",
+   "hex": "#a7a8ac",
+   "note": "The darkest of sunglass shades. Virtually no red"
+  },
+  {
+   "name": "Blue",
+   "family": "Standard",
+   "hex": "#e1f3fd",
+   "note": "A true clear blue"
+  },
+  {
+   "name": "Blueberry",
+   "family": "Standard",
+   "hex": "#f0f4f9",
+   "note": "A cool light blue, with the barest hint of violet"
+  },
+  {
+   "name": "Blush",
+   "family": "Standard",
+   "hex": "#f6eeeb",
+   "note": "A hot pink"
+  },
+  {
+   "name": "Breath of Blue",
+   "family": "Standard",
+   "hex": "#f3f4f6",
+   "note": "A powder blue"
+  },
+  {
+   "name": "Brown",
+   "family": "Standard",
+   "hex": "#d1b5a3",
+   "note": "A true light to medium range brown"
+  },
+  {
+   "name": "Brunex",
+   "family": "Standard",
+   "hex": "#c3ba9d",
+   "note": "Dark olive green/brown"
+  },
+  {
+   "name": "Calo-Lite",
+   "family": "Standard",
+   "hex": "#b8cea7",
+   "note": "A medium green with a hint of aqua"
+  },
+  {
+   "name": "Charcoal",
+   "family": "Standard",
+   "hex": "#ece7e7",
+   "note": "Medium gray with a slight pink flare"
+  },
+  {
+   "name": "Chroma Gray (pill form only)",
+   "family": "Standard",
+   "hex": "#ced5d9",
+   "note": "A fashionable blue gray only available in pill form"
+  },
+  {
+   "name": "Chroma Pink",
+   "family": "Standard",
+   "hex": "#f9dce9",
+   "note": "A brilliant fashion pink"
+  },
+  {
+   "name": "Cosma-Lite",
+   "family": "Standard",
+   "hex": "#c69f8e",
+   "note": "A rich golden brown of medium density"
+  },
+  {
+   "name": "Cranberry",
+   "family": "Standard",
+   "hex": "#f8f0e6",
+   "note": "A muted pink, pale orange color"
+  },
+  {
+   "name": "Crux-Lite",
+   "family": "Standard",
+   "hex": "#fcf8ef",
+   "note": "The lightest, most subtle of pinks"
+  },
+  {
+   "name": "Electric Blue",
+   "family": "Standard",
+   "hex": "#9aabd8",
+   "note": "Bright vibrant blue"
+  },
+  {
+   "name": "Ember",
+   "family": "Standard",
+   "hex": "#f8e2cc",
+   "note": "Light brown bordering on light orange"
+  },
+  {
+   "name": "Euro Sport",
+   "family": "Standard",
+   "hex": "#b4948a",
+   "note": "Very dark sunglass brown"
+  },
+  {
+   "name": "Fuchsia",
+   "family": "Standard",
+   "hex": "#ebe1f0",
+   "note": "Light lilac"
+  },
+  {
+   "name": "Fun",
+   "family": "Standard",
+   "hex": "#eac39c",
+   "note": "Medium density orange brown"
+  },
+  {
+   "name": "Gray",
+   "family": "Standard",
+   "hex": "#d3d4d6",
+   "note": "A neutral, light to medium gray"
+  },
+  {
+   "name": "Gray 13",
+   "family": "Standard",
+   "hex": "#e7e8ea",
+   "note": "A medium gray with a slight pink flare"
+  },
+  {
+   "name": "Green",
+   "family": "Standard",
+   "hex": "#dce9bd",
+   "note": "A bright kelly green"
+  },
+  {
+   "name": "Gris",
+   "family": "Standard",
+   "hex": "#d0d1d3",
+   "note": "A medium gray with a blue overtone"
+  },
+  {
+   "name": "Heather",
+   "family": "Standard",
+   "hex": "#f7efee",
+   "note": "A soft, pinkish violet"
+  },
+  {
+   "name": "I-Blueberry",
+   "family": "Standard",
+   "hex": "#d6e8f3",
+   "note": "Bright fashion tint"
+  },
+  {
+   "name": "I-Grape",
+   "family": "Standard",
+   "hex": "#c4b9dc",
+   "note": "Bright fashion tint"
+  },
+  {
+   "name": "I-Graphite",
+   "family": "Standard",
+   "hex": "#c0c1c5",
+   "note": "Bright fashion tint"
+  },
+  {
+   "name": "I-Lime",
+   "family": "Standard",
+   "hex": "#bfe1c5",
+   "note": "Bright green fashion tint"
+  },
+  {
+   "name": "I-Strawberry",
+   "family": "Standard",
+   "hex": "#efc1d8",
+   "note": "Bright cerise fashion tint"
+  },
+  {
+   "name": "I-Tangerine",
+   "family": "Standard",
+   "hex": "#f9ddc7",
+   "note": "Bright fashion tint"
+  },
+  {
+   "name": "Jade",
+   "family": "Standard",
+   "hex": "#f6f3ee",
+   "note": "Light brown similar to the brown jade stone"
+  },
+  {
+   "name": "Jaune",
+   "family": "Standard",
+   "hex": "#fcf5cf",
+   "note": "A golden yellow of medium intensity"
+  },
+  {
+   "name": "Jet Black",
+   "family": "Standard",
+   "hex": "#a7a8ac",
+   "note": "A dark sunglass gray that can be used at all densities"
+  },
+  {
+   "name": "Marron",
+   "family": "Standard",
+   "hex": "#e9d9b8",
+   "note": "Medium brown with a slight golden flare"
+  },
+  {
+   "name": "Meadow",
+   "family": "Standard",
+   "hex": "#f4f6e1",
+   "note": "A soft springtime green"
+  },
+  {
+   "name": "Molecular Catalytic Amber",
+   "family": "Standard",
+   "hex": "#f4e298",
+   "note": "A honey-colored amber"
+  },
+  {
+   "name": "Molecular Catalytic Mocha",
+   "family": "Standard",
+   "hex": "#d3b7a6",
+   "note": "The classic chocolate-coffee color"
+  },
+  {
+   "name": "Ombrex",
+   "family": "Standard",
+   "hex": "#c2af8e",
+   "note": "Medium orange/brown"
+  },
+  {
+   "name": "Orange",
+   "family": "Standard",
+   "hex": "#f6dab3",
+   "note": "A true, clear orange"
+  },
+  {
+   "name": "Pearl",
+   "family": "Standard",
+   "hex": "#eeeeef",
+   "note": "The most subtle of grays"
+  },
+  {
+   "name": "Pecan",
+   "family": "Standard",
+   "hex": "#f6f0ec",
+   "note": "A very light brown with a slight gold flare"
+  },
+  {
+   "name": "Pink",
+   "family": "Standard",
+   "hex": "#f3e3ea",
+   "note": "A vivid pink for all range tinting"
+  },
+  {
+   "name": "R/S Amethyst",
+   "family": "Standard",
+   "hex": "#f5f0f4",
+   "note": "A pink-overtoned violet"
+  },
+  {
+   "name": "R/S Orange",
+   "family": "Standard",
+   "hex": "#fbeacb",
+   "note": "A soft orange with a hint of brown"
+  },
+  {
+   "name": "R/S Rose",
+   "family": "Standard",
+   "hex": "#faf1eb",
+   "note": "A medium shade of vivid pink"
+  },
+  {
+   "name": "Road",
+   "family": "Standard",
+   "hex": "#c19e8c",
+   "note": "Medium brown with a golden amber tone"
+  },
+  {
+   "name": "Rosetone",
+   "family": "Standard",
+   "hex": "#f4ede3",
+   "note": "Pink with brown overtones for medium shades"
+  },
+  {
+   "name": "Sahara",
+   "family": "Standard",
+   "hex": "#f1e7df",
+   "note": "Medium light brown with a golden pink overtone"
+  },
+  {
+   "name": "Sand",
+   "family": "Standard",
+   "hex": "#f4efeb",
+   "note": "Very light brown with a pink overtone"
+  },
+  {
+   "name": "Silor Autumn Brown",
+   "family": "Standard",
+   "hex": "#aa9791",
+   "note": "The darkest of browns with no red"
+  },
+  {
+   "name": "Silor Burnt Orange",
+   "family": "Standard",
+   "hex": "#feefd2",
+   "note": "A medium brown/orange"
+  },
+  {
+   "name": "Silor Crimson",
+   "family": "Standard",
+   "hex": "#eabfc3",
+   "note": "A shocking pink with a red cast"
+  },
+  {
+   "name": "Silor Fawn",
+   "family": "Standard",
+   "hex": "#ebdcb1",
+   "note": "Subdued golden brown"
+  },
+  {
+   "name": "Silor Forest Green",
+   "family": "Standard",
+   "hex": "#a2b39d",
+   "note": "A pine or hunter green"
+  },
+  {
+   "name": "Silor Ice Blue",
+   "family": "Standard",
+   "hex": "#e9f1f7",
+   "note": "A clear medium blue with a slight violet overtone"
+  },
+  {
+   "name": "Silor Lemon",
+   "family": "Standard",
+   "hex": "#f9f0c1",
+   "note": "A bright yellow"
+  },
+  {
+   "name": "Silor Mulberry",
+   "family": "Standard",
+   "hex": "#edc7dc",
+   "note": "A magenta shade of fuchsia"
+  },
+  {
+   "name": "Silor Orchid",
+   "family": "Standard",
+   "hex": "#cbcbe2",
+   "note": "A blue tinged violet"
+  },
+  {
+   "name": "Silor Sand",
+   "family": "Standard",
+   "hex": "#f6efe5",
+   "note": "The palest of pinks with a brown/gold tone"
+  },
+  {
+   "name": "Silor Turquoise",
+   "family": "Standard",
+   "hex": "#d9e7e9",
+   "note": "A blue/green"
+  },
+  {
+   "name": "Silor Ultra-Marine",
+   "family": "Standard",
+   "hex": "#d4e7f3",
+   "note": "A bright, medium royal blue"
+  },
+  {
+   "name": "Silor Vermillion",
+   "family": "Standard",
+   "hex": "#f7b198",
+   "note": "Orange toned red"
+  },
+  {
+   "name": "Silor Winter Gray",
+   "family": "Standard",
+   "hex": "#bbbdb7",
+   "note": "A wintry gray with a slight green flare"
+  },
+  {
+   "name": "Sky Blue",
+   "family": "Standard",
+   "hex": "#e6f4f5",
+   "note": "A soft robin's egg blue"
+  },
+  {
+   "name": "Slate Gray",
+   "family": "Standard",
+   "hex": "#b3b2b8",
+   "note": "A cold, medium gray"
+  },
+  {
+   "name": "Sun Brown",
+   "family": "Standard",
+   "hex": "#baa699",
+   "note": "A rich brown for darker sunglass lenses"
+  },
+  {
+   "name": "Sun Gray",
+   "family": "Standard",
+   "hex": "#b9babe",
+   "note": "A neutral gray for sunglass shades"
+  },
+  {
+   "name": "Sun Green",
+   "family": "Standard",
+   "hex": "#aeb79c",
+   "note": "A deep avocado green"
+  },
+  {
+   "name": "Sun Vogue Cocoa",
+   "family": "Standard",
+   "hex": "#c2ad9f",
+   "note": "Dark brown with a red overtone"
+  },
+  {
+   "name": "Sun Vogue Gray",
+   "family": "Standard",
+   "hex": "#a0918f",
+   "note": "Thundercloud gray with a brownish overtone"
+  },
+  {
+   "name": "Sun Vogue Marine",
+   "family": "Standard",
+   "hex": "#a8adca",
+   "note": "A dusky aquamarine on the blue side"
+  },
+  {
+   "name": "Sun Vogue Plum",
+   "family": "Standard",
+   "hex": "#b99bb7",
+   "note": "Dark reddish purple"
+  },
+  {
+   "name": "Super Shield Red",
+   "family": "Standard",
+   "hex": "#f3b098",
+   "note": "Designed for Super Shield and other hard coated lenses"
+  },
+  {
+   "name": "Super Shield Yellow",
+   "family": "Standard",
+   "hex": "#fbf7c5",
+   "note": "Designed for Super Shield and other hard coated lenses"
+  },
+  {
+   "name": "Swiss Chocolate",
+   "family": "Standard",
+   "hex": "#ae9c95",
+   "note": "Rich brown with a hint of gray for dark sunglasses"
+  },
+  {
+   "name": "Swiss Pastel Blueberry",
+   "family": "Standard",
+   "hex": "#ebeff2",
+   "note": "Light blue fashion tint"
+  },
+  {
+   "name": "Swiss Pastel Butterscotch",
+   "family": "Standard",
+   "hex": "#fbf9ed",
+   "note": "Light yellow fashion tint"
+  },
+  {
+   "name": "Swiss Pastel Peach",
+   "family": "Standard",
+   "hex": "#fdfaf5",
+   "note": "Light peach fashion tint"
+  },
+  {
+   "name": "Swiss Pastel Pumpkin",
+   "family": "Standard",
+   "hex": "#faf3e2",
+   "note": "Light pink/peach fashion tint"
+  },
+  {
+   "name": "Swiss Pastel Raspberry Ice",
+   "family": "Standard",
+   "hex": "#f5eff3",
+   "note": "Light violet fashion tint"
+  },
+  {
+   "name": "Swiss Pastel Strawberry",
+   "family": "Standard",
+   "hex": "#f9f3f0",
+   "note": "Light pink fashion tint"
+  },
+  {
+   "name": "Swiss Pastel Twilight Blue",
+   "family": "Standard",
+   "hex": "#e9edee",
+   "note": "Light aqua fashion tint"
+  },
+  {
+   "name": "Tangerine",
+   "family": "Standard",
+   "hex": "#f9ddc7",
+   "note": "An orange-red. Medium shade"
+  },
+  {
+   "name": "Teak",
+   "family": "Standard",
+   "hex": "#f2eae1",
+   "note": "A light brown with a pink flare"
+  },
+  {
+   "name": "Teal",
+   "family": "Standard",
+   "hex": "#c6e6e1",
+   "note": "Brilliant blue/green fashion tint"
+  },
+  {
+   "name": "Tru-Tone",
+   "family": "Standard",
+   "hex": "#babbbf",
+   "note": "A dark gray with a blue overtone"
+  },
+  {
+   "name": "Umbral",
+   "family": "Standard",
+   "hex": "#d6c9a7",
+   "note": "A medium brown with a gold orange flare"
+  },
+  {
+   "name": "Violet",
+   "family": "Standard",
+   "hex": "#dfd4e7",
+   "note": "A balanced blend of blue and red"
+  },
+  {
+   "name": "Diamond Dye 500/550",
+   "family": "Therapeutic",
+   "hex": "#facda0",
+   "note": "By increasing the length of tinting time the lenses will become less orange and "
+  },
+  {
+   "name": "Diamond Dye 540",
+   "family": "Therapeutic",
+   "hex": "#dab59c",
+   "note": "Therapeutic tint. Reddish brownTinted demonstration lenses of this color are ava"
+  },
+  {
+   "name": "Filter Vision 480/Euro Brown",
+   "family": "Therapeutic",
+   "hex": "#c8af9e",
+   "note": "Therapeutic tint. Dark brown.Tinted demonstration lenses of this color are avail"
+  },
+  {
+   "name": "FL-41",
+   "family": "Therapeutic",
+   "hex": "#e0c5b7",
+   "note": "A rusty rose color that is usually tinted to a \ndarkness of 50%. It has  been fo"
+  },
+  {
+   "name": "Melanin Therapeutic Tint",
+   "family": "Therapeutic",
+   "hex": "#f7e9c2",
+   "note": "A tan-colored dye which mimics the natural melanin produced by the body.Tinted d"
+  },
+  {
+   "name": "Monochrome 600",
+   "family": "Therapeutic",
+   "hex": "#d79893",
+   "note": "A deep red which absorbs all wavelengths up to \n600nm, transmitting the  color r"
+  },
+  {
+   "name": "Therapeutic Deep Blue Zee",
+   "family": "Therapeutic",
+   "hex": "#9fadd6",
+   "note": "Recent studies have shown that certain blue tints such as BPI Deep Blue Zee are "
+  },
+  {
+   "name": "Total HD Day Therapeutic Tint",
+   "family": "Therapeutic",
+   "hex": "#feeeb5",
+   "note": "BPI Introduces Total HD Day and Total HD Night protection. These new tints block"
+  },
+  {
+   "name": "Total HD Night Therapeutic Tint",
+   "family": "Therapeutic",
+   "hex": "#fefaca",
+   "note": "BPI Introduces Total HD Day and Total HD Night protection. These new tints block"
+  },
+  {
+   "name": "UV/ Blue Barrier 440nm (Protective series)",
+   "family": "Therapeutic",
+   "hex": "#f6feb3",
+   "note": "BPI UV/ Blu Barrier 440nm (Protective series), is the latest addition to a serie"
+  },
+  {
+   "name": "Winter Sun/450",
+   "family": "Therapeutic",
+   "hex": "#fef8b2",
+   "note": "A light golden-yellow tint with the highest UV protection available to chase awa"
+  },
+  {
+   "name": "VDT Amber",
+   "family": "VDT",
+   "hex": "#f9eda9",
+   "note": "Reduces eye strain while using computers, especially with monochrome amber scree"
+  },
+  {
+   "name": "VDT Blue",
+   "family": "VDT",
+   "hex": "#eaf0f1",
+   "note": "Reduces eye strain while using computers"
+  },
+  {
+   "name": "VDT Green",
+   "family": "VDT",
+   "hex": "#eceddb",
+   "note": "Reduces eye strain while using computers, especially with monochrome green monit"
+  }
+ ]
+}

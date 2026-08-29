@@ -49,13 +49,7 @@ def portable_face_images(face_images: list, doc_path: str) -> list:
         if not p or not os.path.isabs(p):
             out.append(fi)
             continue
-        try:
-            rel = os.path.relpath(p, doc_dir)
-        except ValueError:                       # different drive
-            rel = None
-        if rel is None or rel.startswith(".."):
-            rel = os.path.basename(p)
-        out.append(dataclasses.replace(fi, path=rel.replace(os.sep, "/")))
+        out.append(dataclasses.replace(fi, path=_portable_path(p, doc_dir)))
     return out
 
 
@@ -72,6 +66,47 @@ def resolve_face_images(face_images: list, doc_path: str) -> None:
         cand = os.path.normpath(os.path.join(doc_dir, p))
         if cand.startswith(doc_dir + os.sep) and os.path.isfile(cand):
             fi.path = cand
+
+
+def _portable_path(p: str, doc_dir: str) -> str:
+    """A path with no personal directory info: document-relative when the file
+    lives under the document's folder, otherwise the bare basename."""
+    try:
+        rel = os.path.relpath(p, doc_dir)
+    except ValueError:                           # different drive
+        rel = None
+    if rel is None or rel.startswith(".."):
+        rel = os.path.basename(p)
+    return rel.replace(os.sep, "/")
+
+
+def portable_fill(fill: dict | None, doc_path: str) -> dict | None:
+    """Return a copy of the *fill* block whose swatch path is portable — same
+    rule the face photos get, since a Frame Fill image is likewise a file on
+    the author's machine that a standalone .svg can only point at."""
+    if not fill or not fill.get("image"):
+        return fill
+    img = fill["image"]
+    if not os.path.isabs(img):
+        return fill
+    out = dict(fill)
+    out["image"] = _portable_path(img, os.path.dirname(os.path.abspath(doc_path)))
+    return out
+
+
+def resolve_fill_image(fill: dict | None, doc_path: str) -> None:
+    """Resolve a relative Frame Fill swatch path against the document's folder,
+    in place — honored only when it stays inside that folder (see
+    resolve_face_images)."""
+    if not fill:
+        return
+    p = fill.get("image")
+    if not p or os.path.isabs(p):
+        return
+    doc_dir = os.path.dirname(os.path.abspath(doc_path))
+    cand = os.path.normpath(os.path.join(doc_dir, p))
+    if cand.startswith(doc_dir + os.sep) and os.path.isfile(cand):
+        fill["image"] = cand
 
 
 # ---------- path-data helpers ----------
@@ -201,7 +236,8 @@ def save_svg(
     bookmarks:        list | None = None,
     dims:             list | None = None,
     layers:           dict | None = None,   # {layer name: {"visible","locked"}}
-    fill:             dict | None = None,   # {"visible","color","opacity"}
+    fill:             dict | None = None,   # {"visible","color","opacity","style","image"}
+    lens_fill:        dict | None = None,   # {"visible","top","bottom","linked","opacity"}
     texts:            list | None = None,   # list[TextObject]
     bevel:            BevelSpec | None = None,
 ) -> None:
@@ -261,6 +297,8 @@ def save_svg(
         state["layers"] = layers
     if fill:
         state["fill"] = fill
+    if lens_fill:
+        state["lens_fill"] = lens_fill
     if bevel:
         state["bevel"] = {"preset": bevel.preset, "depth_mm": bevel.depth_mm}
     if texts:
@@ -427,6 +465,7 @@ def load_svg(path: str) -> dict:
         "bookmarks": bookmarks,
         "layers": state.get("layers", {}),
         "fill": state.get("fill"),   # None when absent (pre-0.9.8 files)
+        "lens_fill": state.get("lens_fill"),   # None when absent (pre-1.2 files)
         "bevel": (
             BevelSpec(preset=state["bevel"].get("preset", "acetate"),
                       depth_mm=state["bevel"].get("depth_mm", 1.0))

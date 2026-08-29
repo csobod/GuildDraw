@@ -43,4 +43,8 @@ def render_png(scene, path: str, dpi: float = 300.0,
     scene.render(painter, QRectF(0, 0, px_w, px_h), rect)
     painter.end()
 
-    img.save(path)
+    # Name the format explicitly: QImage.save() infers it from the suffix, so
+    # a path without one (or with an unexpected one) used to return False and
+    # write nothing at all — the export reported success and left no file.
+    if not img.save(path, "PNG"):
+        raise OSError(f"could not write the PNG to {path}")

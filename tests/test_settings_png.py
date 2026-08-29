@@ -141,3 +141,56 @@ def test_png_content_rect_covers_mirror_ghost(win):
     rect = win._png_content_rect()
     assert rect is not None
     assert rect.left() < -35 and rect.right() > 35    # both halves framed
+
+
+# ------------------------------------------------- PNG export, no suffix
+#
+# The export reported success and left nothing on disk: QImage.save() infers
+# its format from the file suffix, and a path without one (what several file
+# dialogs hand back when the maker just types a name) made it return False —
+# which nobody was checking.
+
+def test_render_png_writes_even_without_a_png_suffix(tmp_path):
+    from PySide6.QtCore import QRectF
+    from PySide6.QtWidgets import QGraphicsScene
+    from framedraft.export.png import render_png
+
+    scene = QGraphicsScene()
+    scene.addRect(0, 0, 40, 20)
+    out = tmp_path / "no-suffix-here"
+    render_png(scene, str(out), dpi=150, rect=QRectF(0, 0, 40, 20))
+    assert out.exists()
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_png_raises_when_the_write_fails(tmp_path):
+    from PySide6.QtCore import QRectF
+    from PySide6.QtWidgets import QGraphicsScene
+    from framedraft.export.png import render_png
+
+    scene = QGraphicsScene()
+    scene.addRect(0, 0, 40, 20)
+    with pytest.raises(OSError):
+        render_png(scene, str(tmp_path / "no" / "such" / "dir" / "x.png"),
+                   dpi=150, rect=QRectF(0, 0, 40, 20))
+
+
+def test_export_png_adds_the_suffix(win, tmp_path, monkeypatch):
+    """A name typed without ".png" still lands as a .png the maker can find."""
+    from PySide6.QtWidgets import QFileDialog, QInputDialog
+    from framedraft.document import Curve, SplineNode, Layer
+
+    win._active_ws.add_curve(Curve(
+        kind="line", layer=Layer.OUTLINE,
+        nodes=[SplineNode(x=0, y=0), SplineNode(x=30, y=0),
+               SplineNode(x=30, y=20), SplineNode(x=0, y=20)], closed=True))
+
+    typed = tmp_path / "demo-55x18"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(typed), "")))
+    monkeypatch.setattr(QInputDialog, "getItem",
+                        staticmethod(lambda *a, **k: ("150 dpi — draft", True)))
+    win._export_png()
+
+    assert (tmp_path / "demo-55x18.png").exists()
+    assert not typed.exists()

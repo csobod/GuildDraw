@@ -15,10 +15,12 @@ from PySide6.QtWidgets import (
     QDialog, QCheckBox, QHBoxLayout, QInputDialog, QListWidget, QListWidgetItem,
     QScrollArea, QTabWidget, QLineEdit, QTreeWidget, QTreeWidgetItem,
     QColorDialog, QAbstractItemView, QRubberBand, QDialogButtonBox,
+    QSizePolicy,
 )
 from PySide6.QtCore import Qt, QPointF, QSize, QTimer, Signal, QRect, QRectF, QPoint
 from PySide6.QtGui import (
-    QAction, QActionGroup, QColor, QBrush, QIcon, QPainter, QPen, QPixmap,
+    QAction, QActionGroup, QColor, QBrush, QFontMetrics, QIcon, QPainter,
+    QPen, QPixmap,
 )
 
 from . import theme
@@ -26,11 +28,16 @@ from .canvas.items import CurveItem
 from .canvas.dim import DimItem
 from .canvas.measure_bar import MeasureBar
 from .canvas.readiness_dot import ReadinessDot, readiness_state
-from .canvas.scene import FrameScene, TextItem
+from .canvas.scene import (FrameScene, TextItem, DEFAULT_LENS_FILL_TOP,
+                           DEFAULT_LENS_FILL_BOTTOM, DEFAULT_LENS_FILL_OPACITY,
+                           DEFAULT_LENS_FILL_INTENSITY, deepen_tint,
+                           intensity_from_slider, slider_from_intensity,
+                           LENS_FILL_INTENSITY_MIN, LENS_FILL_INTENSITY_MAX)
 from .canvas.snapping import SnapEngine
 from .calibration import CalibTool
 from .construction import ConstructionGuides, BoxingGuide, RectGuide
 from . import prefs as _prefs_mod
+from . import bpi_tints as _bpi_tints
 from .document import (
     Layer, Calibration, MirrorAxis, FormingMetadata, MachinedBridge, FaceImage,
     Curve, SplineNode, ControlPoint, DimLine, WORKSPACE_LAYERS,
@@ -50,6 +57,31 @@ from .tools.point_move import PointMoveTool
 from .tools.text import TextTool, TextDialog
 from .pinnable_toolbar import PinnableToolBar
 from .icons import ICONS_DIR as _ICONS_DIR, make_icon as _make_icon
+
+
+# Colour-bar size (px) inside the Lens Fill stop buttons.
+_LENS_SWATCH_PX = (64, 14)
+
+
+# Saved documents are ordinary files a maker can edit, share, or damage, and
+# _load_ws_data runs outside the open-time try/except — so a malformed value in
+# the metadata took the app down on open rather than degrading to a default.
+def _hex_or(value, fallback: str) -> str:
+    """*value* if it is a colour Qt can parse, else *fallback*."""
+    if isinstance(value, str) and QColor(value).isValid():
+        return QColor(value).name()
+    return fallback
+
+
+def _num_or(value, fallback: float, lo: float, hi: float) -> float:
+    """*value* as a float clamped to [lo, hi], else *fallback*."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if out != out or out in (float("inf"), float("-inf")):   # NaN / ±inf
+        return fallback
+    return max(lo, min(hi, out))
 
 
 def _curves_bbox(curves, layers=None, x_lo=None, x_hi=None):
@@ -843,6 +875,11 @@ class WorkspaceState:
         self.boxing_b:       float = 30.0
         self.boxing_dbl:     float = 18.0
         self.boxing_snapped: bool  = False       # boxing guide snapped to lens (M11/M12)
+        # Boxing visibility to restore when the snap is switched back off.
+        # Snapping force-shows the guide (the bevel outline rides on it); a
+        # maker who had it hidden should get it hidden back, not a default-sized
+        # box parked over their drawing. None = nothing to restore.
+        self.boxing_visible_pre_snap: bool | None = None
         self.shape_locked:   bool  = False       # lens spline frozen; resize via A/B (M12)
         self.boxing_chain:   bool  = False       # A/B resize proportionally (M12)
         self.outline_locked: bool  = False       # OUTLINE co-resizes with the lens (M12)
@@ -855,6 +892,15 @@ class WorkspaceState:
         self.fill_visible:   bool  = False        # frame fill overlay (M8)
         self.fill_color:     str   = "#2a6099"
         self.fill_opacity:   float = 0.50
+        self.fill_style:     str   = "color"      # "color" | "image" (v1.2)
+        self.fill_image:     str   = ""           # material swatch, kept even
+                                                  # while the colour is showing
+        self.lens_fill_visible: bool  = False     # lens tint overlay (v1.2)
+        self.lens_fill_top:     str   = DEFAULT_LENS_FILL_TOP
+        self.lens_fill_bottom:  str   = DEFAULT_LENS_FILL_BOTTOM
+        self.lens_fill_linked:  bool  = False     # both stops held equal (flat tint)
+        self.lens_fill_opacity: float = DEFAULT_LENS_FILL_OPACITY
+        self.lens_fill_intensity: float = DEFAULT_LENS_FILL_INTENSITY
         self.selected_face_idx: int       = -1
         self.face_image_paths:  list[str] = []
         self.fitted:            bool      = False   # True once fitInView has been called
@@ -1165,6 +1211,31 @@ class SettingsDialog(QDialog):
         pad_form.addRow("Height:", self._pad_h)
         gen_lay.addWidget(pad_box)
 
+        # Lens fill
+        lens_box  = QGroupBox("Lens Fill")
+        lens_form = QFormLayout(lens_box)
+        self._lens_opacity_spin = QDoubleSpinBox()
+        self._lens_opacity_spin.setRange(0, 100)
+        self._lens_opacity_spin.setDecimals(0)
+        self._lens_opacity_spin.setSingleStep(5)
+        self._lens_opacity_spin.setSuffix(" %")
+        self._lens_opacity_spin.setValue(prefs.get("lens_fill_opacity_pct", 65))
+        self._lens_opacity_spin.setToolTip(
+            "Opacity a lens tint starts at when it is first shown.\n"
+            "The tint colours themselves are saved with each design.")
+        lens_form.addRow("Default opacity:", self._lens_opacity_spin)
+        self._lens_intensity_spin = QDoubleSpinBox()
+        self._lens_intensity_spin.setRange(0.5, 8.0)
+        self._lens_intensity_spin.setDecimals(2)
+        self._lens_intensity_spin.setSingleStep(0.25)
+        self._lens_intensity_spin.setSuffix(" ×")
+        self._lens_intensity_spin.setValue(prefs.get("lens_fill_intensity", 1.0))
+        self._lens_intensity_spin.setToolTip(
+            "Tint depth a lens fill starts at. 1.00 shows a colour exactly as\n"
+            "picked; higher deepens it, the way a longer dye time would.")
+        lens_form.addRow("Default intensity:", self._lens_intensity_spin)
+        gen_lay.addWidget(lens_box)
+
         gen_lay.addStretch()
 
         # ═══════════════════════════════════════════════════════════════════
@@ -1467,8 +1538,7 @@ class SettingsDialog(QDialog):
         # ═══════════════════════════════════════════════════════════════════
         # Tab 6 — Catalog PDF
         # ═══════════════════════════════════════════════════════════════════
-        from PySide6.QtWidgets import QFontComboBox
-        from PySide6.QtGui import QFont
+        from .fontpicker import FontFilterCombo
         from .document import WORKSPACE_LAYERS as _WS_LAYERS
 
         cat_outer = QWidget()
@@ -1486,7 +1556,8 @@ class SettingsDialog(QDialog):
         cat_intro = QLabel(
             "Settings for the PDF/print exports. The line weight and vertical "
             "offset apply to “PDF for Catalog”, “PDF (1:1)” and “Print (1:1)”; "
-            "the caption and layer choices below are for the catalog sheet.")
+            "the caption, fill and layer choices below are for the catalog "
+            "sheet.")
         cat_intro.setWordWrap(True)
         cat_lay.addWidget(cat_intro)
 
@@ -1524,8 +1595,12 @@ class SettingsDialog(QDialog):
             "several pages are bound into a catalog. 0 = centred.")
         cat_form.addRow("Frame vertical offset:", self._cat_offset)
 
-        self._cat_font = QFontComboBox()
-        self._cat_font.setCurrentFont(QFont(cat_cfg["caption_font"]))
+        self._cat_font = FontFilterCombo(family=cat_cfg["caption_font"])
+        self._cat_font.setToolTip(
+            "Type to filter — the list narrows to the families that match, so "
+            "a weight\nor an italic is one glance away instead of a scroll. "
+            "The arrow re-filters\non what's in the box, showing the current "
+            "family's siblings.")
         cat_form.addRow("Caption font:", self._cat_font)
 
         self._cat_caption_chk = QCheckBox("Print the design file name (caption)")
@@ -1536,6 +1611,18 @@ class SettingsDialog(QDialog):
             "Print a scale note  (off = true page scale, as rendered)")
         self._cat_scale_chk.setChecked(bool(cat_cfg["show_scale"]))
         cat_lay.addWidget(self._cat_scale_chk)
+
+        self._cat_fill_chk = QCheckBox(
+            "Print Frame Fill and Lens Fill  (colour, as shown on the canvas)")
+        self._cat_fill_chk.setChecked(bool(cat_cfg.get("include_fill", False)))
+        self._cat_fill_chk.setToolTip(
+            "Lay the display-only overlays under the line work on the catalog\n"
+            "sheet — the material swatch or tint in the frame profile and the\n"
+            "lens gradient in each aperture, per workspace, exactly as that\n"
+            "workspace shows them. A workspace with its fill switched off (or\n"
+            "whose outline doesn't close) prints line work only.\n\n"
+            "Off is the cutting-room sheet; on is the showroom page.")
+        cat_lay.addWidget(self._cat_fill_chk)
 
         def _cat_layer_group(title, ws_key, selected):
             box = QGroupBox(title)
@@ -1714,6 +1801,8 @@ class SettingsDialog(QDialog):
             "pad_on_startup":       self._pad_chk.isChecked(),
             "pad_width_mm":         self._pad_w.value(),
             "pad_height_mm":        self._pad_h.value(),
+            "lens_fill_opacity_pct": int(self._lens_opacity_spin.value()),
+            "lens_fill_intensity":   self._lens_intensity_spin.value(),
             "toolbar":              toolbar,
             "hotkeys":              hotkeys,
             "catalog_pdf": {
@@ -1721,8 +1810,9 @@ class SettingsDialog(QDialog):
                 "line_weight_mm": self._cat_lw.value(),
                 "content_offset_mm": self._cat_offset.value(),
                 "caption":        self._cat_caption_chk.isChecked(),
-                "caption_font":   self._cat_font.currentFont().family(),
+                "caption_font":   self._cat_font.current_family(),
                 "show_scale":     self._cat_scale_chk.isChecked(),
+                "include_fill":   self._cat_fill_chk.isChecked(),
                 "front_layers":   [n for n, cb in self._cat_front_layers.items()
                                    if cb.isChecked()],
                 "temple_layers":  [n for n, cb in self._cat_temple_layers.items()
@@ -2117,13 +2207,15 @@ class MainWindow(QMainWindow):
                 lambda _curve=None, ws=ws: self._schedule_boxing_follow(ws))
             ws.scene.fill_auto_disabled = (
                 lambda status, ws=ws: self._on_fill_auto_disabled(status, ws))
+            ws.scene.lens_fill_auto_disabled = (
+                lambda status, ws=ws: self._on_lens_fill_auto_disabled(status, ws))
 
         # ── Toggle actions wired to dispatch helpers (lambdas evaluate _active_ws) ─
         self._act_mirror.toggled.connect(self._on_mirror_toggled)
         self._act_guides.toggled.connect(lambda v: self._guides.set_visible(v))
         self._act_snap.toggled.connect(lambda v: self._snap.set_enabled(v))
         self._act_smooth.toggled.connect(lambda v: self._edit_tool.set_smooth_mode(v))
-        self._act_boxing.toggled.connect(lambda v: self._boxing_guide.set_visible(v))
+        self._act_boxing.toggled.connect(self._on_boxing_visible_toggled)
         self._act_stock.toggled.connect(lambda v: self._stock_guide.set_visible(v))
         self._act_pad.toggled.connect(lambda v: self._pad_guide.set_visible(v))
 
@@ -2176,6 +2268,21 @@ class MainWindow(QMainWindow):
             ws.stock_h        = p["stock_height_mm"]
             ws.pad_w          = p["pad_width_mm"]
             ws.pad_h          = p["pad_height_mm"]
+            ws.lens_fill_opacity = self._default_lens_fill_opacity()
+            ws.lens_fill_intensity = self._default_lens_fill_intensity()
+            ws.scene.set_lens_fill_opacity(ws.lens_fill_opacity)
+            ws.scene.set_lens_fill_intensity(ws.lens_fill_intensity)
+        front0 = self._workspaces[0]
+        self._lens_fill_opacity_slider.blockSignals(True)
+        self._lens_fill_opacity_slider.setValue(round(front0.lens_fill_opacity * 100))
+        self._lens_fill_opacity_slider.blockSignals(False)
+        self._lens_fill_intensity_slider.blockSignals(True)
+        self._lens_fill_intensity_slider.setValue(
+            slider_from_intensity(front0.lens_fill_intensity))
+        self._lens_fill_intensity_slider.blockSignals(False)
+        self._update_lens_fill_swatches(front0.lens_fill_top,
+                                        front0.lens_fill_bottom,
+                                        front0.lens_fill_intensity)
 
         # Workspace-specific default overrides (override prefs for non-front tabs)
         for temple in (self._workspaces[1], self._workspaces[2]):  # temple_r, temple_l
@@ -2874,8 +2981,7 @@ class MainWindow(QMainWindow):
         self._stock_w_spin.setSingleStep(1.0)
         self._stock_w_spin.setValue(170.0)
         self._stock_w_spin.setToolTip("Width of raw stock blank (mm). Toggle visibility with the Stock button.")
-        self._stock_w_spin.valueChanged.connect(
-            lambda v: self._stock_guide.set_width(v))
+        self._stock_w_spin.valueChanged.connect(self._on_stock_width_changed)
         stock_lay.addRow("Width:", self._stock_w_spin)
 
         self._stock_h_spin = QDoubleSpinBox()
@@ -2932,10 +3038,58 @@ class MainWindow(QMainWindow):
         self._fill_show_chk.toggled.connect(self._on_fill_visible_toggled)
         fill_lay.addRow(self._fill_show_chk)
 
+        # Colour or material swatch. A supplier's acetate sample sheet scaled
+        # onto the blank shows the frame in the material it will be cut from —
+        # the thing a flat colour can't do for a laminate or a tortoise.
+        self._fill_style_combo = QComboBox()
+        self._fill_style_combo.addItem("Colour", "color")
+        self._fill_style_combo.addItem("Image",  "image")
+        self._fill_style_combo.setToolTip(
+            "Colour: a flat translucent tint.\n"
+            "Image: a material swatch, scaled to span the Stock Blank width\n"
+            "and centred on the origin — the piece of sheet under the frame."
+        )
+        self._fill_style_combo.currentIndexChanged.connect(
+            self._on_fill_style_changed)
+        fill_lay.addRow("Style:", self._fill_style_combo)
+
         self._fill_color_btn = QPushButton("Colour…")
         self._fill_color_btn.clicked.connect(self._on_fill_color_clicked)
         self._update_fill_swatch("#2a6099")
         fill_lay.addRow("Colour:", self._fill_color_btn)
+
+        img_row = QWidget()
+        img_lay = QHBoxLayout(img_row)
+        img_lay.setContentsMargins(0, 0, 0, 0)
+        img_lay.setSpacing(4)
+        self._fill_image_btn = QPushButton("Choose…")
+        # Swatch names run long ("TORTOISE-DEMI-AMBER-3MM-SHEET.png"); let the
+        # button take whatever the row leaves it and elide what won't fit,
+        # rather than dragging the whole sidebar wider.
+        self._fill_image_btn.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                           QSizePolicy.Policy.Fixed)
+        self._fill_image_btn.installEventFilter(self)
+        self._fill_image_full_text = "Choose…"
+        self._fill_image_btn.clicked.connect(self._on_fill_image_clicked)
+        self._fill_image_clear_btn = QPushButton("✕")
+        # The app stylesheet gives every QPushButton min-width: 54px, which Qt
+        # promotes over a plain setFixedWidth — the clear button came out 76px
+        # wide and ate the filename beside it. Pin it square in a local rule
+        # instead: a stylesheet width is re-applied over the widget's own
+        # minimum, so setFixedWidth alone gets overruled and a bare
+        # `min-width: 0` lets a narrow panel squeeze the button to a sliver.
+        # The rule sizes the CONTENT box, so the theme's 1px border on each
+        # side comes off the target — see build_qss.
+        _clear_box = max(8, self._fill_image_btn.sizeHint().height() - 2)
+        self._fill_image_clear_btn.setStyleSheet(
+            f"QPushButton {{ min-width: {_clear_box}px;"
+            f" max-width: {_clear_box}px; min-height: {_clear_box}px;"
+            f" max-height: {_clear_box}px; padding: 0px; }}")
+        self._fill_image_clear_btn.setToolTip("Forget the swatch and go back to the colour.")
+        self._fill_image_clear_btn.clicked.connect(self._on_fill_image_cleared)
+        img_lay.addWidget(self._fill_image_btn, 1)
+        img_lay.addWidget(self._fill_image_clear_btn)
+        fill_lay.addRow("Image:", img_row)
 
         self._fill_opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self._fill_opacity_slider.setRange(0, 100)
@@ -2945,6 +3099,103 @@ class MainWindow(QMainWindow):
 
         guides_lay.addWidget(fill_box)
         self._fill_box = fill_box   # ref for section show/hide
+
+        # ── Lens Fill (display-only render overlay, v1.2) ─────────────────
+        lens_fill_box = QGroupBox("Lens Fill")
+        lens_fill_lay = QFormLayout(lens_fill_box)
+        lens_fill_lay.setSpacing(6)
+
+        self._lens_fill_show_chk = QCheckBox("Show lens fill")
+        self._lens_fill_show_chk.setToolTip(
+            "Tint each LENS aperture with a vertical two-colour gradient, the\n"
+            "way a dyed lens runs dark to light. Display-only — never exported\n"
+            "to DXF/SVG geometry."
+        )
+        self._lens_fill_show_chk.toggled.connect(self._on_lens_fill_visible_toggled)
+        lens_fill_lay.addRow(self._lens_fill_show_chk)
+
+        # Swatch-only buttons — the row label already says which stop it is, so
+        # a "Top…" caption inside the button would only crowd the colour bar.
+        self._lens_top_btn = QPushButton()
+        self._lens_top_btn.setIconSize(QSize(*_LENS_SWATCH_PX))
+        self._lens_top_btn.clicked.connect(lambda: self._on_lens_fill_color_clicked("top"))
+        self._lens_bottom_btn = QPushButton()
+        self._lens_bottom_btn.setIconSize(QSize(*_LENS_SWATCH_PX))
+        self._lens_bottom_btn.clicked.connect(lambda: self._on_lens_fill_color_clicked("bottom"))
+
+        self._lens_top_bpi_btn = QToolButton()
+        self._lens_top_bpi_btn.setText("BPI")
+        self._lens_top_bpi_btn.setToolTip(
+            "Pick the top colour from the BPI tint reference.")
+        self._lens_top_bpi_btn.clicked.connect(lambda: self._show_tint_picker("top"))
+        self._lens_bottom_bpi_btn = QToolButton()
+        self._lens_bottom_bpi_btn.setText("BPI")
+        self._lens_bottom_bpi_btn.setToolTip(
+            "Pick the bottom colour from the BPI tint reference.")
+        self._lens_bottom_bpi_btn.clicked.connect(lambda: self._show_tint_picker("bottom"))
+
+        self._lens_link_btn = QToolButton()
+        self._lens_link_btn.setCheckable(True)
+        self._lens_link_btn.setIcon(_make_icon(
+            "link-chain", theme.color("chrome.ink"),
+            theme.color("chrome.checked_ink")))
+        self._lens_link_btn.setToolTip(
+            "Link top and bottom: while locked both stops stay the same colour,\n"
+            "so the lens takes a flat tint. Off = a true vertical gradient.")
+        self._lens_link_btn.toggled.connect(self._on_lens_fill_link_toggled)
+
+        lens_grid_w = QWidget()
+        lens_grid = QGridLayout(lens_grid_w)
+        lens_grid.setContentsMargins(0, 0, 0, 0)
+        lens_grid.setHorizontalSpacing(6)
+        lens_grid.setVerticalSpacing(6)
+        lens_grid.addWidget(QLabel("Top:"),           0, 0)
+        lens_grid.addWidget(self._lens_top_btn,       0, 1)
+        lens_grid.addWidget(self._lens_top_bpi_btn,   0, 2)
+        lens_grid.addWidget(QLabel("Bottom:"),        1, 0)
+        lens_grid.addWidget(self._lens_bottom_btn,    1, 1)
+        lens_grid.addWidget(self._lens_bottom_bpi_btn, 1, 2)
+        lens_grid.addWidget(self._lens_link_btn,      0, 3, 2, 1)
+        lens_grid.setColumnStretch(1, 1)
+        lens_fill_lay.addRow(lens_grid_w)
+
+        if not _bpi_tints.load_tints():
+            # No shipped table (stripped build) — hide the entry points rather
+            # than offering a picker with nothing in it.
+            self._lens_top_bpi_btn.setVisible(False)
+            self._lens_bottom_bpi_btn.setVisible(False)
+
+        self._lens_fill_intensity_slider = QSlider(Qt.Orientation.Horizontal)
+        self._lens_fill_intensity_slider.setRange(0, 100)
+        self._lens_fill_intensity_slider.setValue(
+            slider_from_intensity(DEFAULT_LENS_FILL_INTENSITY))
+        self._lens_fill_intensity_slider.setToolTip(
+            "How deeply the dye reads — the tint's own strength, as opposed to\n"
+            "Opacity, which is how much of the drawing behind it shows through.\n\n"
+            "Reference swatches (BPI's included) show a dye at one modest depth\n"
+            "over white, so a colour picked from one usually needs deepening to\n"
+            "look like the lens you mean. The default sits a quarter along, at\n"
+            "the colour exactly as picked; drag right for a deeper dye.")
+        self._lens_fill_intensity_slider.valueChanged.connect(
+            self._on_lens_fill_intensity_changed)
+        lens_fill_lay.addRow("Intensity:", self._lens_fill_intensity_slider)
+
+        self._lens_fill_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self._lens_fill_opacity_slider.setRange(0, 100)
+        self._lens_fill_opacity_slider.setValue(
+            int(round(DEFAULT_LENS_FILL_OPACITY * 100)))
+        self._lens_fill_opacity_slider.setToolTip(
+            "How much the tint covers what is behind it — the face photo, the\n"
+            "frame fill. For the tint's own strength, use Intensity.")
+        self._lens_fill_opacity_slider.valueChanged.connect(
+            self._on_lens_fill_opacity_changed)
+        lens_fill_lay.addRow("Opacity:", self._lens_fill_opacity_slider)
+
+        guides_lay.addWidget(lens_fill_box)
+        self._lens_fill_box = lens_fill_box   # ref for section show/hide
+        self._update_lens_fill_swatches(DEFAULT_LENS_FILL_TOP,
+                                        DEFAULT_LENS_FILL_BOTTOM,
+                                        DEFAULT_LENS_FILL_INTENSITY)
         guides_lay.addStretch()
 
         guides_scroll = QScrollArea()
@@ -3446,6 +3697,10 @@ class MainWindow(QMainWindow):
     # Workspace tab switching (Phase 14)
     # ------------------------------------------------------------------
 
+    # True only while a file load is repopulating the workspaces; see the
+    # save-on-leave guard in _on_workspace_changed.
+    _loading = False
+
     def _on_workspace_changed(self, idx: int):
         """Called by _ws_tab_widget.currentChanged. Saves departing sidebar
         state into the old WorkspaceState; restores arriving workspace state."""
@@ -3462,7 +3717,12 @@ class MainWindow(QMainWindow):
                 old_ws.view.set_draw_tool(None)
                 self._status.showMessage(
                     "Workspace switched — in-progress drawing was discarded")
-            self._save_ws_sidebar_state(old_ws)
+            # Not during a load. Opening a file whose saved active tab is not
+            # the one on screen switches tabs while the widgets still show the
+            # OUTGOING document, so saving them here wrote the old document's
+            # guide/fill/forming values straight over the freshly loaded ones.
+            if not self._loading:
+                self._save_ws_sidebar_state(old_ws)
         self._last_ws_idx = idx
 
         # Return to Select mode
@@ -3519,7 +3779,16 @@ class MainWindow(QMainWindow):
         ws.pad_h          = self._pad_h_spin.value()
         ws.fill_visible   = self._fill_show_chk.isChecked()
         ws.fill_opacity   = self._fill_opacity_slider.value() / 100.0
-        # (fill_color is written by _on_fill_color_clicked directly)
+        # (fill_color is written by _on_fill_color_clicked directly, and
+        #  fill_style / fill_image by the style combo and image picker)
+        ws.lens_fill_visible = self._lens_fill_show_chk.isChecked()
+        ws.lens_fill_linked  = self._lens_link_btn.isChecked()
+        ws.lens_fill_opacity = self._lens_fill_opacity_slider.value() / 100.0
+        # NOT re-derived from the intensity slider: that mapping is geometric,
+        # so position is a lossy encoding of the value (3.0 comes back 3.03) and
+        # every tab switch would nudge a loaded document off its saved depth.
+        # _on_lens_fill_intensity_changed is the sole writer.
+        # (the two stop colours are written by _set_lens_fill_color directly)
         # Face image list paths
         ws.face_image_paths = [
             self._face_list.item(i).data(Qt.ItemDataRole.UserRole)
@@ -3623,12 +3892,37 @@ class MainWindow(QMainWindow):
         self._update_fill_swatch(ws.fill_color)
         ws.scene.set_fill_color(QColor(ws.fill_color))
         ws.scene.set_fill_opacity(ws.fill_opacity)
+        self._apply_fill_material(ws)
+        self._sync_fill_style_widgets(ws)
         status = ws.scene.set_fill_visible(ws.fill_visible)
         if ws.fill_visible and status != "ok":
             ws.fill_visible = False   # saved fill-on no longer encloses a region
         self._fill_show_chk.blockSignals(True)
         self._fill_show_chk.setChecked(ws.fill_visible)
         self._fill_show_chk.blockSignals(False)
+
+        # ── Lens fill ───────────────────────────────────────────────────
+        self._lens_fill_opacity_slider.blockSignals(True)
+        self._lens_fill_opacity_slider.setValue(round(ws.lens_fill_opacity * 100))
+        self._lens_fill_opacity_slider.blockSignals(False)
+        self._lens_link_btn.blockSignals(True)
+        self._lens_link_btn.setChecked(ws.lens_fill_linked)
+        self._lens_link_btn.blockSignals(False)
+        self._lens_fill_intensity_slider.blockSignals(True)
+        self._lens_fill_intensity_slider.setValue(
+            slider_from_intensity(ws.lens_fill_intensity))
+        self._lens_fill_intensity_slider.blockSignals(False)
+        self._update_lens_fill_swatches(ws.lens_fill_top, ws.lens_fill_bottom,
+                                        ws.lens_fill_intensity)
+        ws.scene.set_lens_fill_colors(ws.lens_fill_top, ws.lens_fill_bottom)
+        ws.scene.set_lens_fill_intensity(ws.lens_fill_intensity)
+        ws.scene.set_lens_fill_opacity(ws.lens_fill_opacity)
+        lens_status = ws.scene.set_lens_fill_visible(ws.lens_fill_visible)
+        if ws.lens_fill_visible and lens_status != "ok":
+            ws.lens_fill_visible = False   # saved fill-on no longer encloses
+        self._lens_fill_show_chk.blockSignals(True)
+        self._lens_fill_show_chk.setChecked(ws.lens_fill_visible)
+        self._lens_fill_show_chk.blockSignals(False)
 
         # (Layer list/active layer are per-workspace; _refresh_layer_panel is
         # called by _on_workspace_changed right after this restore.)
@@ -3657,6 +3951,15 @@ class MainWindow(QMainWindow):
         self._opacity_slider.setEnabled(has_sel)
         self._rotation_spin.setEnabled(has_sel)
         self._canvas_lock_chk.setEnabled(has_sel)
+
+    def _on_stock_width_changed(self, mm: float):
+        """The blank guide's width is also the width a Frame Fill swatch spans,
+        so a maker who corrects their sheet size sees the material rescale with
+        it — showing/hiding the guide itself has no bearing on the fill."""
+        ws = self._active_ws
+        ws.stock_w = mm
+        ws.stock_guide.set_width(mm)
+        ws.scene.set_fill_blank_width(mm)
 
     # ── Frame fill controls ─────────────────────────────────────────────
 
@@ -3693,6 +3996,7 @@ class MainWindow(QMainWindow):
         else:
             ws.fill_visible = False
             ws.scene.set_fill_visible(False)
+        self._mark_dirty()   # the fill is saved with the design
 
     def _on_fill_auto_disabled(self, status: str, ws):
         """A geometry edit broke the OUTLINE perimeter while the fill was on;
@@ -3716,11 +4020,266 @@ class MainWindow(QMainWindow):
         ws.fill_color = c.name()
         ws.scene.set_fill_color(c)
         self._update_fill_swatch(ws.fill_color)
+        self._mark_dirty()
 
     def _on_fill_opacity_changed(self, value: int):
         ws = self._active_ws
         ws.fill_opacity = value / 100.0
         ws.scene.set_fill_opacity(ws.fill_opacity)
+        self._mark_dirty()
+
+    # ── Frame fill from a material swatch (v1.2) ────────────────────────
+
+    def _apply_fill_material(self, ws: "WorkspaceState") -> bool:
+        """Push ws.fill_style / ws.fill_image onto its scene, and keep the
+        swatch scaled to that workspace's own blank width. Returns False when
+        an image style was asked for but the file couldn't be read — the caller
+        decides whether that deserves a modal or a silent fall back to colour;
+        ws.fill_style is left on "color" either way."""
+        ws.scene.set_fill_blank_width(ws.stock_w)
+        if ws.fill_style == "image" and ws.fill_image:
+            if ws.scene.set_fill_image(ws.fill_image):
+                return True
+            ws.fill_style = "color"      # unreadable — show the colour instead
+            ws.scene.clear_fill_image()
+            return False
+        # An Image style with nothing behind it is not a state worth keeping —
+        # it would show the colour under a combo that claims otherwise.
+        ws.fill_style = "color"
+        ws.scene.clear_fill_image()
+        return True
+
+    def _sync_fill_style_widgets(self, ws: "WorkspaceState"):
+        """Combo, image button label and per-style enablement, from *ws*."""
+        idx = self._fill_style_combo.findData(ws.fill_style)
+        self._fill_style_combo.blockSignals(True)
+        self._fill_style_combo.setCurrentIndex(max(0, idx))
+        self._fill_style_combo.blockSignals(False)
+        is_image = (ws.fill_style == "image")
+        self._fill_color_btn.setEnabled(not is_image)
+        self._fill_image_btn.setEnabled(is_image)
+        self._fill_image_clear_btn.setEnabled(is_image and bool(ws.fill_image))
+        if ws.fill_image:
+            self._set_fill_image_btn_text(os.path.basename(ws.fill_image))
+            self._fill_image_btn.setToolTip(ws.fill_image)
+        else:
+            self._set_fill_image_btn_text("Choose…")
+            self._fill_image_btn.setToolTip(
+                "Pick a material swatch — a supplier's acetate sample sheet.")
+
+    def _set_fill_image_btn_text(self, text: str):
+        """Label the swatch button, middle-eliding a name too long for the
+        row so the extension stays readable (full path in the tooltip)."""
+        self._fill_image_full_text = text
+        self._elide_fill_image_btn()
+
+    def _elide_fill_image_btn(self):
+        btn = self._fill_image_btn
+        avail = btn.width() - 12          # the frame the label sits inside
+        text  = self._fill_image_full_text
+        if avail <= 0:
+            btn.setText(text)
+            return
+        btn.setText(QFontMetrics(btn.font()).elidedText(
+            text, Qt.TextElideMode.ElideMiddle, avail))
+
+    def _on_fill_style_changed(self, _index: int):
+        ws = self._active_ws
+        ws.fill_style = self._fill_style_combo.currentData() or "color"
+        # Switching to Image with nothing chosen yet: open the picker rather
+        # than leaving the maker on a style that shows the colour anyway.
+        if ws.fill_style == "image" and not ws.fill_image:
+            self._sync_fill_style_widgets(ws)
+            self._on_fill_image_clicked()
+            return
+        if not self._apply_fill_material(ws):
+            self._fill_image_missing(ws)
+        self._sync_fill_style_widgets(ws)
+        self._mark_dirty()
+
+    def _on_fill_image_clicked(self):
+        ws = self._active_ws
+        start = os.path.dirname(ws.fill_image) if ws.fill_image else ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Frame fill material swatch", start,
+            "Images (*.jpg *.jpeg *.png *.bmp *.tiff *.tif)")
+        if not path:
+            # Cancelling out of the auto-opened picker leaves the style where
+            # it was, so the combo doesn't sit on Image with nothing behind it.
+            if not ws.fill_image:
+                ws.fill_style = "color"
+                self._apply_fill_material(ws)
+                self._sync_fill_style_widgets(ws)
+            return
+        ws.scene.set_fill_blank_width(ws.stock_w)
+        if not ws.scene.set_fill_image(path):
+            QMessageBox.warning(
+                self, "Frame Fill",
+                f"{os.path.basename(path)} couldn't be read as an image.")
+            return
+        ws.fill_image = path
+        ws.fill_style = "image"
+        self._sync_fill_style_widgets(ws)
+        self._mark_dirty()
+        self._status.showMessage(
+            f"Frame Fill material: {os.path.basename(path)}"
+            f"  ·  scaled to the {ws.stock_w:g} mm blank", 5000)
+
+    def _on_fill_image_cleared(self):
+        ws = self._active_ws
+        ws.fill_image = ""
+        ws.fill_style = "color"
+        self._apply_fill_material(ws)
+        self._sync_fill_style_widgets(ws)
+        self._mark_dirty()
+
+    def _fill_image_missing(self, ws: "WorkspaceState"):
+        """The saved swatch is gone (a .svg pointing at a file that didn't
+        travel with it). Say so once and leave the colour showing."""
+        self._status.showMessage(
+            f"Frame Fill: {os.path.basename(ws.fill_image) or 'the material swatch'}"
+            " couldn't be read — showing the colour instead.", 6000)
+
+    # ── Lens fill controls ──────────────────────────────────────────────
+
+    def _default_lens_fill_opacity(self) -> float:
+        """Preferred starting opacity for a lens tint, 0…1."""
+        pct = self._prefs.get("lens_fill_opacity_pct",
+                              round(DEFAULT_LENS_FILL_OPACITY * 100))
+        try:
+            return max(0.0, min(1.0, float(pct) / 100.0))
+        except (TypeError, ValueError):
+            return DEFAULT_LENS_FILL_OPACITY
+
+    def _default_lens_fill_intensity(self) -> float:
+        """Preferred starting tint intensity (see deepen_tint)."""
+        raw = self._prefs.get("lens_fill_intensity", DEFAULT_LENS_FILL_INTENSITY)
+        try:
+            return max(LENS_FILL_INTENSITY_MIN,
+                       min(LENS_FILL_INTENSITY_MAX, float(raw)))
+        except (TypeError, ValueError):
+            return DEFAULT_LENS_FILL_INTENSITY
+
+    def _update_lens_fill_swatches(self, top_hex: str, bottom_hex: str,
+                                   intensity: float):
+        """Repaint the two colour bars.
+
+        They show the colour *as painted* — deepened by the current intensity —
+        because that is what the maker is judging; the picker still opens on
+        the base colour, and the tooltip names both so the two never get
+        confused."""
+        w, h = _LENS_SWATCH_PX
+        for btn, hex_, label in ((self._lens_top_btn, top_hex, "Top"),
+                                 (self._lens_bottom_btn, bottom_hex, "Bottom")):
+            shown = deepen_tint(hex_, intensity)
+            pm = QPixmap(w, h)
+            pm.fill(shown)
+            p = QPainter(pm)
+            p.setPen(QPen(QColor(0, 0, 0, 70)))
+            p.drawRect(0, 0, w - 1, h - 1)
+            p.end()
+            btn.setIcon(QIcon(pm))
+            tip = f"{label} gradient stop for every lens.\nColour: {hex_}"
+            if shown.name() != QColor(hex_).name():
+                tip += f"  ·  shown at intensity: {shown.name()}"
+            btn.setToolTip(tip + "\nClick to pick a colour.")
+
+    def _on_lens_fill_visible_toggled(self, on: bool):
+        ws = self._active_ws
+        if on:
+            status = ws.scene.set_lens_fill_visible(True)
+            if status != "ok":
+                # Nothing enclosable to tint — revert the tick and explain.
+                self._lens_fill_show_chk.blockSignals(True)
+                self._lens_fill_show_chk.setChecked(False)
+                self._lens_fill_show_chk.blockSignals(False)
+                ws.lens_fill_visible = False
+                if status == "leak":
+                    QMessageBox.information(
+                        self, "Lens Fill",
+                        "No lens aperture closes into an enclosed region, so "
+                        "there's nothing to tint.\n\nClose the LENS shape — "
+                        "select it and press Join to fuse its ends — or in "
+                        "Ghost mode snap the open half's endpoints onto the "
+                        "mirror line, then turn Lens Fill on again.")
+                else:  # "empty"
+                    QMessageBox.information(
+                        self, "Lens Fill",
+                        "There are no lenses to tint yet. Draw a LENS shape "
+                        "first, then turn Lens Fill on.")
+                return
+            ws.lens_fill_visible = True
+        else:
+            ws.lens_fill_visible = False
+            ws.scene.set_lens_fill_visible(False)
+        self._mark_dirty()   # the tint is saved with the design
+
+    def _on_lens_fill_auto_disabled(self, status: str, ws):
+        """A geometry edit opened every lens aperture while the fill was on;
+        the scene turned it off. Sync the checkbox and note it quietly."""
+        ws.lens_fill_visible = False
+        if ws is self._active_ws:
+            self._lens_fill_show_chk.blockSignals(True)
+            self._lens_fill_show_chk.setChecked(False)
+            self._lens_fill_show_chk.blockSignals(False)
+        if status == "leak":
+            self._status.showMessage(
+                "Lens Fill turned off — no lens aperture closes any more.",
+                5000)
+
+    def _set_lens_fill_color(self, which: str, color_hex: str):
+        """Write one gradient stop (and its twin while the link is on)."""
+        ws = self._active_ws
+        if which == "top" or ws.lens_fill_linked:
+            ws.lens_fill_top = color_hex
+        if which == "bottom" or ws.lens_fill_linked:
+            ws.lens_fill_bottom = color_hex
+        ws.scene.set_lens_fill_colors(ws.lens_fill_top, ws.lens_fill_bottom)
+        self._update_lens_fill_swatches(ws.lens_fill_top, ws.lens_fill_bottom,
+                                        ws.lens_fill_intensity)
+        self._mark_dirty()
+
+    def _on_lens_fill_color_clicked(self, which: str):
+        ws = self._active_ws
+        current = ws.lens_fill_top if which == "top" else ws.lens_fill_bottom
+        label = "Lens tint — top" if which == "top" else "Lens tint — bottom"
+        c = QColorDialog.getColor(QColor(current), self, label)
+        if not c.isValid():
+            return
+        self._set_lens_fill_color(which, c.name())
+
+    def _show_tint_picker(self, which: str):
+        """Open the BPI tint reference; the chosen hex lands in *which* stop."""
+        picker = _bpi_tints.TintPicker(
+            self,
+            title=("BPI tint reference — top stop" if which == "top"
+                   else "BPI tint reference — bottom stop"))
+        picker.tint_picked.connect(
+            lambda hex_, w=which: self._set_lens_fill_color(w, hex_))
+        picker.show_under(self._lens_top_bpi_btn if which == "top"
+                          else self._lens_bottom_bpi_btn)
+
+    def _on_lens_fill_link_toggled(self, on: bool):
+        ws = self._active_ws
+        ws.lens_fill_linked = on
+        if on:
+            # Collapse to a flat tint on the top stop — the primary of the pair.
+            self._set_lens_fill_color("top", ws.lens_fill_top)
+        self._mark_dirty()
+
+    def _on_lens_fill_intensity_changed(self, value: int):
+        ws = self._active_ws
+        ws.lens_fill_intensity = intensity_from_slider(value)
+        ws.scene.set_lens_fill_intensity(ws.lens_fill_intensity)
+        self._update_lens_fill_swatches(ws.lens_fill_top, ws.lens_fill_bottom,
+                                        ws.lens_fill_intensity)
+        self._mark_dirty()
+
+    def _on_lens_fill_opacity_changed(self, value: int):
+        ws = self._active_ws
+        ws.lens_fill_opacity = value / 100.0
+        ws.scene.set_lens_fill_opacity(ws.lens_fill_opacity)
+        self._mark_dirty()
 
     def _show_guide_sections(self, ws_type: str):
         """Show/hide Guides-tab group boxes based on workspace type."""
@@ -3732,6 +4291,7 @@ class MainWindow(QMainWindow):
         self._stock_guide_box.setVisible(True)   # all workspaces have a stock rect
         self._pad_guide_box.setVisible(is_front) # pad block only meaningful for front
         self._fill_box.setVisible(is_front or is_temple)  # fill needs an OUTLINE
+        self._lens_fill_box.setVisible(is_front)          # only the front has lenses
         # Toolbar buttons: combined prefs + workspace rules in one place
         self._apply_toolbar_visibility(self._toolbar_prefs, ws_type)
         self._meas_front_box.setVisible(is_front)
@@ -4050,6 +4610,17 @@ class MainWindow(QMainWindow):
             target_a = cur_a * (v / cur_b) if (chained and cur_b) else None
         self._resize_locked_lens(target_a, target_b)
 
+    def _on_boxing_visible_toggled(self, on: bool):
+        """Boxing toolbar button. While snapped, a deliberate toggle also
+        replaces the pre-snap memory — the maker's latest word is what
+        un-snapping should restore."""
+        ws = self._active_ws
+        ws.boxing_guide.set_visible(on)
+        if ws.boxing_snapped and not self._boxing_snap_syncing:
+            ws.boxing_visible_pre_snap = on
+
+    _boxing_snap_syncing = False
+
     def _on_boxing_snap_toggled(self, on: bool):
         ws = self._active_ws
         ws.boxing_snapped = on
@@ -4063,8 +4634,17 @@ class MainWindow(QMainWindow):
         ws.bevel_depth = self._current_bevel_depth()
         ws.boxing_guide.set_bevel_depth(ws.bevel_depth)
         ws.boxing_guide.set_locked(on)
-        if on and not self._act_boxing.isChecked():
-            self._act_boxing.setChecked(True)    # snapping implies showing the guide
+        if on:
+            # Snapping implies showing the guide — remember whether the maker
+            # had it up, so un-snapping can put it back the way they left it.
+            if ws.boxing_visible_pre_snap is None:
+                ws.boxing_visible_pre_snap = self._act_boxing.isChecked()
+            if not self._act_boxing.isChecked():
+                self._boxing_snap_syncing = True
+                try:
+                    self._act_boxing.setChecked(True)
+                finally:
+                    self._boxing_snap_syncing = False
         self._apply_boxing_field_modes()
         if not on:
             # Restore the free-box A/B/DBL targets the read-outs overwrote.
@@ -4077,6 +4657,16 @@ class MainWindow(QMainWindow):
             ws.boxing_guide.set_a(ws.boxing_a)
             ws.boxing_guide.set_b(ws.boxing_b)
             ws.boxing_guide.set_dbl(ws.boxing_dbl)
+            # Hide the guide again if it only appeared because we snapped —
+            # otherwise the free box springs back at its default size and
+            # position, which reads as the app forgetting what it was told.
+            if ws.boxing_visible_pre_snap is False:
+                self._boxing_snap_syncing = True
+                try:
+                    self._act_boxing.setChecked(False)
+                finally:
+                    self._boxing_snap_syncing = False
+            ws.boxing_visible_pre_snap = None
         ws.boxing_guide.refresh()
         self._refresh_measurements()
         if on:
@@ -4421,10 +5011,15 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, event):
         # App-wide □ insertion (see _apply_hotkeys for why no QShortcut).
         from PySide6.QtCore import QEvent
+        # getattr: the swatch button installs this filter while the side panel
+        # is built, which is before _apply_hotkeys binds the sequence.
         if (event.type() == QEvent.Type.KeyPress
-                and _matches_key_event(self._square_seq, event)
+                and _matches_key_event(getattr(self, "_square_seq", None), event)
                 and self._insert_square_char()):
             return True
+        if (event.type() == QEvent.Type.Resize
+                and obj is getattr(self, "_fill_image_btn", None)):
+            self._elide_fill_image_btn()
         return super().eventFilter(obj, event)
 
     def _insert_square_char(self) -> bool:
@@ -4482,8 +5077,11 @@ class MainWindow(QMainWindow):
             svg = _ICONS_DIR / f"{name}.svg"
             if svg.exists():
                 act.setIcon(_make_icon(name, normal_c, checked_c))
-        if hasattr(self, "_chain_btn") and (_ICONS_DIR / "link-chain.svg").exists():
-            self._chain_btn.setIcon(_make_icon("link-chain", normal_c, checked_c))
+        if (_ICONS_DIR / "link-chain.svg").exists():
+            for attr in ("_chain_btn", "_lens_link_btn"):
+                btn = getattr(self, attr, None)
+                if btn is not None:
+                    btn.setIcon(_make_icon("link-chain", normal_c, checked_c))
         self._refresh_mirror_icons()
 
     def _refresh_mirror_icons(self):
@@ -5608,17 +6206,83 @@ class MainWindow(QMainWindow):
 
     _JOIN_TOL = 2.0  # mm — max endpoint distance to consider curves connectable
 
+    def _close_single_curve(self, source):
+        """Join applied to one curve: fuse its own two ends into a closed loop.
+
+        This is the shape that comes back from importing a lens trace (OMA/DXF)
+        and rebuilding it — one spline that reads as closed but is still an open
+        path, so it never counts as a finished LENS. Chaining can't help: there
+        is no second curve to connect to.
+        """
+        from .document import SplineNode, Curve as _Curve
+
+        curve = arc_to_spline(source) if source.kind == "arc" else source
+        if curve.kind == "circle" or curve.closed:
+            self._status.showMessage("Join: that curve is already closed.")
+            return
+        if len(curve.nodes) < 2:
+            self._status.showMessage("Join: not enough nodes to close a loop.")
+            return
+
+        head, tail = curve.nodes[0], curve.nodes[-1]
+        gap = math.hypot(tail.x - head.x, tail.y - head.y)
+        if gap > self._JOIN_TOL:
+            self._status.showMessage(
+                f"Join: the curve's two ends are {gap:.2f} mm apart — snap one "
+                f"onto the other (within {self._JOIN_TOL} mm) to close it, or "
+                f"select a second curve to chain onto.")
+            return
+
+        # Fuse tail into head exactly as a multi-curve chain does when it comes
+        # back round: the head keeps its position and outgoing handle, and
+        # inherits the tail's incoming handle so the wrap segment curves the
+        # way the drawn tail did.
+        nodes = [SplineNode(x=n.x, y=n.y, cp_in=n.cp_in, cp_out=n.cp_out)
+                 for n in curve.nodes]
+        nodes[0] = SplineNode(x=head.x, y=head.y,
+                              cp_in=tail.cp_in, cp_out=head.cp_out)
+        nodes.pop()
+        if len(nodes) < 3:
+            self._status.showMessage(
+                "Join: a closed curve needs at least 3 nodes.")
+            return
+
+        self._push_undo_snapshot()
+        closed_curve = _Curve(
+            kind=curve.kind,
+            layer=curve.layer,
+            nodes=nodes,
+            closed=True,
+            line_weight=curve.line_weight,
+            group_id=source.group_id,
+        )
+        self.scene.clearSelection()
+        self._active_ws.remove_curve(source)
+        item = self._active_ws.add_curve(closed_curve)
+        item.setSelected(True)
+        note = f"  (ends were {gap:.2f} mm apart)" if gap > 1e-6 else ""
+        self._status.showMessage(
+            f"Closed {curve.kind} ({len(nodes)} nodes){note}")
+
     def _join_selected_curves(self):
-        """Chain 2+ selected open curves into one by connecting nearest endpoints."""
+        """Chain 2+ selected open curves into one by connecting nearest endpoints.
+
+        With exactly one curve selected, Join closes that curve onto itself
+        instead — see _close_single_curve."""
         from .document import SplineNode, Curve as _Curve
 
         selected_items = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
-        if len(selected_items) < 2:
-            self._status.showMessage("Join: select 2 or more curves first")
+        if not selected_items:
+            self._status.showMessage(
+                "Join: select one curve to close it, or 2+ curves to chain them")
             return
 
         # The original curves are what we remove from the document at the end.
         originals = [item.curve for item in selected_items]
+
+        if len(originals) == 1:
+            self._close_single_curve(originals[0])
+            return
 
         # Arcs store only their centre node, so their endpoints can't be read
         # from nodes[0]/nodes[-1] — convert them to splines (with real endpoint
@@ -5921,6 +6585,8 @@ class MainWindow(QMainWindow):
         """Apply an accepted Settings-dialog prefs dict to the live session
         and persist it. Split from _open_settings so tests can exercise the
         apply logic without executing the modal dialog."""
+        old_lens_opacity   = self._default_lens_fill_opacity()
+        old_lens_intensity = self._default_lens_fill_intensity()
         self._prefs.update(p)   # dialog is the sole writer of startup defaults
 
         # Theme + appearance first, so a mode toggle (or the explicit refresh
@@ -5989,6 +6655,33 @@ class MainWindow(QMainWindow):
             front.stock_h        = p["stock_height_mm"]
             front.pad_w          = p["pad_width_mm"]
             front.pad_h          = p["pad_height_mm"]
+
+        # Lens Fill default opacity — a starting value, so it moves the live
+        # slider only for workspaces that are still sitting on the old default
+        # (a maker who has already dialled a tint in keeps their setting).
+        new_opacity = self._default_lens_fill_opacity()
+        if new_opacity != old_lens_opacity:
+            for ws in self._workspaces:
+                if abs(ws.lens_fill_opacity - old_lens_opacity) < 1e-9:
+                    ws.lens_fill_opacity = new_opacity
+                    ws.scene.set_lens_fill_opacity(new_opacity)
+            self._lens_fill_opacity_slider.blockSignals(True)
+            self._lens_fill_opacity_slider.setValue(
+                round(self._active_ws.lens_fill_opacity * 100))
+            self._lens_fill_opacity_slider.blockSignals(False)
+        new_intensity = self._default_lens_fill_intensity()
+        if new_intensity != old_lens_intensity:
+            for ws in self._workspaces:
+                if abs(ws.lens_fill_intensity - old_lens_intensity) < 1e-9:
+                    ws.lens_fill_intensity = new_intensity
+                    ws.scene.set_lens_fill_intensity(new_intensity)
+            self._lens_fill_intensity_slider.blockSignals(True)
+            self._lens_fill_intensity_slider.setValue(
+                slider_from_intensity(self._active_ws.lens_fill_intensity))
+            self._lens_fill_intensity_slider.blockSignals(False)
+            self._update_lens_fill_swatches(self._active_ws.lens_fill_top,
+                                            self._active_ws.lens_fill_bottom,
+                                            self._active_ws.lens_fill_intensity)
 
         # Toolbar visibility
         self._toolbar_prefs = p["toolbar"]
@@ -6711,13 +7404,27 @@ class MainWindow(QMainWindow):
             ws.boxing_snapped  = False       # snap/lock state derives from the
             ws.shape_locked    = False       # (now empty) lens geometry
             ws.outline_locked  = False
+            ws.boxing_visible_pre_snap = None
             ws.boxing_guide.set_locked(False)
             ws.fill_visible = False          # fill resets with the document
             ws.fill_color   = "#2a6099"
             ws.fill_opacity = 0.50
+            ws.fill_style   = "color"
+            ws.fill_image   = ""
             ws.scene.set_fill_color(QColor(ws.fill_color))
             ws.scene.set_fill_opacity(ws.fill_opacity)
+            ws.scene.clear_fill_image()
             ws.scene.set_fill_visible(False)
+            ws.lens_fill_visible = False
+            ws.lens_fill_top     = DEFAULT_LENS_FILL_TOP
+            ws.lens_fill_bottom  = DEFAULT_LENS_FILL_BOTTOM
+            ws.lens_fill_linked  = False
+            ws.lens_fill_opacity = self._default_lens_fill_opacity()
+            ws.lens_fill_intensity = self._default_lens_fill_intensity()
+            ws.scene.set_lens_fill_colors(ws.lens_fill_top, ws.lens_fill_bottom)
+            ws.scene.set_lens_fill_intensity(ws.lens_fill_intensity)
+            ws.scene.set_lens_fill_opacity(ws.lens_fill_opacity)
+            ws.scene.set_lens_fill_visible(False)
         self._restore_ws_sidebar_state(self._active_ws)
         # Refresh sidebar for the currently visible workspace
         self._face_list.clear()
@@ -6753,15 +7460,26 @@ class MainWindow(QMainWindow):
     def _open_svg(self, path: str):
         """Load a single .svg into the active (Front) workspace."""
         try:
-            from .export.svg import load_svg, resolve_face_images
+            from .export.svg import (load_svg, resolve_face_images,
+                                     resolve_fill_image)
             data = load_svg(path)
             resolve_face_images(data.get("face_images", []), path)
+            resolve_fill_image(data.get("fill"), path)
         except Exception as e:
             QMessageBox.critical(self, "Open failed", str(e))
             return
         self._load_ws_data(self._workspaces[0], data)
         # Switch to Front tab
-        self._ws_tab_widget.setCurrentIndex(0)
+        self._loading = True
+        try:
+            self._ws_tab_widget.setCurrentIndex(0)
+        finally:
+            self._loading = False
+        # Pull the loaded state into the sidebar. The tab change above does
+        # this via _on_workspace_changed — but only when the index actually
+        # moves, so opening a file while already on Front left the widgets
+        # (fill tick, tint colours, guide sizes) showing the previous document.
+        self._restore_ws_sidebar_state(self._active_ws)
         self._current_path = path
         self._clear_dirty()
         self._add_recent(path)
@@ -6786,7 +7504,13 @@ class MainWindow(QMainWindow):
         # Switch to the active tab stored in the file
         active = all_data.get("active_tab", "front")
         target_idx = tab_names.index(active) if active in tab_names else 0
-        self._ws_tab_widget.setCurrentIndex(target_idx)
+        self._loading = True
+        try:
+            self._ws_tab_widget.setCurrentIndex(target_idx)
+        finally:
+            self._loading = False
+        # See _open_svg: a no-op tab change fires no restore of its own.
+        self._restore_ws_sidebar_state(self._active_ws)
         self.view.fit_view(self.scene.sceneRect())
 
         errors = all_data.get("errors") or []
@@ -6895,12 +7619,39 @@ class MainWindow(QMainWindow):
 
         fill = data.get("fill") or {}
         ws.fill_visible = bool(fill.get("visible", False))
-        ws.fill_color   = fill.get("color", "#2a6099")
-        ws.fill_opacity = float(fill.get("opacity", 0.50))
+        ws.fill_color   = _hex_or(fill.get("color"), "#2a6099")
+        ws.fill_opacity = _num_or(fill.get("opacity"), 0.50, 0.0, 1.0)
+        # Absent in pre-1.2 files, and any unknown style from a future version
+        # degrades to the colour rather than blanking the fill.
+        img = fill.get("image")
+        ws.fill_image = img if isinstance(img, str) else ""
+        ws.fill_style = "image" if fill.get("style") == "image" else "color"
         ws.scene.set_fill_color(QColor(ws.fill_color))
         ws.scene.set_fill_opacity(ws.fill_opacity)
+        if not self._apply_fill_material(ws):
+            self._fill_image_missing(ws)
         if ws.scene.set_fill_visible(ws.fill_visible) != "ok":
             ws.fill_visible = False   # a saved fill-on that no longer encloses
+
+        # Lens fill. Absent in pre-1.2 files: the tint stays off at the shipped
+        # colours, with the opacity the maker prefers for a fresh tint.
+        lens_fill = data.get("lens_fill") or {}
+        ws.lens_fill_visible = bool(lens_fill.get("visible", False))
+        ws.lens_fill_top     = _hex_or(lens_fill.get("top"),
+                                       DEFAULT_LENS_FILL_TOP)
+        ws.lens_fill_bottom  = _hex_or(lens_fill.get("bottom"),
+                                       DEFAULT_LENS_FILL_BOTTOM)
+        ws.lens_fill_linked  = bool(lens_fill.get("linked", False))
+        ws.lens_fill_opacity = _num_or(
+            lens_fill.get("opacity"), self._default_lens_fill_opacity(), 0.0, 1.0)
+        ws.lens_fill_intensity = _num_or(
+            lens_fill.get("intensity"), self._default_lens_fill_intensity(),
+            LENS_FILL_INTENSITY_MIN, LENS_FILL_INTENSITY_MAX)
+        ws.scene.set_lens_fill_colors(ws.lens_fill_top, ws.lens_fill_bottom)
+        ws.scene.set_lens_fill_intensity(ws.lens_fill_intensity)
+        ws.scene.set_lens_fill_opacity(ws.lens_fill_opacity)
+        if ws.scene.set_lens_fill_visible(ws.lens_fill_visible) != "ok":
+            ws.lens_fill_visible = False
 
         # If this is the active workspace, sync sidebar widgets
         if ws is self._active_ws:
@@ -7050,6 +7801,18 @@ class MainWindow(QMainWindow):
                 "visible": ws.fill_visible,
                 "color":   ws.fill_color,
                 "opacity": ws.fill_opacity,
+                "style":   ws.fill_style,
+                # Saved even while the colour is showing, so switching back to
+                # Image after a reload finds the swatch still attached.
+                "image":   ws.fill_image,
+            },
+            "lens_fill": {
+                "visible": ws.lens_fill_visible,
+                "top":     ws.lens_fill_top,
+                "bottom":  ws.lens_fill_bottom,
+                "linked":  ws.lens_fill_linked,
+                "opacity": ws.lens_fill_opacity,
+                "intensity": ws.lens_fill_intensity,
             },
             "texts": ws.doc_texts,
         }
@@ -7058,7 +7821,7 @@ class MainWindow(QMainWindow):
         """Save the active workspace as a plain SVG (legacy format)."""
         # First flush sidebar into active ws
         self._save_ws_sidebar_state(self._active_ws)
-        from .export.svg import save_svg, portable_face_images
+        from .export.svg import save_svg, portable_face_images, portable_fill
         ws = self._active_ws
         d  = self._ws_to_data_dict(ws)
         save_svg(
@@ -7072,7 +7835,8 @@ class MainWindow(QMainWindow):
             bookmarks       = d["bookmarks"],
             dims            = d["dims"],
             layers          = d["layers"],
-            fill            = d["fill"],
+            fill            = portable_fill(d["fill"], path),
+            lens_fill       = d["lens_fill"],
             texts           = d["texts"],
             bevel           = d["bevel"],
         )
@@ -7262,6 +8026,11 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        # Some file dialogs hand back exactly what was typed. Without the
+        # suffix the raster lands somewhere the maker won't find it (and used
+        # to not land at all), so add it here rather than trust the dialog.
+        if not path.lower().endswith(".png"):
+            path += ".png"
         labels = [lbl for lbl, _dpi in self._PNG_DPI_CHOICES]
         dpis   = [dpi for _lbl, dpi in self._PNG_DPI_CHOICES]
         last   = self._prefs.get("png_export_dpi", 600)
@@ -7764,6 +8533,22 @@ class MainWindow(QMainWindow):
             "temple_l": self._catalog_component_curves(temple_l, temple_layers),
         }
 
+    def _gather_catalog_fills(self) -> dict:
+        """Per-component Frame Fill / Lens Fill overlays for the catalog sheet,
+        taken from each workspace's own live scene so the page shows the tint
+        that workspace shows. {} unless Settings ▸ PDF asks for them; a
+        workspace with its fill off simply contributes nothing."""
+        if not self._prefs.get("catalog_pdf", {}).get("include_fill", False):
+            return {}
+        out = {}
+        for key, ws in zip(("front", "temple_r", "temple_l"),
+                           self._workspaces[:3], strict=True):
+            frame = ws.scene.fill_paint_spec()
+            lens  = ws.scene.lens_fill_paint_spec()
+            if frame or lens:
+                out[key] = {"frame": frame, "lens": lens}
+        return out
+
     def _export_pdf_catalog(self):
         # Flush the live sidebar into the active workspace so its curves are current.
         self._save_ws_sidebar_state(self._active_ws)
@@ -7786,7 +8571,7 @@ class MainWindow(QMainWindow):
         try:
             from .export.catalog_pdf import export_catalog_pdf
             export_catalog_pdf(path, components, self._prefs.get("catalog_pdf", {}),
-                               caption)
+                               caption, self._gather_catalog_fills())
             self._status.showMessage(
                 f"Catalog PDF exported: {os.path.basename(path)}")
         except Exception as e:

@@ -42,11 +42,23 @@ mirror axis is the vertical through x=0.
 | Rebuild | `R` | Refit the selected spline/polyline: type a target node count (or press `Tab` and type a tolerance in mm); the HUD shows the achieved deviation live, Enter replaces the original (undoable). The way to turn a dense imported DXF outline into a clean, editable spline |
 | Point Move | `G` | Grab a point (snapped), click destination or type exact X/Y |
 | Move gizmo | `M` | Drag selection with exact-distance HUD |
-| Text | `I` | ENGRAVING text (temples only); double-click to re-edit |
+| Text | `I` | ENGRAVING text (temples only); double-click to re-edit. The **Font** box filters as you type — see below |
 | Snap node→endpoint | `E` | Snap a node onto another curve's endpoint |
 
 All hotkeys are reassignable in **Settings → Hotkeys**; toolbar buttons can be
 hidden per-button in **Settings → Toolbar**.
+
+**Choosing a font** (the Text tool's dialog, and the caption font in
+*Preferences ▸ PDF*): the box stays empty-handed until you type — with a big
+library installed, nothing is loaded and nothing stalls. From the first
+character it narrows to the families that match anywhere in their name and
+drops them down, while still completing the best match inline, so three
+letters and Enter is as quick as it ever was. The arrow re-filters on whatever
+is already in the box, which is how you get from "Helvetica Neue" to its
+weights and italics. A name no installed font answers to snaps back rather
+than silently becoming your system default — except one you typed in full,
+which is kept so a design drawn on a machine that has the font keeps asking
+for it.
 
 ### Editing
 
@@ -54,6 +66,11 @@ hidden per-button in **Settings → Toolbar**.
   shape curves. "Smooth" toggle keeps handle pairs tangent.
 - **Join / Explode / Split-at-node**: merge open curves end-to-end, break a
   multi-segment curve apart, or split at a selected node.
+  - **Join with one curve selected closes it onto itself** — if its two ends
+    sit within 2 mm, they fuse into a closed loop. That is what an imported DXF
+    lens trace usually needs after a Rebuild: it comes back as a single spline
+    that *looks* closed but is still an open path, so it never counts as a
+    finished lens. Select it, press **J**, done.
 - **Group / Ungroup** (`Ctrl+G` / `Ctrl+Shift+G`): grouped curves select and
   move as a rigid unit (hinge imports arrive grouped for this reason).
 - **Copy / Paste / Duplicate** (`Ctrl+C/V/D`): works across workspaces; layers
@@ -132,6 +149,9 @@ symmetric contour (draw half, then Mirror Close or bake + join).
     outline) fit the actual lens; pick a **Bevel** preset (Flat/Rimless 0,
     Horn/Metal 0.5, Acetate 1.0, or Custom). A / B / DBL now read the *finished*
     (beveled) measurements live as you edit or move the lens.
+  - Turning **Snap to lens shape** on brings the boxing guide up with it,
+    because the bevel outline rides on the guide. Turning it back off restores
+    the guide to however you had it — hidden stays hidden.
   - **Lock lens shape**: the spline freezes (still movable). Type a new **A**/**B**
     to restretch the lens to that exact finished size — the **chain** button
     between them links A/B proportionally; type **DBL** to slide it. **Lock
@@ -140,11 +160,65 @@ symmetric contour (draw half, then Mirror Close or bake + join).
     closed finished frames grow symmetrically).
 - **Stock / pad guides**: outlines of your acetate blank and pad block, for
   checking the design fits the material.
+- **Frame Fill** (Guides panel): fills the frame body — the OUTLINE profile
+  minus the LENS apertures and any decorative openings — so the drawing reads
+  as a frame rather than a wireframe. **Style** picks what it is filled with:
+  - **Colour** — a flat translucent tint at whatever **Opacity** you set.
+  - **Image** — a material swatch. Point it at a supplier's acetate sample
+    sheet (Jimei, Mazzucchelli, Takiron and the rest publish them as JPEGs) and
+    the frame shows the pattern it would really be cut from, which is the whole
+    point for a laminate, a tortoise, or anything with grain. The swatch is
+    scaled to span your **Stock Blank width** and centred on the origin, so it
+    lands on the drawing exactly as the sheet would sit under it — change the
+    stock width and the material rescales with it. Whether the Stock guide is
+    *shown* makes no difference. If the frame runs past the blank the pattern
+    repeats rather than running out; the Stock guide is what tells you it no
+    longer fits the sheet.
+  - Crop the supplier's logo and part number off the swatch first — they sit in
+    a corner of the sheet, and on a big frame they will end up on the design.
+  - Display-only, like the tint: no fill ever reaches exported DXF/SVG
+    geometry, but it does appear in a PNG render, and on the catalog PDF if
+    you tick *Print Frame Fill and Lens Fill* in *Preferences ▸ PDF*. Saved
+    `.gdraw` files
+    **embed** the swatch the same way they embed a face photo, so a shared
+    project shows the material on the recipient's machine.
+  - Needs a perimeter that closes. If the OUTLINE leaks, GuildDraw says so
+    instead of filling something half-formed.
+- **Lens Fill** (Guides panel, Frame Front): tints each closed LENS aperture
+  with a vertical **Top → Bottom** gradient, the way a dyed lens runs. Every
+  lens gets its own run of the gradient, so a pair reads as two matching
+  lenses rather than slices of one. The **chain** button holds both stops at
+  the same colour for a flat tint.
+  - Two sliders, and the difference matters. **Intensity** is how deeply the
+    dye reads — the tint's own strength. **Opacity** is how much of what sits
+    behind it (the face photo, the frame fill) shows through. Intensity starts
+    a quarter along, at the colour exactly as picked; drag right for a deeper
+    dye. Opacity starts at 65%. Both defaults are yours to set in
+    Preferences ▸ General ▸ Lens Fill.
+  - The **BPI** button beside either colour opens a searchable grid of
+    approximate screen colours for BPI's published tint catalog; click a
+    swatch to drop its hex into that stop. These are *approximate* — sampled
+    from BPI's own display swatches, not a dye-lot match, and how deep a lens
+    actually comes out depends on dye time, material, and base curve.
+  - **Expect to reach for Intensity after picking a BPI colour.** Those
+    swatches show a dye at one modest depth over white, so a colour taken from
+    one lands pale. Raising Intensity deepens it along the same hue, the way a
+    longer dye time would — the picked hex itself never changes, so winding the
+    slider back always recovers exactly what you chose. The colour bars preview
+    the tint at the current intensity; the picker still edits the base colour.
+  - Display-only: the tint never reaches exported DXF/SVG geometry. It does
+    reach a PNG render, and the catalog PDF when you ask for it (see
+    *Preferences ▸ PDF*). Colours, link state, and opacity are saved with the
+    design.
+  - Needs a lens that closes. If nothing encloses a region GuildDraw says so
+    rather than tinting something half-formed — close the LENS (select it and
+    press **J**), or in Ghost mode snap the open half's ends to the mirror line.
 - **Face photo**: File → Add Reference Image…, then calibrate px-per-mm by
   clicking two points a known distance apart (e.g. a ruler in the photo).
   Photos sit behind geometry; lock/unlock, opacity, and rotation are in the
   sidebar. The **Frame Fill** overlay (Guides panel) renders the frame
-  silhouette over the photo for a realistic preview. Saved `.gdraw` files
+  silhouette over the photo — in a flat colour or in a real material swatch —
+  and **Lens Fill** just below it tints the lenses. Saved `.gdraw` files
   **embed** the photo, so a shared project shows it on the recipient's
   machine — and the file never records where the photo came from on yours.
 
@@ -197,6 +271,12 @@ For rimless / drill-mount lenses (flat, no bevel), use the **DRILL** layer:
   one landscape sheet with the design's name — true size when it fits.
   Paper size, line weight, caption font, and a vertical offset (for a
   binding margin) live in *Preferences ▸ PDF*.
+  - **Print Frame Fill and Lens Fill** (same preferences page, off by default)
+    lays those overlays under the line work, per workspace, exactly as that
+    workspace shows them — the material swatch or tint in the frame profile
+    and the gradient in each aperture. Off is the cutting-room sheet; on is
+    the showroom page. A workspace with its fill switched off, or whose
+    outline doesn't close, prints line work only.
 - **File → Export → PNG…** renders at a chosen print resolution
   (150–1200 dpi), cropped to the drawing.
 

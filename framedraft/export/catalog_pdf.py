@@ -55,7 +55,38 @@ def _content_bbox(curves):
     return (min(xs), min(ys), max(xs), max(ys))
 
 
-def _draw_component(painter, curves, place_x, place_y, s, bb, pen):
+def _draw_fill(painter, fill, clip: QRectF):
+    """Lay one component's display-only fills down under its line work.
+
+    *fill* is the {"frame": …, "lens": [...]} record the app collects from the
+    workspace's scene (see FrameScene.fill_paint_spec) — already in the same
+    scene-mm space as the curves, so it rides the component transform the
+    strokes ride. Nothing here changes the geometry; it is the colour the
+    maker set on canvas, printed.
+
+    The fill comes from the OUTLINE and LENS layers whether or not those are
+    among the layers this sheet prints, so it is clipped to *clip* (the
+    component's own bbox, which is what the layout reserved space for). With
+    the usual layer choices that clips nothing; with an odd one it keeps a
+    tint from washing across the page instead of sitting on its frame."""
+    if not fill:
+        return
+    painter.save()
+    painter.setClipRect(clip)
+    painter.setPen(Qt.PenStyle.NoPen)
+    frame = fill.get("frame")
+    if frame is not None:
+        painter.setOpacity(float(frame.get("opacity", 1.0)))
+        painter.setBrush(frame["brush"])
+        painter.drawPath(frame["path"])
+        painter.setOpacity(1.0)
+    for path, brush in (fill.get("lens") or ()):
+        painter.setBrush(brush)
+        painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_component(painter, curves, place_x, place_y, s, bb, pen, fill=None):
     """Draw *curves* so their bbox top-left lands at (place_x, place_y) mm,
     scaled by *s*. Painter is already in mm; the pen is cosmetic so the line
     weight stays constant regardless of *s*."""
@@ -63,7 +94,9 @@ def _draw_component(painter, curves, place_x, place_y, s, bb, pen):
     painter.translate(place_x, place_y)
     painter.scale(s, s)
     painter.translate(-bb[0], -bb[1])
+    _draw_fill(painter, fill, QRectF(bb[0], bb[1], bb[2] - bb[0], bb[3] - bb[1]))
     painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
     for c in curves:
         painter.drawPath(build_path(c))
     painter.restore()
@@ -71,11 +104,14 @@ def _draw_component(painter, curves, place_x, place_y, s, bb, pen):
 
 def paint_catalog(painter: QPainter, page_w_mm: float, page_h_mm: float,
                   px_per_mm: float, components: dict, caption: str,
-                  settings: dict) -> None:
+                  settings: dict, fills: dict | None = None) -> None:
     """Paint the catalog layout onto *painter* (device space, top-left origin).
 
     components: {"front"|"temple_r"|"temple_l": [Curve, ...]} in scene mm.
     caption:    file-name string (already stripped of extension); "" = none.
+    fills:      optional {component key: {"frame": …, "lens": [...]}} of the
+                display-only overlays to print beneath the line work, in the
+                same scene mm (see _draw_fill). None/{} = line work only.
     """
     lw   = float(settings.get("line_weight_mm", 0.6))
     font_name = settings.get("caption_font", "Courier New")
@@ -127,7 +163,8 @@ def paint_catalog(painter: QPainter, page_w_mm: float, page_h_mm: float,
     y = _MARGIN_MM + max(0.0, (content_avail - stack_h * s) / 2.0) + offset
     for _key, curves, bb, w, h in rows:
         place_x = _MARGIN_MM + (avail_w - w * s) / 2.0   # centre horizontally
-        _draw_component(painter, curves, place_x, y, s, bb, pen)
+        _draw_component(painter, curves, place_x, y, s, bb, pen,
+                        (fills or {}).get(_key))
         y += h * s + _GAP_MM * s
     painter.restore()
 
@@ -179,7 +216,7 @@ def _make_printer(path: str, paper: str):
 
 
 def export_catalog_pdf(path: str, components: dict, settings: dict,
-                       caption: str) -> None:
+                       caption: str, fills: dict | None = None) -> None:
     """Write the catalog layout to *path* as a landscape PDF."""
     from PySide6.QtPrintSupport import QPrinter
 
@@ -189,6 +226,6 @@ def export_catalog_pdf(path: str, components: dict, settings: dict,
     painter = QPainter(printer)
     try:
         paint_catalog(painter, page_mm.width(), page_mm.height(), px_per_mm,
-                      components, caption, settings)
+                      components, caption, settings, fills)
     finally:
         painter.end()

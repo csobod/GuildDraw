@@ -1,6 +1,9 @@
+import math
+
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsPixmapItem, QGraphicsPathItem
 from PySide6.QtCore import QRectF, Qt, QPointF, QTimer
-from PySide6.QtGui import QBrush, QColor, QPen, QPixmap, QPainterPath
+from PySide6.QtGui import (QBrush, QColor, QLinearGradient, QPen, QPixmap,
+                          QPainterPath, QTransform)
 
 from ..document import Curve, Layer
 from . import items as _items
@@ -107,6 +110,72 @@ def _mirror_path(curve: Curve, mirror) -> QPainterPath:
 # auto-close, so the fill's idea of "closed" agrees with the handoff contract.
 _FILL_STITCH_TOL_MM = 0.1
 
+# Frame Fill from a material swatch. The image is scaled to span the stock
+# blank's width and centred on the origin — the blank guide's own anchor — so
+# the frame shows the piece of sheet it would really be cut from. Used until
+# the app tells the scene the workspace's actual blank width.
+DEFAULT_FILL_BLANK_W_MM = 170.0
+
+# Long-side cap for a loaded swatch (px). A 170 mm blank at 300 dpi is ~2000 px,
+# so this still oversamples the largest PNG export while keeping a 6000-px
+# catalogue photo from pinning ~100 MB in the scene for the session.
+FILL_IMAGE_MAX_PX = 4096
+
+# Lens Fill shipped defaults. A pale-over-deep blue reads as a gradient tint at
+# a glance without being mistaken for real geometry; 65% keeps the lens shape's
+# own stroke and any face photo behind it legible through the tint.
+DEFAULT_LENS_FILL_TOP     = "#cbeafc"
+DEFAULT_LENS_FILL_BOTTOM  = "#4a9fd8"
+DEFAULT_LENS_FILL_OPACITY = 0.65
+
+# Tint intensity — how deeply the dye reads, independent of how much the
+# overlay covers what is behind it (that is opacity). Reference swatches,
+# BPI's included, show a dye at one modest depth over white, so a colour
+# picked from one is usually too pale to represent the lens a maker means.
+# 1.0 is the colour exactly as picked.
+DEFAULT_LENS_FILL_INTENSITY = 1.0
+LENS_FILL_INTENSITY_MIN     = 0.5
+LENS_FILL_INTENSITY_MAX     = 8.0
+
+
+def deepen_tint(color, intensity: float) -> QColor:
+    """A tint at *intensity* times its dyed depth.
+
+    Beer–Lambert: a dye's transmission falls off exponentially with depth, so
+    doubling the depth squares the transmission. Working per channel on
+    transmission (the colour over white) rather than on the colour itself has
+    two properties that matter here — it can never leave the 0…1 range, so no
+    channel clamps and skews the hue the way scaling distance-from-white does,
+    and it converges on the dye's own colour rather than on black.
+
+    intensity < 1 thins the tint, 1.0 is the colour as picked, > 1 deepens it.
+    Alpha is carried through untouched.
+    """
+    c = QColor(color)
+    k = max(LENS_FILL_INTENSITY_MIN, min(LENS_FILL_INTENSITY_MAX, float(intensity)))
+    if abs(k - 1.0) < 1e-9:
+        return c
+    out = QColor.fromRgbF(c.redF() ** k, c.greenF() ** k, c.blueF() ** k)
+    out.setAlphaF(c.alphaF())
+    return out
+
+
+def intensity_from_slider(pos: int) -> float:
+    """Slider position (0–100) -> intensity. Geometric, so each step is a
+    constant *ratio* of depth: the pale end needs a much larger exponent than
+    the deep end for the same visible change, which a linear scale spends most
+    of its travel failing to reach. Position 25 lands exactly on 1.0."""
+    span = LENS_FILL_INTENSITY_MAX / LENS_FILL_INTENSITY_MIN
+    return LENS_FILL_INTENSITY_MIN * (span ** (max(0, min(100, pos)) / 100.0))
+
+
+def slider_from_intensity(intensity: float) -> int:
+    """Inverse of intensity_from_slider, rounded to the nearest position."""
+    k = max(LENS_FILL_INTENSITY_MIN,
+            min(LENS_FILL_INTENSITY_MAX, float(intensity)))
+    span = LENS_FILL_INTENSITY_MAX / LENS_FILL_INTENSITY_MIN
+    return round(100.0 * math.log(k / LENS_FILL_INTENSITY_MIN) / math.log(span))
+
 
 def _polygonize_lines(coord_lists: list) -> tuple[list, bool]:
     """Stitch flattened polylines into faces, tolerating snapped endpoints.
@@ -195,16 +264,34 @@ class FrameScene(QGraphicsScene):
         self._fill_color = QColor("#2a6099")
         self._fill_opacity: float = 0.50
         self._fill_item: QGraphicsPathItem | None = None
+        # Material swatch. When a pixmap is loaded the profile is painted with
+        # it instead of the flat colour; the colour is kept so clearing the
+        # swatch returns to exactly what the maker had picked.
+        self._fill_image_path: str = ""
+        self._fill_image_pixmap: QPixmap | None = None
+        self._fill_blank_w: float = DEFAULT_FILL_BLANK_W_MM
         # (status) -> None; fired when a geometry edit breaks the perimeter so
         # the fill can no longer close, so the app can untick the box + notify.
         self.fill_auto_disabled = None
+        # Lens fill overlay (display-only; never exported). One top→bottom
+        # gradient definition, painted into every LENS aperture separately so a
+        # pair reads as two matching tinted lenses rather than one gradient
+        # smeared across the whole front.
+        self._lens_fill_visible: bool = False
+        self._lens_fill_top    = QColor(DEFAULT_LENS_FILL_TOP)
+        self._lens_fill_bottom = QColor(DEFAULT_LENS_FILL_BOTTOM)
+        self._lens_fill_opacity: float = DEFAULT_LENS_FILL_OPACITY
+        self._lens_fill_intensity: float = DEFAULT_LENS_FILL_INTENSITY
+        self._lens_fill_items: list[QGraphicsPathItem] = []
+        # (status) -> None; same contract as fill_auto_disabled, for the lenses.
+        self.lens_fill_auto_disabled = None
         # Coalesces hot-path fill rebuilds (add/remove/refresh fire per mouse
         # move during drags) into one boolean-ops pass per event-loop tick.
         # Child timer so a pending tick dies with the scene.
         self._fill_timer = QTimer(self)
         self._fill_timer.setSingleShot(True)
         self._fill_timer.setInterval(0)
-        self._fill_timer.timeout.connect(self.rebuild_fill)
+        self._fill_timer.timeout.connect(self._rebuild_overlays)
         # Store the cross extents so set_dark_mode can redraw them correctly
         self._cross_hw: float = 150.0
         self._cross_hh: float = 100.0
@@ -420,7 +507,7 @@ class FrameScene(QGraphicsScene):
         for item in self._text_items.values():
             if item.text_obj.layer == layer:
                 self._apply_layer_state_to_text(item)
-        self.rebuild_fill()
+        self._rebuild_overlays()
 
     def set_layer_locked(self, layer, locked: bool):
         self._layer_locked[layer] = locked
@@ -474,20 +561,105 @@ class FrameScene(QGraphicsScene):
         self._fill_opacity = max(0.0, min(1.0, opacity))
         self.rebuild_fill()
 
+    def set_fill_image(self, path: str) -> bool:
+        """Paint the frame profile with a material swatch instead of a colour.
+
+        *path* is any readable image — a supplier's acetate sample sheet is the
+        case this exists for. Returns False when the file can't be read as an
+        image, leaving the colour fill untouched; an empty path clears back to
+        the colour."""
+        if not path:
+            self.clear_fill_image()
+            return True
+        pm = QPixmap(path)
+        if pm.isNull():
+            return False
+        if max(pm.width(), pm.height()) > FILL_IMAGE_MAX_PX:
+            pm = pm.scaled(FILL_IMAGE_MAX_PX, FILL_IMAGE_MAX_PX,
+                           Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+        self._fill_image_path = path
+        self._fill_image_pixmap = pm
+        self.rebuild_fill()
+        return True
+
+    def clear_fill_image(self):
+        """Back to the flat colour fill, keeping the colour as it was picked."""
+        self._fill_image_path = ""
+        self._fill_image_pixmap = None
+        self.rebuild_fill()
+
+    def has_fill_image(self) -> bool:
+        return self._fill_image_pixmap is not None
+
+    def fill_image_path(self) -> str:
+        return self._fill_image_path
+
+    def set_fill_blank_width(self, mm: float):
+        """Width of the stock blank the swatch spans (mm) — the Stock Blank
+        guide's width, whether or not that guide is being shown."""
+        w = float(mm)
+        if w <= 0.0 or w == self._fill_blank_w:
+            return
+        self._fill_blank_w = w
+        self.rebuild_fill()
+
+    def fill_blank_width(self) -> float:
+        return self._fill_blank_w
+
     def fill_state(self) -> dict:
         return {"visible": self._fill_visible,
                 "color":   self._fill_color.name(),
-                "opacity": self._fill_opacity}
+                "opacity": self._fill_opacity,
+                "image":   self._fill_image_path}
 
     def outline_fill_status(self) -> str:
         """Readiness of the OUTLINE perimeter for filling, without drawing
         anything: ``"ok"`` / ``"leak"`` / ``"empty"`` (see set_fill_visible)."""
         return self._compute_fill()[1]
 
+    def fill_paint_spec(self) -> dict | None:
+        """What the frame fill would paint, for a painter that isn't this
+        scene — the catalog PDF re-renders the overlay onto paper.
+
+        ``{"path": QPainterPath (scene mm), "brush": QBrush, "opacity":
+        float}``, or None while the fill is hidden or the perimeter can't
+        close. The brush carries the material swatch and its scene-mm
+        transform, so a caller drawing under the same coordinate system gets
+        the swatch landing exactly where the canvas puts it."""
+        if not self._fill_visible:
+            return None
+        path, status = self._compute_fill()
+        if status != "ok" or path is None or path.isEmpty():
+            return None
+        return {"path":    path,
+                "brush":   self._fill_brush(),
+                # Mirrors _apply_fill_path: a texture brush has no alpha of
+                # its own, so the fading is the painter's job for a swatch and
+                # the brush's for a colour.
+                "opacity": self._fill_opacity if self.has_fill_image() else 1.0}
+
+    def lens_fill_paint_spec(self) -> list:
+        """``[(QPainterPath, QBrush), ...]`` — one tinted aperture each, in
+        scene mm — or ``[]`` while the lens fill is hidden or no aperture
+        closes. Companion to fill_paint_spec for off-scene painters."""
+        if not self._lens_fill_visible:
+            return []
+        paths, status = self._compute_lens_fill()
+        if status != "ok" or not paths:
+            return []
+        return [(p, QBrush(self._lens_gradient(p.boundingRect())))
+                for p in paths if not p.isEmpty()]
+
     def _schedule_fill_rebuild(self):
-        """Deferred rebuild_fill for the hot paths (curve add/remove/refresh)."""
-        if self._fill_visible:
+        """Deferred overlay rebuild for the hot paths (curve add/remove/refresh)."""
+        if self._fill_visible or self._lens_fill_visible:
             self._fill_timer.start()
+
+    def _rebuild_overlays(self):
+        """Timer target: repaint whichever display-only fills are showing."""
+        self.rebuild_fill()
+        self.rebuild_lens_fill()
 
     def _fill_layer_lines(self, layer: Layer) -> list:
         """Flattened polylines for one layer's contribution to the fill: each
@@ -546,12 +718,39 @@ class FrameScene(QGraphicsScene):
             it.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable, False)
             self.addItem(it)
             self._fill_item = it
-        color = QColor(self._fill_color)
-        color.setAlphaF(self._fill_opacity)
-        self._fill_item.setBrush(QBrush(color))
+        self._fill_item.setBrush(self._fill_brush())
+        # A texture brush has no alpha of its own, so the item does the fading
+        # for a swatch — the face photo reads through it exactly as it does
+        # through a colour. Colour keeps its alpha in the brush (item opacity
+        # 1.0) so the two paths can't compound.
+        self._fill_item.setOpacity(
+            self._fill_opacity if self.has_fill_image() else 1.0)
         self._fill_item.setPen(QPen(Qt.PenStyle.NoPen))
         self._fill_item.setPath(path)
         self._fill_item.setVisible(True)
+
+    def _fill_brush(self) -> QBrush:
+        """Brush for the frame profile: the material swatch when one is loaded,
+        otherwise the flat colour at its own alpha.
+
+        The swatch is scaled to span the blank's width and centred vertically on
+        the origin, matching how the Stock Blank guide sits — so what fills the
+        frame is the part of the sheet under it. Qt tiles a texture brush, so
+        geometry drawn past the blank continues the pattern instead of falling
+        to nothing; the maker sees the frame in the material either way, and the
+        Stock guide is what tells them it no longer fits the sheet."""
+        pm = self._fill_image_pixmap
+        if pm is None or pm.width() <= 0:
+            color = QColor(self._fill_color)
+            color.setAlphaF(self._fill_opacity)
+            return QBrush(color)
+        scale  = self._fill_blank_w / float(pm.width())
+        h_mm   = pm.height() * scale
+        brush  = QBrush(pm)
+        brush.setTransform(
+            QTransform().translate(-self._fill_blank_w / 2.0,
+                                   -h_mm / 2.0).scale(scale, scale))
+        return brush
 
     def rebuild_fill(self):
         """Recompute and repaint the fill while it's visible. If a geometry
@@ -572,6 +771,124 @@ class FrameScene(QGraphicsScene):
                 self.fill_auto_disabled(status)
             return
         self._apply_fill_path(path)
+
+    # ------------------------------------------------------------------
+    # Lens fill overlay (display-only — never exported)
+    # ------------------------------------------------------------------
+
+    def set_lens_fill_visible(self, on: bool) -> str:
+        """Show or hide the lens fill. Returns the readiness status it was
+        resolved at: ``"ok"`` (shown), ``"leak"`` (LENS geometry is present but
+        no aperture closes, so nothing is shown), or ``"empty"`` (no LENS
+        geometry yet). Hiding always returns ``"ok"``."""
+        if not on:
+            self._lens_fill_visible = False
+            self._clear_lens_fill_items()
+            return "ok"
+        paths, status = self._compute_lens_fill()
+        if status != "ok":
+            self._lens_fill_visible = False
+            self._clear_lens_fill_items()
+            return status
+        self._lens_fill_visible = True
+        self._apply_lens_fill_paths(paths)
+        return "ok"
+
+    def set_lens_fill_colors(self, top, bottom):
+        """top/bottom: QColor or '#rrggbb'. Bottom is the lower gradient stop."""
+        self._lens_fill_top    = QColor(top)
+        self._lens_fill_bottom = QColor(bottom)
+        self.rebuild_lens_fill()
+
+    def set_lens_fill_opacity(self, opacity: float):
+        self._lens_fill_opacity = max(0.0, min(1.0, opacity))
+        self.rebuild_lens_fill()
+
+    def set_lens_fill_intensity(self, intensity: float):
+        self._lens_fill_intensity = max(
+            LENS_FILL_INTENSITY_MIN,
+            min(LENS_FILL_INTENSITY_MAX, float(intensity)))
+        self.rebuild_lens_fill()
+
+    def lens_fill_state(self) -> dict:
+        return {"visible":   self._lens_fill_visible,
+                "top":       self._lens_fill_top.name(),
+                "bottom":    self._lens_fill_bottom.name(),
+                "opacity":   self._lens_fill_opacity,
+                "intensity": self._lens_fill_intensity}
+
+    def lens_fill_status(self) -> str:
+        """Readiness of the LENS apertures for filling, without drawing
+        anything: ``"ok"`` / ``"leak"`` / ``"empty"`` (see set_lens_fill_visible)."""
+        return self._compute_lens_fill()[1]
+
+    def _compute_lens_fill(self):
+        """Resolve one fill region per lens. Returns ``(list[QPainterPath] |
+        None, status)`` — one path per closed LENS aperture (real curves plus
+        live mirror ghosts, so a single drawn lens tints both sides)."""
+        lens_lines = self._fill_layer_lines(Layer.LENS)
+        if not lens_lines:
+            return None, "empty"
+        faces, _leak = _polygonize_lines(lens_lines)
+        if not faces:
+            # Unlike the frame profile a stray dangle is common here (a lens
+            # under construction next to a finished one), so only a total
+            # absence of enclosed area counts as a leak.
+            return None, "leak"
+        return [_shapely_to_qpath(f) for f in faces], "ok"
+
+    def _clear_lens_fill_items(self):
+        for it in self._lens_fill_items:
+            self.removeItem(it)
+        self._lens_fill_items.clear()
+
+    def _lens_gradient(self, rect) -> QLinearGradient:
+        """Top→bottom gradient spanning *rect* (one lens's own extent), so both
+        lenses of a pair show the same tint run rather than slices of one."""
+        top    = deepen_tint(self._lens_fill_top,    self._lens_fill_intensity)
+        bottom = deepen_tint(self._lens_fill_bottom, self._lens_fill_intensity)
+        top.setAlphaF(self._lens_fill_opacity)
+        bottom.setAlphaF(self._lens_fill_opacity)
+        grad = QLinearGradient(rect.center().x(), rect.top(),
+                               rect.center().x(), rect.bottom())
+        grad.setColorAt(0.0, top)
+        grad.setColorAt(1.0, bottom)
+        return grad
+
+    def _apply_lens_fill_paths(self, paths: list):
+        """Paint one item per lens. The lens count changes as geometry is drawn
+        and undone, so the items are rebuilt outright rather than diffed."""
+        self._clear_lens_fill_items()
+        for path in paths:
+            if path.isEmpty():
+                continue
+            it = QGraphicsPathItem()
+            # Just above the frame fill (-500) — the lens apertures are punched
+            # out of it — and below the origin cross (0) and geometry (10).
+            it.setZValue(-495)
+            it.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable, False)
+            it.setBrush(QBrush(self._lens_gradient(path.boundingRect())))
+            it.setPen(QPen(Qt.PenStyle.NoPen))
+            it.setPath(path)
+            self.addItem(it)
+            self._lens_fill_items.append(it)
+
+    def rebuild_lens_fill(self):
+        """Recompute and repaint the lens fill while it's visible. If an edit
+        has opened every aperture there is nothing honest to paint — turn the
+        fill off and tell the app (lens_fill_auto_disabled). No-op while
+        hidden so the stitch never runs during normal editing."""
+        if not self._lens_fill_visible:
+            self._clear_lens_fill_items()
+            return
+        paths, status = self._compute_lens_fill()
+        if status != "ok":
+            self._lens_fill_visible = False
+            self._clear_lens_fill_items()
+            if self.lens_fill_auto_disabled is not None:
+                self.lens_fill_auto_disabled(status)
+            return
+        self._apply_lens_fill_paths(paths)
 
     # ------------------------------------------------------------------
     # Curve management
@@ -618,7 +935,7 @@ class FrameScene(QGraphicsScene):
     def set_mirror_display(self, on: bool):
         self._mirror_display = on
         self._update_ghosts()
-        self.rebuild_fill()
+        self._rebuild_overlays()
 
     def _ghost_eligible(self, curve: Curve) -> bool:
         if not self._mirror_display or self.mirror is None:

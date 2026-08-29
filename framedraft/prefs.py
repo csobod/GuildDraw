@@ -38,6 +38,15 @@ DEFAULTS: dict = {
     "pad_on_startup":       True,
     "pad_width_mm":         45.0,
     "pad_height_mm":        45.0,
+    # Lens Fill overlay: opacity a freshly-shown lens tint starts at (percent).
+    # Colours are per-document and live in the .gdraw; only the strength of the
+    # tint is a working preference — it depends on the maker's screen and on
+    # whether they draw over a face photo.
+    "lens_fill_opacity_pct": 65,
+    # …and the tint depth it starts at. 1.0 is a picked colour exactly as
+    # picked; reference swatches are published light, so a maker who always
+    # deepens can make that their starting point (see scene.deepen_tint).
+    "lens_fill_intensity":   1.0,
     # PNG export resolution (true print scale: pixels = mm · dpi / 25.4)
     "png_export_dpi":       600,
     # PDF-for-Catalog export (front + both temples on one printable sheet)
@@ -47,6 +56,10 @@ DEFAULTS: dict = {
         "caption":       True,            # print the design file name
         "caption_font":  "Courier New",   # monospace default
         "show_scale":    False,           # print a scale note (off = true A5 scale)
+        # Print the display-only Frame Fill / Lens Fill overlays under the line
+        # work, exactly as the canvas shows them. Off = line work only, which
+        # is what a cutting-room sheet wants; on is for a showroom page.
+        "include_fill":  False,
         # Vertical shift (mm) of the drawing content only — the caption stays
         # put. Lets a maker clear a binding/spine margin. + = down, − = up.
         "content_offset_mm": 0.0,

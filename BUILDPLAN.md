@@ -1364,6 +1364,353 @@ rebuild.
 
 ---
 
+# v1.2 round — Lens Fill, Frame Fill from image, boxing-snap memory, self-join
+
+> **2026-08-22.** Three maintainer requests, developed together for a minor
+> release.
+> **2026-08-26.** Frame Fill from a material swatch added to the round.
+> **2026-08-28.** Four maintainer fixes folded in — the swatch row's clear
+> button, a type-to-filter font picker, Frame/Lens Fill on the catalog sheet,
+> and a PNG export that wrote nothing — plus a conftest guard that stops a
+> modal dialog hanging the suite.
+
+## Lens Fill (Guides ▸ Lens Fill, Frame Front)
+
+A display-only overlay beside Frame Fill: each closed LENS aperture takes a
+vertical **Top → Bottom** gradient. The gradient is built per lens from that
+lens's own bounding box, so a pair reads as two matching tinted lenses rather
+than two slices of one gradient stretched across the front — the thing that
+makes a rendering look wrong at a glance.
+
+- **Scene** ([canvas/scene.py](framedraft/canvas/scene.py)): mirrors the Frame
+  Fill contract exactly — `set_lens_fill_visible` returns `ok`/`leak`/`empty`,
+  `lens_fill_auto_disabled` fires when an edit opens every aperture, and both
+  overlays share the coalescing rebuild timer (`_rebuild_overlays`). Lens items
+  sit at z −495, just above the frame fill (−500) whose lens holes they fill.
+- **Link button**: holds both stops equal (a flat tint), the colour analogue of
+  the A/B chain. Editing either stop while linked moves both.
+- **Two sliders, deliberately separate.** *Opacity* is coverage (alpha over
+  whatever is behind); *Intensity* is dye depth. Conflating them is what makes a
+  tint preview look wrong — the maker wants a deeper dye and gets a more opaque
+  wash over the face photo instead.
+- **Intensity model — Beer–Lambert on transmission** (`scene.deepen_tint`):
+  `channel' = channel ** k`, working on the colour *as transmission over white*.
+  Chosen over the obvious "scale distance from white" (`255 - (255-c)*k`)
+  because that one clamps: for a mid tint like BPI Lavender `#b0a0cd`, k=3
+  drives green negative, it pins at 0, and the hue visibly skews. The
+  exponential form cannot leave 0…1, so no channel clamps, and it converges on
+  the dye's own colour rather than on black.
+  - The slider is **geometric**, not linear: `k = 0.5 · 16^(pos/100)`, so
+    position 25 lands exactly on 1.0 (the colour as picked), 0 → 0.5×,
+    100 → 8×. A pale tint needs a far larger exponent than a deep one for the
+    same visible change — `#e4f5fd` is still recognisably pale at k=4 while
+    `#aaab9f` is nearly black — and a linear scale spends most of its travel
+    failing to reach the pale end. Position 25 as the default reads correctly
+    too: most of the travel is "deepen", which is the direction makers need.
+  - Intensity is applied **at render time**; the stored stop keeps the picked
+    hex, so winding the slider back recovers exactly what was chosen. The
+    swatch buttons preview the deepened colour (that is what is being judged)
+    while the picker opens on the base colour; the tooltip names both.
+- **Opacity** defaults to 65% and **intensity** to 1.0, both overridable in
+  Preferences ▸ General (`lens_fill_opacity_pct`, `lens_fill_intensity`).
+  Colours, link state, opacity and intensity persist per workspace under a
+  `"lens_fill"` key in SVG/.gdraw metadata (the `"fill"` precedent from M8);
+  pre-1.2 files load with the tint off at shipped colours and intensity 1.0.
+- **BPI tint reference** ([bpi_tints.py](framedraft/bpi_tints.py)): a searchable
+  popup grid of 164 approximate tint colours; a click drops the hex into the
+  stop whose button opened it. **Only data ships** —
+  `resources/bpi_tints.json` (~27 KB of name/family/hex/note) plus the
+  disclaimer; the popup paints its own chips, and no BPI artwork enters the
+  repo or the bundle. Regenerate with
+  [scripts/scrape_bpi_tints.py](scripts/scrape_bpi_tints.py), which samples the
+  middle of each rendered lens-disc swatch. The scraper gates on the swatch
+  being a centred, near-square disc: ~20 catalog entries illustrate *packaging*
+  (dye bottles, kits), and sampling those yields the colour of a bottle label.
+  Note the disc is only used to *locate* the swatch — a pale tint's interior
+  reads as white, so the gate tests the bounding box, not how solidly it fills.
+  BPI publish their swatches as a light tint over white, so sampled colours run
+  pale by design; that is what Intensity exists to correct, and why the picked
+  hex is stored unmodified rather than deepened at pick time.
+
+## Frame Fill from a material swatch (Guides ▸ Frame Fill ▸ Style)
+
+Frame Fill has painted the profile in one flat colour since M8. A flat colour
+is fine for a solid acetate and useless for everything else a maker actually
+buys — a laminate, a tortoise, anything with grain — because what the customer
+is choosing between *is* the pattern. Suppliers publish their ranges as sample
+sheet JPEGs (Jimei, Mazzucchelli, Takiron); this puts one of those sheets
+behind the frame profile.
+
+- **Style combo** on the Frame Fill box: *Colour* (what M8 did, unchanged) or
+  *Image*. The colour and the swatch are both kept per workspace, so switching
+  between them is lossless — the picked hex survives choosing a swatch, and the
+  swatch survives switching back to colour, which is what makes the combo worth
+  having over a checkbox that forgets. Picking *Image* with nothing chosen yet
+  opens the file dialog rather than parking on a style that shows the colour;
+  cancelling out of *that* dialog returns the combo to Colour.
+- **Placement is the stock blank, not the drawing.**
+  `scene.set_fill_blank_width` takes the Stock Blank width and the swatch is
+  scaled to span it, centred on the origin — the blank guide's own anchor. So
+  the material lands on the design exactly as the sheet sits under it, and the
+  frame shows the piece of sheet it would be cut from. Correcting the stock
+  width rescales the material with it (`_on_stock_width_changed` now drives
+  both the guide and the fill); whether the guide is *shown* has no bearing.
+  Aspect ratio is preserved — a sheet is never stretched to fit.
+  - Deliberately **not** persisted per document: the blank size is a shop
+    constant that lives in Preferences, so a reload renders identically, and a
+    maker who moves to narrower stock sees every design update. The temple tabs
+    scale to their own (160 mm) blank for the same reason.
+  - Geometry past the blank **tiles** rather than falling to nothing. Qt's
+    texture brush does this for free, and it is the honest reading: the maker
+    still sees the frame in the material, and the Stock guide is the thing that
+    says it no longer fits the sheet.
+- **Opacity moves to the item for a swatch** (`_apply_fill_path`). A texture
+  brush carries no alpha of its own, so the colour path keeps its alpha in the
+  brush at item opacity 1.0 and the image path does the reverse — never both,
+  or the two would compound and the face photo would read through at the square
+  of what the slider says.
+- **Swatches are capped at 4096 px** on the long side at load
+  (`FILL_IMAGE_MAX_PX`). A 170 mm blank at 300 dpi is ~2000 px, so this still
+  oversamples the largest PNG export while keeping a 6000-px catalogue photo
+  from pinning ~100 MB in the scene for the session.
+- **Persistence follows the face-photo contract exactly.** `"style"` and
+  `"image"` join the existing `"fill"` block in SVG/.gdraw metadata; .gdraw
+  **embeds** the swatch (`images/<tab>_fill_<basename>`) so a shared project
+  shows the material on the recipient's machine and never carries the author's
+  absolute path; a plain .svg stores a document-relative path or the bare
+  basename (`portable_fill` / `resolve_fill_image`, now sharing
+  `_portable_path` with the face photos). Pre-1.2 files have neither key and
+  load as a flat colour; an unknown future style degrades to colour rather than
+  blanking the fill; a swatch that no longer resolves says so in the status bar
+  and shows the colour instead of failing the open.
+  - One departure from the face photos: the swatch extracts to
+    `<cache>/<tab>_fill/<original name>` rather than under its prefixed member
+    name. The filename is what names the *material* in the sidebar
+    ("UB-0614.jpeg"), so mangling it to "front_fill_UB-0614.jpeg" on every
+    reload would lose the one piece of information the button carries.
+- **Display-only, like every other fill**: it never reaches exported DXF/SVG
+  geometry, and it does appear in a PNG render, which is the point.
+- **Crop the supplier's watermark first.** Sample sheets carry the brand and
+  part number in a corner; on a large frame that corner lands inside the
+  profile. Noted in the user guide — it is a data question, not a code one.
+
+## Boxing-guide visibility memory
+
+Snapping force-shows the boxing guide because the bevel outline rides on it.
+Un-snapping used to leave it up at its free-box default size and position — the
+maker turned something off and got a stray rectangle over the drawing.
+`WorkspaceState.boxing_visible_pre_snap` remembers the pre-snap state and
+restores it; a deliberate toggle *while snapped* replaces the memory, so the
+maker's latest word wins. A re-entrancy guard keeps the snap handler's own
+programmatic flip of the Boxing action from being read as that deliberate
+toggle.
+
+## Join closes a single curve onto itself
+
+`_close_single_curve` in [app.py](framedraft/app.py): with exactly one curve
+selected, Join fuses its own two ends (within the existing 2 mm `_JOIN_TOL`)
+into a closed loop, folding the tail node into the head so the wrap segment
+inherits the tail's incoming handle — the same merge the multi-curve chain
+already does when it comes back round.
+
+**Why it was needed.** A DXF lens contour whose SPLINE carries no closed flag
+imports as `closed=False` even when its ends are geometrically coincident, and
+Rebuild faithfully preserves that flag. The maker is left with one spline that
+reads as closed but is an open path, so it never counts as a finished LENS —
+and chaining cannot help, because there is no second curve. Reproduced against
+a generated DXF: imported `closed=False` with a 0.0000 mm end gap, still
+`closed=False` after a 10-node rebuild. (OMA import is *not* affected — it
+builds `closed=True` — despite the original report naming both.)
+
+## Pre-drop audit (house pattern — cf. M22, M27)
+
+Six defects, each with a regression test verified to fail without its fix.
+The first four are pre-existing and predate this round; they surfaced because
+Lens Fill exercises the same paths.
+
+1. **Load did not refresh the sidebar.** Opening a file while already on its
+   saved workspace tab fired no tab change, so `_on_workspace_changed` never
+   ran and the sidebar kept the previous document's guide/fill values.
+   `_open_svg`/`_open_gdraw` now restore it explicitly.
+2. **Load overwrote what it had just loaded.** Worse half of the same story: if
+   the file's saved active tab is *not* the one on screen, `setCurrentIndex`
+   fires `_on_workspace_changed` mid-load, whose save-on-leave writes the
+   *outgoing* document's widget values over the departing workspace's freshly
+   loaded state. A `_loading` flag now suppresses only that save; the restore
+   for the arriving tab still runs.
+3. **Frame Fill never marked the document dirty**, though visibility, colour
+   and opacity are all saved — so those settings could be lost silently on
+   close. Now at parity with Lens Fill.
+4. **Damaged metadata crashed the open.** `_load_ws_data` runs *outside*
+   `_open_gdraw`'s try/except, so a non-numeric `"opacity"` in a hand-edited or
+   truncated file raised straight out of the loader. Added `_hex_or` / `_num_or`
+   and routed both fill blocks through them: unparseable values degrade to
+   defaults, out-of-range numbers clamp, and the drawing still loads.
+5. **Intensity drifted on every tab switch.** `_save_ws_sidebar_state` re-derived
+   it from the slider, but the position→value map is geometric and therefore
+   lossy: a document saved at 3.0 came back 3.03, and again each switch. The
+   handler is now the sole writer, the same rule already applied to the stop
+   colours and the free-box A/B/DBL targets.
+6. **The tint picker leaked.** The popup is built per open and parented to the
+   main window, so every visit to the BPI reference stranded 164 buttons and
+   their pixmaps for the rest of the session. `WA_DeleteOnClose` frees it;
+   `_pick` emits before closing, so the pick still lands.
+
+## Startup version gate (issue #11)
+
+PEP 604 unions (`float | None`) are used throughout, so an interpreter older
+than the app needs dies with a bare `TypeError` from somewhere deep in the
+import chain — a message that says nothing about the actual problem. The
+dependencies install happily on those Pythons, which is what makes the failure
+land at startup instead of at `pip install`, and macOS ships a `python3` old
+enough to hit it.
+
+[main.py](main.py) now checks `sys.version_info` *before* importing
+`framedraft.app` and exits with the version it found, the interpreter path, and
+the three commands to build a venv on a newer one. The import below it carries
+a `noqa: E402` because it must stay after the gate. `pyproject.toml` gained a
+`[project]` block recording `requires-python = ">=3.12"` and moved ruff's
+`target-version` from `py311` to `py312` to match; the README's install section
+leads with checking `python3 --version` and points at the `.dmg` for anyone who
+would rather not.
+
+*(Written from the diff — check the framing against the issue before the drop:
+this round's other sections were written alongside their code, this one after.)*
+
+## Maintainer fixes on the round
+
+> **2026-08-28.** Four items raised against the round in progress.
+
+### The swatch row's clear button was 76px wide
+
+`✕` carried `setFixedWidth(24)` and rendered at 76, crowding the file name
+beside it. The app stylesheet's `QPushButton { min-width: 54px }` is the
+cause: a stylesheet width is re-applied over the widget's own minimum, so it
+overrules `setFixedWidth` outright. A local rule now pins the button square
+(min *and* max, width *and* height, sizing the content box, so the theme's
+1px border comes off the target). Dropping the rule to `min-width: 0` instead
+is not enough — that leaves the button squeezable to a sliver on a narrow
+panel. With 48px given back, the button also takes an `Ignored` horizontal
+size policy and middle-elides the name on resize, so a long swatch file name
+stays readable instead of dragging the sidebar wider.
+
+### Font selection filters instead of guessing
+
+[fontpicker.py](framedraft/fontpicker.py) — `FontFilterCombo`, replacing
+`QFontComboBox` in the Text dialog and in Settings ▸ PDF. QFontComboBox draws
+every installed family *in its own typeface* when the list opens; on a design
+workstation that is a stall from a standing start, and the list it finally
+shows is the wrong shape for picking one weight out of two dozen siblings.
+
+Nothing is queried until the first keystroke. From there a `QCompleter`
+(`MatchContains`, case-insensitive, popup) drops the matching families down,
+while the best *prefix* match is completed inline — so the old
+type-three-letters-and-go speed survives alongside the list. The inline pass
+is deferred by `QTimer.singleShot(0)`: QLineEdit drives the completer during
+the keystroke, and completing the text synchronously would set the completion
+prefix to the full name and collapse the drop-down to one row. Backspace and
+Delete suppress the pass (via an event filter on the line edit) so the tail
+just deleted is not immediately put back. The arrow re-filters on whatever is
+in the box rather than dropping the library, which is how you get from
+"Helvetica Neue" to its weights.
+
+`current_family()` always resolves to an installed family — exact match, else
+best prefix, else back to the last good one. A name handed to `QFont` that no
+font answers to silently becomes Qt's default, i.e. an engraving in a face the
+maker never chose. A family set programmatically that this machine lacks is
+kept verbatim, so the shipped `"Courier New"` caption default survives on a
+Linux box without it (QFontComboBox used to rewrite it on the first OK).
+
+### Frame Fill / Lens Fill on the catalog sheet
+
+New `catalog_pdf.include_fill` pref (off) and a checkbox in Settings ▸ PDF.
+`FrameScene.fill_paint_spec()` / `lens_fill_paint_spec()` hand out what the
+overlays would paint — path, brush, opacity, in scene mm — for a painter that
+isn't the scene; `_gather_catalog_fills` collects them per workspace off each
+workspace's own live scene, so the sheet shows the tint that workspace shows
+(the loader and the tab-switch restore both push fill state into every
+workspace's scene, so an unvisited tab is included correctly). `paint_catalog`
+takes an optional `fills` and lays them under the line work inside the same
+component transform, clipped to the component's bbox — the fill comes off
+OUTLINE/LENS whether or not the sheet prints those layers, and the clip stops
+an odd layer choice washing a tint across the page.
+
+### PNG export wrote nothing
+
+`QImage.save()` infers its format from the file suffix. A path without one —
+what a file dialog hands back when the maker just types a name — made it
+return `False`, which nobody checked, so the export reported success and left
+no file. `render_png` now names the format explicitly and raises when the
+write fails; `_export_png` appends `.png` rather than trusting the dialog.
+
+### A modal dialog can no longer hang the suite
+
+`test_frame_fill_image.py` had the same bug the fixtures already carry comments
+about: `_do_save_gdraw` is the writer, not File ▸ Save, so it leaves `_dirty`
+up and the `_new()` after it sat on the unsaved-changes prompt until the run
+was killed. Third time for this failure mode — after the OMA import's file
+dialog and a window closing dirty in teardown — and each one costs a full run
+before anyone learns which test it was, because a modal prints nothing.
+
+The fix is in [conftest.py](tests/conftest.py) rather than in the one test: an
+autouse fixture replaces every blocking entry point (`QMessageBox`'s five
+statics, the `QFileDialog` / `QInputDialog` / `QColorDialog` / `QFontDialog`
+getters, and `exec` on `QDialog` and `QMenu`, which covers the dialogs and the
+context menu the app runs itself) with a stub that raises `UnexpectedDialog`
+naming the call. The unsaved-changes hang now fails in 0.4 s with a traceback
+through `_confirm_discard`, and the test's own `_dirty = False` went in too.
+
+Tests that *mean* to reach a dialog are unaffected: the autouse fixture patches
+first, so their own `monkeypatch.setattr` lands on top and both unwind at
+teardown. `test_dialog_guard.py` pins that, and one test there re-derives the
+list of dialog statics the app actually calls and fails if any is unguarded —
+the list is hand-maintained, and drift would silently restore the hang.
+
+CI's `pytest-timeout` stays as it is. It catches the *symptom* after 120 s and
+is worth keeping for whatever this list doesn't foresee, but it is no longer
+the first line of defence, and it stays a CI-only install.
+
+### The frozen build's module list had fallen behind
+
+`framedraft.fontpicker` went into the source tree without going into
+`build_common._HIDDEN_FRAMEDRAFT`. It would probably have survived — the Text
+dialog imports it at module level, which PyInstaller's static analysis follows
+— but the list exists precisely so that "probably" is not the standard, and
+every other module is on it. Added, along with `test_packaging_inputs.py`,
+which diffs the list against `framedraft/**/*.py` (parsing `build_common.py`
+with `ast` rather than importing it, so PyInstaller stays out of the test
+dependencies) and pins that `framedraft/resources` is still declared as data.
+
+That last one matters more than it looks: `load_tints` degrades to an empty
+list and hides the BPI button when the table is unreadable, so a packaging miss
+would be *silent* in the frozen app. Worth an explicit look at the
+test-install, the way the RC4 checklist verified the nine Zoye hinge SVGs.
+
+## Tests
+
+`test_lens_fill.py` (21, scene + intensity model), `test_lens_fill_app.py` (43,
+wiring + prefs + round-trip + the audit regressions),
+`test_frame_fill_image.py` (28, swatch placement + opacity split + embed/
+resolve + app wiring + the square clear button), `test_self_join.py` (13),
+`test_boxing_snap_visibility.py` (7), `test_fontpicker.py` (15, laziness +
+filtering + inline completion + resolving), `test_catalog_pdf.py` (22, +12 for
+the fill specs and the sheet that prints them), `test_settings_png.py` (+3 for
+the suffix-less write), `test_dialog_guard.py` (8, the hang guard itself),
+`test_packaging_inputs.py` (3, the bundle's module list).
+Suite: 354 → 509.
+
+## Remaining before the 1.2.0 drop
+
+- [x] Stamp `framedraft/__init__.py`, the README status line, and the
+      `.iss` version fallback to 1.2.0.
+- [x] Lift the *(in development)* marker from this section's heading.
+- [ ] Commit and tag (working agreement: one milestone per version bump).
+- [ ] Build the installer and test-install, per the M28 checklist. Add the
+      BPI button to the verification list — `load_tints` hides it silently
+      when `framedraft/resources/bpi_tints.json` is not in the bundle.
+
+---
+
 # Security hardening
 
 > **2026-06-17.** Prompted by makers relaying that their IT/AV tools flag "funny
@@ -1380,6 +1727,16 @@ rebuild.
 >
 > The AV reports are therefore **packaging behavior, not malware**. Logged here
 > so the finding (and the accepted risks) survive into 1.x.
+>
+> **2026-08-22 amendment — the one network caller, and why it isn't shipped.**
+> [scripts/scrape_bpi_tints.py](scripts/scrape_bpi_tints.py) (Lens Fill, below)
+> fetches BPI's public catalog over HTTPS to regenerate
+> `framedraft/resources/bpi_tints.json`. It is a **maintainer script run by
+> hand**: it lives outside `framedraft/`, is not in `_HIDDEN_FRAMEDRAFT`, and is
+> never imported by the app — so "no network/sockets/HTTP in the application
+> code" still holds, `QtNetwork` stays excluded, and the shipped artifact
+> contains only the resulting name/hex table. If a future change makes the app
+> itself fetch anything, this claim must be revisited, not quietly amended.
 
 ### Root cause of the AV/EDR reports (ranked)
 

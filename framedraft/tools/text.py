@@ -6,11 +6,11 @@ with anchor coordinates editable for precise placement).
 """
 from PySide6.QtCore import QObject, QPointF, Qt, Signal
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QDoubleSpinBox, QFontComboBox, QFormLayout,
-    QLineEdit,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLineEdit,
 )
 
 from ..document import Layer, TextObject
+from ..fontpicker import FontFilterCombo
 
 
 class TextDialog(QDialog):
@@ -24,9 +24,13 @@ class TextDialog(QDialog):
         self._text_edit = QLineEdit(text_obj.text if text_obj else "")
         lay.addRow("Text:", self._text_edit)
 
-        self._font_combo = QFontComboBox()
-        if text_obj:
-            self._font_combo.setCurrentFont(text_obj.family)
+        self._font_combo = FontFilterCombo(
+            family=text_obj.family if text_obj else "")
+        self._font_combo.setToolTip(
+            "Type to filter — the list narrows to the families that match, so "
+            "a weight\nor an italic is one glance away instead of a scroll. "
+            "The arrow re-filters\non what's in the box, showing the current "
+            "family's siblings.")
         lay.addRow("Font:", self._font_combo)
 
         self._size_spin = QDoubleSpinBox()
@@ -69,7 +73,7 @@ class TextDialog(QDialog):
     def values(self) -> dict:
         return {
             "text":     self._text_edit.text(),
-            "family":   self._font_combo.currentFont().family(),
+            "family":   self._font_combo.current_family(),
             "size_mm":  self._size_spin.value(),
             "rotation": self._rot_spin.value(),
             "anchor_x": self._x_spin.value(),
