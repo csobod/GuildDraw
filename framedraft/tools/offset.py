@@ -9,18 +9,20 @@ Workflow:
   4. The offset preview (amber) updates live as you type.
   5. Press Enter to confirm; Esc to cancel.
 
-Positive d = left-hand normal (outward for CCW shapes).
-Negative d = inward.
+On a closed shape positive d always grows it and negative shrinks it,
+whichever way it was drawn; on an open curve positive is the left-hand
+normal of the drawing direction.
 """
 
 from __future__ import annotations
 
 
-from PySide6.QtCore import QObject, Signal, QPointF, Qt, QRect
+from PySide6.QtCore import QObject, Signal, QPointF, Qt
 from PySide6.QtGui  import QPen, QColor, QFont
 from PySide6.QtWidgets import QLabel
 
-from ..canvas.items import CurveItem, curve_layer_locked
+from ..canvas.items import CurveItem
+from .trim import curve_item_at
 
 
 _PREVIEW_COLOR = "#ffd580"   # amber — same as hover/lock color used elsewhere
@@ -65,7 +67,7 @@ class OffsetTool(QObject):
 
     offset_applied = Signal(object, object)   # (source_curve, offset_curve)
     status_message = Signal(str)
-    cancelled      = Signal()
+    canceled      = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -134,7 +136,7 @@ class OffsetTool(QObject):
                 self._source_curve = item.curve
                 self._update_hud()
                 self.status_message.emit(
-                    "Offset: type distance (mm) and press Enter  |  Esc to cancel"
+                    "Offset: type distance (mm) and press Enter  |  − for inward  |  Esc to cancel"
                 )
         return True
 
@@ -159,8 +161,8 @@ class OffsetTool(QObject):
                 self._clear_preview_item()
                 return True
             self._clear_preview()
-            self.status_message.emit("Offset cancelled")
-            self.cancelled.emit()
+            self.status_message.emit("Offset canceled")
+            self.canceled.emit()
             return True
 
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -254,6 +256,12 @@ class OffsetTool(QObject):
         if d == 0.0:
             self.status_message.emit("Offset: distance is zero — nothing to do")
             return
+        src = self._source_curve
+        if src.kind in ("circle", "arc") and (src.radius or 0.0) + d <= 0.0:
+            self.status_message.emit(
+                f"Offset: {-d:g} mm inward is more than the {src.radius:g} mm "
+                "radius — nothing would be left")
+            return
         from ..geometry import offset_curve
         try:
             off_c = offset_curve(self._source_curve, d)
@@ -264,11 +272,5 @@ class OffsetTool(QObject):
         self.offset_applied.emit(self._source_curve, off_c)
 
     def _item_at(self, scene_pos: QPointF) -> CurveItem | None:
-        if self._view is None:
-            return None
-        vp = self._view.mapFromScene(scene_pos)
-        t  = 8
-        candidates = self._view.items(QRect(vp.x() - t, vp.y() - t, 2 * t, 2 * t))
-        return next((i for i in candidates
-                     if isinstance(i, CurveItem) and not curve_layer_locked(i)),
-                    None)
+        return curve_item_at(self._view, scene_pos,
+                             accept=lambda c: not c.mirrored)

@@ -113,7 +113,7 @@ class PointMoveTool(QObject):
 
     moved          = Signal(float, float)   # (dx_mm, dy_mm)
     status_message = Signal(str)
-    cancelled      = Signal()
+    canceled      = Signal()
 
     _IDLE      = 0
     _PICK_FROM = 1
@@ -216,6 +216,10 @@ class PointMoveTool(QObject):
     def handle_dbl_click(self, pos: QPointF,
                           use_snap: bool = True,
                           constrain: bool = False) -> bool:
+        if self._state == self._PICK_TO:
+            # The press picked the grab point; a second press here would
+            # "move" by zero and push an undo step for nothing.
+            return True
         return self.handle_press(pos, use_snap, constrain)
 
     def handle_key(self, key: int, text: str = "") -> bool:
@@ -245,8 +249,8 @@ class PointMoveTool(QObject):
         self._clear_scene_items()
         if self._hud:
             self._hud.hide()
-        self.status_message.emit("Point Move cancelled")
-        self.cancelled.emit()
+        self.status_message.emit("Point Move canceled")
+        self.canceled.emit()
 
     def _add_grab_dot(self, pos: QPointF) -> None:
         R   = 5

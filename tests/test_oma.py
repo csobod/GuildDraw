@@ -210,7 +210,7 @@ def test_curve_to_trace_offset_circle():
 
 
 def test_curve_to_trace_non_star_shaped_raises():
-    # L-shaped contour: its bbox centre (5, 5) lies outside the region
+    # L-shaped contour: its bbox center (5, 5) lies outside the region
     l_shape = line([(0, 0), (10, 0), (10, 2), (2, 2), (2, 10), (0, 10)],
                    closed=True, layer=Layer.LENS)
     with pytest.raises(ValueError, match="star-shaped"):
@@ -222,8 +222,8 @@ def test_curve_to_trace_non_star_shaped_raises():
 # ---------------------------------------------------------------------------
 
 def _lens_like_radii(n=400):
-    """Smooth lens-ish shape, symmetric in x and y so its bbox centre
-    coincides with the polar origin (keeps the comparison centre-consistent)."""
+    """Smooth lens-ish shape, symmetric in x and y so its bbox center
+    coincides with the polar origin (keeps the comparison center-consistent)."""
     out = []
     for i in range(n):
         a = 2 * math.pi * i / n

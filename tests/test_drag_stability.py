@@ -63,7 +63,7 @@ def test_node_drag_tracks_cursor_with_grab_offset():
     assert dot._drag_active
 
     dot.mouseMoveEvent(_move(20, 5))
-    # node lands at cursor + grab offset = 19, NOT snapped to the cursor centre
+    # node lands at cursor + grab offset = 19, NOT snapped to the cursor center
     assert abs(c.nodes[1].x - 19.0) < 1e-9 and abs(c.nodes[1].y - 5.0) < 1e-9
     assert moved, "on_moved not fired during drag"
 
@@ -88,7 +88,7 @@ def test_node_drag_survives_middrag_view_scale():
 
     view.scale(2.5, 2.5)                          # <-- mid-drag zoom
     dot.mouseMoveEvent(_move(15, 7))             # tiny real cursor move
-    # tracks the cursor exactly — no fly-away toward the anchor/centre
+    # tracks the cursor exactly — no fly-away toward the anchor/center
     assert (abs(c.nodes[1].x - 15) < 1e-9) and (abs(c.nodes[1].y - 7) < 1e-9)
 
     view.scale(0.2, 0.2)                          # zoom back out mid-drag
@@ -172,7 +172,7 @@ def test_mirror_magnet_snaps_open_endpoint():
 
 def test_mirror_magnet_ignores_interior_and_closed_nodes():
     """H2: an interior node (or any node of a closed curve) near the bridge
-    must NOT be yanked to dead-centre."""
+    must NOT be yanked to dead-center."""
     tool = _axis_tool()
     node = SplineNode(x=0.3, y=20)
     snap = tool._make_ep_snap_fn(node, is_open_endpoint=False)
@@ -183,7 +183,7 @@ def test_mirror_magnet_ignores_interior_and_closed_nodes():
 
 def test_edit_tool_marks_only_open_endpoints():
     """The EditTool must pass is_open_endpoint=True only for index 0/last of an
-    OPEN curve — verified through the produced snap behaviour on real dots."""
+    OPEN curve — verified through the produced snap behavior on real dots."""
     scene = FrameScene()
     scene.init_mirror(horizontal=False)
     scene.mirror.set_enabled(True)

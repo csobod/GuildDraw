@@ -2,8 +2,8 @@
 ;
 ; Packages the PyInstaller one-folder build (dist\GuildDraw) into a single
 ; GuildDraw-<version>-setup.exe that installs to %LocalAppData%\Programs\GuildDraw,
-; adds Start Menu (and optional Desktop) shortcuts, registers the .gdraw / .svg
-; file associations under HKCU, and provides an Add/Remove Programs uninstaller.
+; adds Start Menu (and optional Desktop) shortcuts, registers the .gdraw file
+; association under HKCU, and provides an Add/Remove Programs uninstaller.
 ;
 ; Compile manually:
 ;   "%LocalAppData%\Programs\Inno Setup 6\ISCC.exe" installer\GuildDraw.iss
@@ -14,10 +14,10 @@
 ; builds dist\GuildDraw first. Defaults below let the script be compiled by hand.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.2.0"
+  #define MyAppVersion "1.3.0"
 #endif
 #ifndef MyAppVersionNumeric
-  #define MyAppVersionNumeric "1.2.0.0"
+  #define MyAppVersionNumeric "1.3.0.0"
 #endif
 #ifndef MySourceDir
   #define MySourceDir "..\dist\GuildDraw"

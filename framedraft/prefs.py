@@ -5,6 +5,7 @@ All keys are listed in DEFAULTS.  load() merges saved data over defaults so
 future versions that add new keys always have a valid value.
 """
 
+import copy
 import json
 import pathlib
 
@@ -20,6 +21,8 @@ DEFAULTS: dict = {
     "default_line_weight":  1.5,
     # Toolbar overflow ("⋯") pop-out pinned open across operations
     "toolbar_pinned":       False,
+    # Tooltips shown app-wide (the ? at the foot of the toolbar)
+    "tooltips":             True,
     # Startup toggle states for toolbar buttons
     "mirror_on_startup":    True,
     "guides_on_startup":    True,
@@ -39,11 +42,11 @@ DEFAULTS: dict = {
     "pad_width_mm":         45.0,
     "pad_height_mm":        45.0,
     # Lens Fill overlay: opacity a freshly-shown lens tint starts at (percent).
-    # Colours are per-document and live in the .gdraw; only the strength of the
+    # Colors are per-document and live in the .gdraw; only the strength of the
     # tint is a working preference — it depends on the maker's screen and on
     # whether they draw over a face photo.
     "lens_fill_opacity_pct": 65,
-    # …and the tint depth it starts at. 1.0 is a picked colour exactly as
+    # …and the tint depth it starts at. 1.0 is a picked color exactly as
     # picked; reference swatches are published light, so a maker who always
     # deepens can make that their starting point (see scene.deepen_tint).
     "lens_fill_intensity":   1.0,
@@ -65,6 +68,14 @@ DEFAULTS: dict = {
         "content_offset_mm": 0.0,
         "front_layers":  ["OUTLINE", "LENS"],
         "temple_layers": ["OUTLINE"],
+    },
+    # Print Front + Temples: 1:1 cutting templates on the maker's own paper
+    # (File ▸ Print Front + Temples… / Export ▸ PDF Front + Temples…).
+    "template_print": {
+        "paper":          "letter",   # key in export.template_print.PAPER_SIZES
+        "orientation":    "auto",     # auto | portrait | landscape
+        "line_weight_mm": 0.35,       # a fine saw-line; 0.6 matches the catalog
+        "labels":         True,       # name each piece (Frame Front, Temple R…)
     },
     # Toolbar button visibility (False = hidden; action still works via hotkey)
     "toolbar": {
@@ -170,23 +181,27 @@ DEFAULTS: dict = {
 
 def load() -> dict:
     """Return prefs dict, merged with DEFAULTS so all keys are present."""
+    # Always hand out a deep copy: the live prefs get mutated in place (lists
+    # of recent files, nested export dicts), and a shallow copy would alias
+    # those nested objects to DEFAULTS itself — a fresh install then rewrites
+    # the shipped defaults for the rest of the process.
     try:
         if _FILE.exists():
             data = json.loads(_FILE.read_text(encoding="utf-8"))
-            merged = {**DEFAULTS, **data}
+            merged = {**copy.deepcopy(DEFAULTS), **data}
             # Deep-merge nested dicts so new default keys survive old prefs
             # files. EVERY nested dict pref must be listed here — a missing
             # entry means old files silently clobber new defaults.
             for key in ("toolbar", "hotkeys", "theme", "viewport",
-                        "snap_types", "catalog_pdf"):
+                        "snap_types", "catalog_pdf", "template_print"):
                 if isinstance(data.get(key), dict):
-                    merged[key] = {**DEFAULTS[key], **data[key]}
+                    merged[key] = {**copy.deepcopy(DEFAULTS[key]), **data[key]}
                 else:
-                    merged[key] = dict(DEFAULTS[key])
+                    merged[key] = copy.deepcopy(DEFAULTS[key])
             return merged
     except Exception:
         pass
-    return dict(DEFAULTS)
+    return copy.deepcopy(DEFAULTS)
 
 
 def save(prefs: dict) -> None:

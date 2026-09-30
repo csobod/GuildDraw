@@ -151,9 +151,14 @@ class DrillLibrary:
     ~/.guilddraw/library/drills/.
 
     A pattern is a list of holes, each ``{"dx", "dy", "dia"}`` where (dx, dy) is
-    the hole's offset from the lens boxing centre in scene mm (y-down) and *dia*
-    is the hole diameter (mm).  Storing offsets from the boxing centre — the OMA
-    datum — lets one pattern re-apply to any lens by re-centring."""
+    the hole's offset from the lens boxing center in scene mm (y-down) and *dia*
+    is the hole diameter (mm).  Storing offsets from the boxing center — the OMA
+    datum — lets one pattern re-apply to any lens by re-centering.
+
+    Version 2 (GuildDraw 1.3) measures dx on the OD lens, positive toward the
+    nose, so a pattern lands the same way on a frame drawn on either side.
+    Version 1 files hold dx as drawn, and are placed as drawn; ``load_entry``
+    tells the caller which (``od_frame``)."""
 
     def __init__(self) -> None:
         _DRILLS_DIR.mkdir(parents=True, exist_ok=True)
@@ -178,7 +183,7 @@ class DrillLibrary:
             while (_DRILLS_DIR / f"{safe}_{i}.json").exists():
                 i += 1
             path = _DRILLS_DIR / f"{safe}_{i}.json"
-        payload = {"version": 1, "holes": [
+        payload = {"version": 2, "holes": [
             {"dx": float(h["dx"]), "dy": float(h["dy"]), "dia": float(h["dia"])}
             for h in holes
         ]}
@@ -188,9 +193,10 @@ class DrillLibrary:
     def load_entry(self, path: str) -> list[dict]:
         """Return the list of holes ({dx,dy,dia}) stored at *path*."""
         data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+        od_frame = int(data.get("version", 1)) >= 2
         return [
             {"dx": float(h.get("dx", 0.0)), "dy": float(h.get("dy", 0.0)),
-             "dia": float(h.get("dia", 1.4))}
+             "dia": float(h.get("dia", 1.4)), "od_frame": od_frame}
             for h in data.get("holes", [])
         ]
 

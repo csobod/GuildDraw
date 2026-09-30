@@ -4,7 +4,7 @@ A small painted circle docked in the status-bar corner that tells the maker at
 a glance whether the *current workspace* satisfies the GuildModel export contract
 before they hand off a DXF. Dot only — the gap (if any) lives in the tooltip:
 
-    grey/off  nothing to hand off yet (no machined geometry)
+    gray/off  nothing to hand off yet (no machined geometry)
     amber     machined geometry present but the handoff contract isn't met
     green     ready for GuildModel (validator passes)
 
@@ -12,7 +12,7 @@ GuildModel answers "is this job ready to cut?"; GuildDraw answers "is this desig
 ready to send?". The state is computed from the same validator the export path
 already uses (``framedraft.export.validate.validate``), so the dot never drifts
 from what export will actually allow. The indicator is non-blocking: export
-still works regardless of colour — this only warns.
+still works regardless of color — this only warns.
 """
 from __future__ import annotations
 
@@ -27,9 +27,9 @@ OFF = "off"
 AMBER = "amber"
 GREEN = "green"
 
-# Dot fill colours per theme: (light, dark). Deliberately NOT theme tokens —
+# Dot fill colors per theme: (light, dark). Deliberately NOT theme tokens —
 # these are status semantics (off/amber/green), not decor, and must stay
-# recognisable regardless of how a user retints the palette.
+# recognizable regardless of how a user retints the palette.
 _COLORS = {
     OFF:   ("#b8b2a3", "#5a564d"),
     AMBER: ("#e0a52e", "#e0a52e"),
@@ -63,7 +63,7 @@ def readiness_state(curves: list, mirror_on: bool,
 
 
 class ReadinessDot(QWidget):
-    """A ~10 px filled circle whose colour + tooltip reflect handoff readiness."""
+    """A ~10 px filled circle whose color + tooltip reflect handoff readiness."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)

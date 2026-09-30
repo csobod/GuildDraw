@@ -110,7 +110,7 @@ class FontFilterCombo(QComboBox):
             self._model.setStringList(font_families())
             self._loaded = True
 
-    # ── editing behaviour ────────────────────────────────────────────────
+    # ── editing behavior ────────────────────────────────────────────────
 
     def showPopup(self):
         """The arrow filters on what is already in the box rather than dropping

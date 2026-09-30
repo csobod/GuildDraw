@@ -63,7 +63,7 @@ def _ghost_scene(*curves):
 
 def test_ghost_half_frame_fills():
     # Only the RIGHT half of the OUTLINE is drawn (open, endpoints on the
-    # mirror line); its ghost completes the loop. Frame Fill must recognise
+    # mirror line); its ghost completes the loop. Frame Fill must recognize
     # the stitched perimeter and fill both sides.
     half = spline([(0, -40), (35, -20), (40, 0), (35, 20), (0, 40)],
                   closed=False, layer=Layer.OUTLINE)

@@ -1,8 +1,9 @@
 """Snap palette (M19) — per-type gating, intersection snap, radius, widget.
 
-The engine measures in screen px via view.mapFromScene; an unscaled
+The engine measures in screen px through the view transform; an unscaled
 QGraphicsView has an identity transform, so px distances equal scene mm
-(±1 px from integer mapping) and the tests can reason in mm.
+exactly (sub-pixel — mapFromScene's integer rounding is not used) and the
+tests can reason in mm. The default radius is 10 px.
 """
 import pytest
 from PySide6.QtCore import QPointF
@@ -28,7 +29,9 @@ def _only(*keys):
 
 
 def test_endpoint_and_node_are_distinct_types():
-    _s, view, eng = _engine([line([(0, 0), (10, 0), (20, 0)])])
+    # Far endpoint at 30: the probe at x=10.4 is outside BOTH endpoints'
+    # 10 mm radius (the old 20 was 9.6 mm away and only escaped by rounding).
+    _s, view, eng = _engine([line([(0, 0), (10, 0), (30, 0)])])
 
     eng.set_enabled_types(_only("endpoint"))
     p = eng.snap(QPointF(0.4, 0.4), [], view)
@@ -181,7 +184,7 @@ def test_point_move_deactivate_hides_snap_indicator():
     assert eng._indicator is None            # …must clear the indicator
 
 
-def test_snap_palette_context_toggles_grey_out():
+def test_snap_palette_context_toggles_gray_out():
     from framedraft.snap_palette import SnapPalette
     pal = SnapPalette(None)
     assert pal._btns["tangent"].isEnabled() is False        # no draw at startup

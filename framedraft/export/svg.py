@@ -30,7 +30,6 @@ from ..canvas.items import build_path
 
 
 _NS  = "http://www.w3.org/2000/svg"
-_XNS = "http://www.w3.org/XML/1998/namespace"
 
 
 # ---------- face-image path privacy helpers ----------
@@ -414,8 +413,10 @@ def _load_face_images(state: dict) -> list[FaceImage]:
 
 def load_svg(path: str) -> dict:
     """
-    Return a dict with keys: curves, calibration, mirror, forming,
-    machined_bridge, face_image.  Raises on parse error.
+    Return a dict with keys: curves, dims, texts, calibration, mirror,
+    forming, machined_bridge, face_images, bookmarks, layers, fill,
+    lens_fill, bevel.  Keys absent from an older file come back as their
+    empty defaults.  Raises on parse error.
     """
     root = ET.fromstring(_read_checked_svg(path))
 

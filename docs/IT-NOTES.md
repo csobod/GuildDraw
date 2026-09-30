@@ -21,8 +21,10 @@ is public, so every claim below can be verified directly.
   programs.
 - **No dynamic code execution.** No `eval`/`exec`, no `pickle`/`marshal`
   deserialization of user files. Documents are plain ZIP/XML/JSON/DXF data
-  parsed with size caps and a DOCTYPE/ENTITY guard against XML
-  entity-expansion attacks.
+  parsed with size caps (checked against the ZIP directory before any member
+  is decompressed, so a small archive that inflates to hundreds of megabytes
+  is refused) and a DOCTYPE/ENTITY guard against XML entity-expansion
+  attacks.
 - **No system-wide changes.** The installer is per-user (no admin rights,
   no HKLM). Its only registry writes are the per-user (HKCU) entries for
   the optional `.gdraw` file association, removed on uninstall.
@@ -31,8 +33,9 @@ is public, so every claim below can be verified directly.
 
 - `~/.guilddraw/` (in the user's profile): preferences, autosave/crash
   recovery, the hinge/drill pattern libraries, recent-files list, and an
-  `imagecache/` folder holding face photos extracted from opened `.gdraw`
-  files.
+  `imagecache/` folder holding the face photos and Frame Fill material
+  swatches extracted from opened `.gdraw` files (a temp folder stands in
+  when that cache is unwritable).
 - The documents and exports the user explicitly saves.
 - Short-lived temporary files during save/export (standard user temp).
 

@@ -1,7 +1,7 @@
 """DimTool — two-click snap-aware dimension placement."""
 
 from PySide6.QtCore import QObject, Signal, QPointF, Qt
-from PySide6.QtGui import QPen, QColor
+from PySide6.QtGui import QPen, QColor, QPainterPath
 
 from ..document import DimLine
 
@@ -15,6 +15,7 @@ class DimTool(QObject):
     """
 
     dim_added      = Signal(object)   # DimLine
+    canceled      = Signal()
     status_message = Signal(str)
 
     def __init__(self, parent=None):
@@ -73,6 +74,11 @@ class DimTool(QObject):
                 "Dim: click second point  |  Esc to cancel"
             )
         else:
+            if (abs(pos.x() - self._pt_a.x()) < 1e-6
+                    and abs(pos.y() - self._pt_a.y()) < 1e-6):
+                self.status_message.emit(
+                    "Dim: second point is the same as the first — click elsewhere")
+                return True
             dim = DimLine(
                 x0=self._pt_a.x(), y0=self._pt_a.y(),
                 x1=pos.x(),        y1=pos.y(),
@@ -105,7 +111,8 @@ class DimTool(QObject):
             return False
         if key == Qt.Key.Key_Escape:
             self.deactivate()
-            self.status_message.emit("Dim: cancelled")
+            self.status_message.emit("Dim canceled")
+            self.canceled.emit()     # the app un-presses the Dim button
             return True
         return False
 
@@ -125,10 +132,19 @@ class DimTool(QObject):
 
     def _update_hover_marker(self, pos: QPointF):
         """Live crosshair at the pending first point (pick-A phase only)."""
-        self._clear_hover_marker()
         if self._scene is None:
+            self._clear_hover_marker()
             return
-        from PySide6.QtGui import QPainterPath
+        # This runs on every mouse move: move the existing crosshair rather
+        # than rebuilding it, unless it has left this scene.
+        if self._hover_marker is not None:
+            try:
+                if self._hover_marker.scene() is self._scene:
+                    self._hover_marker.setPos(pos)
+                    return
+            except RuntimeError:            # its C++ item was deleted
+                self._hover_marker = None
+        self._clear_hover_marker()
         R = 7
         path = QPainterPath()
         path.moveTo(-R, 0); path.lineTo(R, 0)

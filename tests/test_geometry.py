@@ -1,4 +1,4 @@
-"""geometry.py — parameterisation, intersection, splitting, offset, bboxes."""
+"""geometry.py — parameterization, intersection, splitting, offset, bboxes."""
 import math
 
 import pytest

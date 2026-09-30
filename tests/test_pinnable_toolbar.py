@@ -4,7 +4,7 @@ Qt's native toolbar overflow ("⋯") shows the hidden actions in a transient
 popup that auto-hides. PinnableToolBar turns the ⋯ into a toggle that pins those
 actions out in a persistent panel until clicked again, and remembers the choice.
 
-These run a real (offscreen) QApplication because the behaviour depends on
+These run a real (offscreen) QApplication because the behavior depends on
 QToolBar's overflow layout.
 """
 from PySide6.QtCore import Qt

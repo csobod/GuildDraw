@@ -22,7 +22,6 @@ class CalibTool(QObject):
         super().__init__(parent)
         self._state = 0   # 0=idle, 1=waiting p1, 2=waiting p2
         self._p1: QPointF | None = None
-        self._scene = None
         self._line_item = None
 
     @property
@@ -32,30 +31,27 @@ class CalibTool(QObject):
     def start(self, scene=None):
         self._state = 1
         self._p1 = None
-        self._scene = scene
         if scene is not None and not scene.has_face():
             self._state = 0
             self.status_message.emit("Load a face image first, then calibrate.")
             return
-        self.status_message.emit("Calibrate: click first reference point on the face image  [Esc to cancel]")
+        self.status_message.emit("Calibrate: click first reference point on the face image  |  Esc to cancel")
 
     def cancel(self, scene):
         self._clear_line(scene)
         self._state = 0
-        self._scene = None
-        self.status_message.emit("Calibration cancelled")
+        self.status_message.emit("Calibration canceled")
 
     def handle_press(self, pos: QPointF, scene) -> bool:
         """Return True if event was consumed."""
         if self._state == 1:
             self._p1 = pos
             self._state = 2
-            self.status_message.emit("Calibrate: click second reference point  [Esc to cancel]")
+            self.status_message.emit("Calibrate: click second reference point  |  Esc to cancel")
             return True
         if self._state == 2:
             self._clear_line(scene)
             self._state = 0
-            self._scene = None
             self._do_calibrate(scene, pos)
             return True
         return False
@@ -63,7 +59,7 @@ class CalibTool(QObject):
     def _do_calibrate(self, scene, p2: QPointF):
         face_item = scene.get_face_item(0)
         if face_item is None:
-            self.status_message.emit("No face image loaded — calibration cancelled")
+            self.status_message.emit("No face image loaded — calibration canceled")
             return
 
         # Map scene-mm click positions to image pixel coordinates.
@@ -73,25 +69,31 @@ class CalibTool(QObject):
         pixel_dist = math.hypot(p2_img.x() - p1_img.x(), p2_img.y() - p1_img.y())
 
         if pixel_dist < 1.0:
-            self.status_message.emit("Reference points too close — calibration cancelled")
+            self.status_message.emit("Reference points too close — calibration canceled")
             return
 
-        dlg = _CalibDialog(pixel_dist)
-        if dlg.exec():
+        from PySide6.QtWidgets import QWidget
+        owner = self.parent() if isinstance(self.parent(), QWidget) else None
+        dlg = _CalibDialog(pixel_dist, owner)   # centered on the main window
+        accepted = dlg.exec()
+        dlg.deleteLater()        # one use; read below, deleted after this handler
+        if accepted:
             real_mm = dlg.real_mm()
             if real_mm > 0:
                 px_per_mm = pixel_dist / real_mm
                 self.calibrated.emit(px_per_mm)
         else:
-            self.status_message.emit("Calibration cancelled")
+            self.status_message.emit("Calibration canceled")
 
     def handle_move(self, pos: QPointF, scene):
         if self._state == 2 and self._p1 is not None:
-            self._clear_line(scene)
-            pen = QPen(QColor("#c0392b"), 0)
-            self._line_item = scene.addLine(
-                self._p1.x(), self._p1.y(), pos.x(), pos.y(), pen
-            )
+            if self._line_item is None:
+                pen = QPen(QColor("#c0392b"), 0)
+                self._line_item = scene.addLine(
+                    self._p1.x(), self._p1.y(), pos.x(), pos.y(), pen)
+            else:
+                self._line_item.setLine(self._p1.x(), self._p1.y(),
+                                        pos.x(), pos.y())
 
     def _clear_line(self, scene):
         if self._line_item is not None:

@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QPainterPathStroker, QPolygonF,
 )
 
+from .. import theme
 from ..document import DimLine
 
 _OVERSHOOT_MM = 1.5   # mm: extension line extends this far past the dim line
@@ -45,7 +46,6 @@ def _seg_dist(pt: QPointF, p0: QPointF, p1: QPointF) -> float:
 
 
 def _dim_color(selected: bool = False) -> QColor:
-    from .. import theme
     return QColor(theme.color("guide.dim_selected" if selected else "guide.dim"))
 
 
@@ -285,8 +285,8 @@ class DimItem(QGraphicsItem):
         fm = QFontMetrics(font)
         self._label_w_px = float(fm.horizontalAdvance(label))
         text_h = fm.ascent() + fm.descent()
-        # Push the label centre off the line by the gap + half its height, on
-        # the away side, then draw it centred and upright.
+        # Push the label center off the line by the gap + half its height, on
+        # the away side, then draw it centered and upright.
         gap = _LABEL_GAP_PX + text_h / 2.0
         cx, cy = mid.x() + px * gap, mid.y() + py * gap
 
@@ -304,7 +304,7 @@ class DimItem(QGraphicsItem):
         # cached scale (and the bounding rect derived from it) off-paint.
         if abs(scale - self._br_scale) > 0.2 * self._br_scale:
             self._br_scale = scale
-            self._bounds_timer.start()   # owned + cancelled on removal
+            self._bounds_timer.start()   # owned + canceled on removal
 
     def _sync_bounds(self):
         # Only ever fires while the item is in a scene (the timer is stopped in

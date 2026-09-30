@@ -3,12 +3,13 @@ from PySide6.QtCore import QObject, Signal, QPointF, Qt
 from PySide6.QtGui import QPen, QBrush, QColor, QPainterPath, QFont
 from PySide6.QtWidgets import QLabel
 
-from ..document import Curve, Layer, SplineNode
+from ..document import Curve, Layer, MIRRORED_LAYERS, SplineNode
 from ..canvas.items import build_path
 from ..geometry import mirror_curve, compute_catmull_handles
 
-# Layers that show a live mirror ghost while drawing
-_MIRROR_GHOST_LAYERS = {Layer.LENS, Layer.HINGE, Layer.OUTLINE}
+# Layers that show a live mirror ghost while drawing — the exported set plus
+# OUTLINE (an open half being drawn against the axis ghosts its other half).
+_MIRROR_GHOST_LAYERS = MIRRORED_LAYERS | {Layer.OUTLINE}
 
 
 class _LengthHud(QLabel):
@@ -45,6 +46,7 @@ class DrawTool(QObject):
     """Handles line and spline drawing, one curve at a time."""
 
     curve_added    = Signal(object)   # Curve
+    canceled      = Signal()   # Esc / too few points: the app restores Select
     status_message = Signal(str)
 
     _CLOSE_PX = 12  # screen-pixel radius to snap-close a path
@@ -161,14 +163,22 @@ class DrawTool(QObject):
                          constrain: bool = False) -> bool:
         if not self.active:
             return False
-        if self._snap:
-            pos = self._snap.snap(pos, self._nodes, self._view, use_snap)
-        if constrain and self._nodes:
-            pos = self._constrain_cardinal(pos, self._nodes[-1])
-        if self._nodes:
-            self._nodes.pop()   # undo the node placed by the preceding single-click
+        # Qt delivers press, release, DOUBLE-CLICK: the press already placed
+        # the node under the cursor, and that node is the intended end of the
+        # curve. Only a double-click ON the previous node (its press added a
+        # duplicate) has one to fold away.
+        if len(self._nodes) >= 2 and self._same_screen_point(
+                self._nodes[-1], self._nodes[-2]):
+            self._nodes.pop()
         self._finish(closed=False)
         return True
+
+    def _same_screen_point(self, a: SplineNode, b: SplineNode) -> bool:
+        if not self._view:
+            return abs(a.x - b.x) < 1e-6 and abs(a.y - b.y) < 1e-6
+        pa = self._view.mapFromScene(QPointF(a.x, a.y))
+        pb = self._view.mapFromScene(QPointF(b.x, b.y))
+        return math.hypot(pa.x() - pb.x(), pa.y() - pb.y()) < self._CLOSE_PX
 
     def handle_key(self, key, text: str = "") -> bool:
         if not self.active:
@@ -237,7 +247,8 @@ class DrawTool(QObject):
                 self._repaint(self._last_cursor)
                 return True
             self.deactivate()
-            self.status_message.emit("Draw cancelled")
+            self.status_message.emit("Draw canceled")
+            self.canceled.emit()     # the app returns the view to Select mode
             return True
 
         return False
@@ -251,6 +262,11 @@ class DrawTool(QObject):
         if self._nodes:
             last = self._nodes[-1]
             self._repaint(QPointF(last.x, last.y))
+        elif self._hud:
+            # No node left to measure from. _repaint returns before the HUD
+            # update with no nodes, so it kept the stale length on screen
+            # through every later move until the next click.
+            self._hud.hide()
         return True
 
     # ------------------------------------------------------------------
@@ -323,7 +339,8 @@ class DrawTool(QObject):
     def _finish(self, closed: bool):
         if len(self._nodes) < 2:
             self.deactivate()
-            self.status_message.emit("Need at least 2 points — cancelled")
+            self.status_message.emit("Need at least 2 points — canceled")
+            self.canceled.emit()
             return
         curve = Curve(
             kind=self._kind,

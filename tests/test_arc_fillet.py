@@ -19,7 +19,7 @@ def _arc_curve(cx, cy, r, sa, ea):
 # ---------------------------------------------------------------------------
 
 def test_arc_sec_endpoints_lie_on_arc():
-    # Quarter-ish arc: endpoints (10,0) and (0,10), centre near origin.
+    # Quarter-ish arc: endpoints (10,0) and (0,10), center near origin.
     res = arc_start_end_center(10.0, 0.0, 0.0, 10.0, 0.0, 0.0)
     assert res is not None
     cx, cy, r, sa, ea = res
@@ -32,7 +32,7 @@ def test_arc_sec_endpoints_lie_on_arc():
 
 
 def test_arc_sec_center_snapped_to_bisector():
-    # Off-bisector clicked centre is projected onto the perpendicular bisector;
+    # Off-bisector clicked center is projected onto the perpendicular bisector;
     # the chord midpoint here is (5,5) and the bisector is the line y=x.
     res = arc_start_end_center(10.0, 0.0, 0.0, 10.0, 3.0, 0.0)
     assert res is not None
@@ -44,7 +44,7 @@ def test_arc_sec_center_snapped_to_bisector():
 
 
 def test_arc_sec_center_side_flips_bulge():
-    # Centre on opposite sides of the chord -> arcs bulge opposite ways, so
+    # Center on opposite sides of the chord -> arcs bulge opposite ways, so
     # their midpoints straddle the chord midpoint.
     a = arc_start_end_center(-10.0, 0.0, 10.0, 0.0, 0.0, 8.0)
     b = arc_start_end_center(-10.0, 0.0, 10.0, 0.0, 0.0, -8.0)
@@ -77,7 +77,7 @@ def test_fillet_right_angle():
     assert res["t1"] == pytest.approx((5.0, 0.0), abs=1e-9)
     assert res["t2"] == pytest.approx((0.0, 5.0), abs=1e-9)
     assert res["center"] == pytest.approx((5.0, 5.0), abs=1e-9)
-    # Tangent points are exactly r from the centre.
+    # Tangent points are exactly r from the center.
     for tp in (res["t1"], res["t2"]):
         assert math.hypot(tp[0] - res["center"][0],
                           tp[1] - res["center"][1]) == pytest.approx(5.0, abs=1e-9)

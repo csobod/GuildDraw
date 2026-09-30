@@ -25,6 +25,7 @@ from PySide6.QtGui import QPen, QBrush, QColor, QPainterPath, QFont
 from PySide6.QtWidgets import QLabel
 
 from ..document import Curve, Layer, SplineNode
+from ..geometry import arc_start_end_center
 
 
 class _RadiusHud(QLabel):
@@ -61,6 +62,7 @@ class CircleTool(QObject):
     """Handles circle and arc drawing, one primitive at a time."""
 
     curve_added    = Signal(object)   # Curve
+    canceled      = Signal()   # Esc: the app restores Select mode
     status_message = Signal(str)
 
     _MIN_RADIUS = 0.5   # mm — ignore radius attempts smaller than this
@@ -175,7 +177,7 @@ class CircleTool(QObject):
             self._center = (pos.x(), pos.y())
             self._state  = 1
             if self._measure_bar:
-                self._measure_bar.show_radius(pos)   # chip pops by the centre
+                self._measure_bar.show_radius(pos)   # chip pops by the center
             if self._kind == "circle":
                 self.status_message.emit(
                     "Circle: click on the edge to set radius  |  type radius (mm) + Enter  |  Esc to cancel"
@@ -207,8 +209,9 @@ class CircleTool(QObject):
                 self._start_angle = math.degrees(math.atan2(pos.y() - cy, pos.x() - cx))
                 self._state       = 2
                 if self._measure_bar:
+                    # Hidden, not dropped: Esc steps back to the radius stage
+                    # and shows it again.
                     self._measure_bar.hide_bar()
-                    self._measure_bar = None
                 if self._hud:
                     self._hud.hide()
                 self.status_message.emit(
@@ -253,8 +256,10 @@ class CircleTool(QObject):
         if not self.active:
             return False
 
-        # Radius input when center is placed (state 1)
-        if self._state == 1:
+        # Radius input when center is placed (state 1). Not for arc_sec:
+        # its state 1 is "start picked" and the radius branch would wipe
+        # the chord preview and swallow Enter.
+        if self._state == 1 and self._kind != "arc_sec":
             if text and (text.isdigit() or text == '.'):
                 if text == '.' and '.' in self._radius_input:
                     return True
@@ -287,8 +292,9 @@ class CircleTool(QObject):
                 self.status_message.emit(
                     "Arc (start-end-center): click the start point  |  Esc to cancel")
             else:
-                self.status_message.emit("Arc cancelled")
+                self.status_message.emit("Arc canceled")
                 self.deactivate()
+                self.canceled.emit()
             return True
 
         if key == Qt.Key.Key_Escape:
@@ -303,15 +309,25 @@ class CircleTool(QObject):
                     self._center = None
                     self._clear_preview()
                     label = "Circle" if self._kind == "circle" else "Arc"
-                    self.status_message.emit(f"{label} cancelled")
+                    self.status_message.emit(f"{label} canceled")
                     self.deactivate()
+                    self.canceled.emit()
                 elif self._state == 1:
                     # Arc: went back from end-click to start-click; clear preview
+                    # and bring the radius chip back for the re-picked radius.
                     self._clear_preview()
+                    if self._measure_bar and self._center:
+                        self._measure_bar.show_radius(QPointF(*self._center))
                     self.status_message.emit(
                         "Arc: click start point (sets radius)  |  Esc to cancel"
                     )
                 return True
+            # Nothing placed yet: Esc leaves the tool (it used to do nothing).
+            label = "Circle" if self._kind == "circle" else "Arc"
+            self.status_message.emit(f"{label} canceled")
+            self.deactivate()
+            self.canceled.emit()
+            return True
         return False
 
     # ------------------------------------------------------------------
@@ -347,8 +363,7 @@ class CircleTool(QObject):
                 f"Arc: radius locked at {radius_mm:.2f} mm — click start point  |  Esc to cancel"
             )
             if self._measure_bar:
-                self._measure_bar.hide_bar()
-                self._measure_bar = None
+                self._measure_bar.hide_bar()    # kept for the Esc step back
 
     # ------------------------------------------------------------------
     # Start-End-Center arc
@@ -369,7 +384,6 @@ class CircleTool(QObject):
                 "(snaps to the chord's perpendicular bisector)  |  Esc to cancel")
             return True
         # Third click: center.
-        from ..geometry import arc_start_end_center
         sx, sy = self._sec_start
         ex, ey = self._sec_end
         res = arc_start_end_center(sx, sy, ex, ey, pos.x(), pos.y())
@@ -421,7 +435,6 @@ class CircleTool(QObject):
         ex, ey = self._sec_end
         _dot(ex, ey)
         # Picking the center: preview the resulting arc live.
-        from ..geometry import arc_start_end_center
         res = arc_start_end_center(sx, sy, ex, ey, cursor.x(), cursor.y())
         if res is None:
             return

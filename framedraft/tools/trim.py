@@ -15,18 +15,20 @@ Rules:
                     when only one cutting edge exists).
   - Closed curves : need >=2 intersections (otherwise the geometry is
                     ambiguous and nothing happens).
-  - Circles / arcs: fully supported via angle parameterisation.
+  - Circles / arcs: fully supported via angle parameterization.
 """
 
 from __future__ import annotations
+
+import math
 
 from PySide6.QtCore import QObject, Signal, QPointF, Qt, QRect
 from PySide6.QtGui  import QPen, QColor
 
 from ..canvas.items import CurveItem, curve_layer_locked
 from ..geometry import (
-    intersect_curve_params, dedup_ts_mm, t_nearest,
-    extract_open_segment, extract_wrapping_segment,
+    intersect_curve_params, dedup_ts_mm, t_nearest, t_nearest_coarse, point_at_t,
+    extract_open_segment, extract_wrapping_segment, _point_polyline_dist,
 )
 
 
@@ -44,12 +46,54 @@ def _visible_curves(scene, curves: list) -> list:
     return [c for c in curves if is_visible(c.layer)]
 
 
+def _curve_dist_mm(curve, x: float, y: float) -> float:
+    """Distance in scene mm from (x, y) to the nearest point on *curve*."""
+    if curve.kind == "line" and len(curve.nodes) >= 2:
+        # A polyline is exact per segment. t_nearest samples every segment
+        # 32 times, which costs ~20 ms on a dense DXF import — too slow for
+        # a hover that runs on every mouse move.
+        pts = [(n.x, n.y) for n in curve.nodes]
+        if curve.closed:
+            pts.append(pts[0])
+        return _point_polyline_dist((x, y), pts)
+    if curve.kind == "circle" and curve.nodes:
+        c = curve.nodes[0]
+        return abs(math.hypot(x - c.x, y - c.y) - (curve.radius or 0.0))
+    # A spline on the coarse grid: this only ranks the candidates in the hit
+    # box, and the fine grid cost tens of ms a move on a dense import.
+    px, py = point_at_t(curve, t_nearest_coarse(curve, x, y))
+    return math.hypot(px - x, py - y)
+
+
+def curve_item_at(view, scene_pos: QPointF, tol_px: int = _HIT_TOL_PX,
+                  accept=None) -> CurveItem | None:
+    """The unlocked CurveItem nearest *scene_pos* within *tol_px* screen px.
+
+    The cursor tools used to take the topmost item in the hit box, so a
+    curve drawn later a few px away won over the one actually under the
+    cursor (at 400 % a click on a line trimmed its neighbor instead). Ties
+    keep the topmost. *accept* narrows the candidates further (curve kind,
+    mirrored) before the nearest is chosen.
+    """
+    if view is None:
+        return None
+    vp = view.mapFromScene(scene_pos)
+    t  = tol_px
+    candidates = [i for i in view.items(QRect(vp.x() - t, vp.y() - t, 2 * t, 2 * t))
+                  if isinstance(i, CurveItem) and not curve_layer_locked(i)
+                  and (accept is None or accept(i.curve))]
+    if len(candidates) < 2:
+        return candidates[0] if candidates else None
+    x, y = scene_pos.x(), scene_pos.y()
+    return min(candidates, key=lambda i: _curve_dist_mm(i.curve, x, y))
+
+
 class TrimTool(QObject):
     """Persistent cursor tool that trims curves at their intersections."""
 
     trim_applied   = Signal(object, list)   # (original_curve, [remaining_curves])
     status_message = Signal(str)
-    cancelled      = Signal()
+    canceled      = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,7 +122,7 @@ class TrimTool(QObject):
         self._curves_fn = curves_fn
         self.status_message.emit(
             "Trim: click a curve to remove the segment between its intersections"
-            "  |  Esc to exit"
+            "  |  Esc to cancel"
         )
 
     def deactivate(self):
@@ -185,7 +229,7 @@ class TrimTool(QObject):
         n = len(remaining)
         self.status_message.emit(
             f"Trim → {n} segment{'s' if n != 1 else ''} kept"
-            "  |  click to trim more  |  Esc to exit"
+            "  |  click to trim more  |  Esc to cancel"
         )
         return True
 
@@ -215,8 +259,8 @@ class TrimTool(QObject):
             return False
         if key == Qt.Key.Key_Escape:
             self._clear_hover()
-            self.status_message.emit("Trim cancelled")
-            self.cancelled.emit()
+            self.status_message.emit("Trim canceled")
+            self.canceled.emit()
             return True
         return False
 
@@ -225,14 +269,7 @@ class TrimTool(QObject):
     # ------------------------------------------------------------------
 
     def _item_at(self, scene_pos: QPointF) -> CurveItem | None:
-        if self._view is None:
-            return None
-        vp = self._view.mapFromScene(scene_pos)
-        t  = _HIT_TOL_PX
-        candidates = self._view.items(QRect(vp.x()-t, vp.y()-t, 2*t, 2*t))
-        return next((i for i in candidates
-                     if isinstance(i, CurveItem) and not curve_layer_locked(i)),
-                    None)
+        return curve_item_at(self._view, scene_pos)
 
     def _clear_hover(self):
         if self._hover_item is not None:

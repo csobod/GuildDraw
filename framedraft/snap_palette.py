@@ -7,7 +7,7 @@ toolbar's overflow pop-out) so it stays open across operations until the
 palette button is toggled off.
 
 Kept deliberately small: a two-column grid of icon toggles (the type name
-lives in the tooltip, not on the button) plus a magnet-labelled radius
+lives in the tooltip, not on the button) plus a magnet-labeled radius
 field, so leaving it pinned costs little viewport.
 
 Emits ``types_changed({key: bool})`` and ``radius_changed(px)`` — the host
@@ -124,7 +124,7 @@ class SnapPalette(QFrame):
         self.types_changed.emit(self.state())
 
     def set_context_available(self, available: bool):
-        """Grey the tangent/perpendicular toggles when not drawing a
+        """Gray the tangent/perpendicular toggles when not drawing a
         line/spline — they produce nothing without a point being drawn.
         The checked state is preserved (a disabled button keeps its value),
         so the engine simply never finds a target while it's unavailable."""

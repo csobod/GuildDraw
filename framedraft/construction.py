@@ -217,7 +217,7 @@ class BoxingGuide:
 
     def _draw_locked(self, pen):
         """Boxes derived from the real LENS geometry (+ bevel offset).  A box
-        and centre cross are drawn around each lens's finished bbox, plus the
+        and center cross are drawn around each lens's finished bbox, plus the
         bevel-offset 'full lens depth' outline (computed from the sampled shape
         via Shapely so it stays clean on complex curves)."""
         from .boxing import finished_geometry

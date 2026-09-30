@@ -61,7 +61,7 @@ def test_unsnapping_leaves_a_guide_that_was_already_shown(fresh):
 
 def test_manual_toggle_while_snapped_wins(fresh):
     # The maker turned the guide on deliberately after snapping, so that is
-    # what un-snapping should honour — not the state from before the snap.
+    # what un-snapping should honor — not the state from before the snap.
     win = fresh
     win._boxing_snap_chk.setChecked(True)
     win._act_boxing.setChecked(False)
@@ -71,7 +71,7 @@ def test_manual_toggle_while_snapped_wins(fresh):
     assert win._act_boxing.isChecked()
 
 
-def test_manual_hide_while_snapped_is_also_honoured(fresh):
+def test_manual_hide_while_snapped_is_also_honored(fresh):
     win = fresh
     win._act_boxing.setChecked(True)
     win._boxing_snap_chk.setChecked(True)

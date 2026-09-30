@@ -17,6 +17,13 @@ class Layer(str, Enum):
 MACHINED_LAYERS = {Layer.OUTLINE, Layer.LENS, Layer.BRIDGE, Layer.HINGE, Layer.DRILL}
 ALL_LAYER_NAMES = {l.value for l in Layer}
 
+# Layers whose geometry is duplicated across the mirror axis at DXF export
+# (and therefore ghosted on canvas and previewed while drawing). OUTLINE is
+# handled separately: it spans the full frame, so only an OPEN half ghosts.
+# One set, three users (scene ghosts, draw-tool preview, DXF export) — they
+# drifted apart once and DRILL holes mirrored in the file but not on screen.
+MIRRORED_LAYERS = {Layer.LENS, Layer.HINGE, Layer.SCULPT, Layer.DRILL}
+
 # Layers available per workspace (strict — layer combo filtered to these).
 # BRIDGE exists in the enum for future GuildModel bridge-path tooling (deferred).
 WORKSPACE_LAYERS: dict[str, list[Layer]] = {

@@ -42,7 +42,9 @@ def test_drill_library_roundtrip(tmp_path, monkeypatch):
     holes = [{"dx": 5.0, "dy": -3.0, "dia": 1.4},
              {"dx": -5.0, "dy": -3.0, "dia": 2.0}]
     p = dl.save_entry("temple-drill", holes)
-    assert dl.load_entry(p) == holes
+    loaded = dl.load_entry(p)
+    assert [{k: v for k, v in h.items() if k != "od_frame"} for h in loaded] == holes
+    assert all(h["od_frame"] for h in loaded)       # version 2: the OD lens's frame
     assert "temple-drill" in [e["name"] for e in dl.list_entries()]
 
 

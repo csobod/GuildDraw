@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QObject, Signal, QPointF, Qt, QRect
+from PySide6.QtCore import QObject, Signal, QPointF, Qt
 from PySide6.QtGui import QPen, QColor, QPainterPath
 
-from ..canvas.items import CurveItem, curve_layer_locked
+from ..canvas.items import CurveItem
 from ..document import Curve, SplineNode
 from ..geometry import fillet_lines
 from .circle import _RadiusHud
+from .trim import curve_item_at
 
 
 _HOVER_COLOR = "#ffd580"
@@ -36,7 +37,7 @@ class FilletTool(QObject):
 
     fillet_applied = Signal(object, object, list)   # (line1, line2, [new_curves])
     status_message = Signal(str)
-    cancelled      = Signal()
+    canceled      = Signal()
 
     _MIN_RADIUS = 0.1
 
@@ -72,7 +73,7 @@ class FilletTool(QObject):
             self._hud.deleteLater()
         self._hud = _RadiusHud(view) if view is not None else None
         self.status_message.emit(
-            "Fillet: click the first line  |  Esc to exit")
+            "Fillet: click the first line  |  Esc to cancel")
 
     def deactivate(self):
         self._clear_hover()
@@ -103,7 +104,7 @@ class FilletTool(QObject):
             if self._line1 is None:
                 self._line1 = item.curve
                 self.status_message.emit(
-                    "Fillet: click the second line  |  Esc to exit")
+                    "Fillet: click the second line  |  Esc to cancel")
             elif item.curve is self._line1:
                 self.status_message.emit("Fillet: pick a different second line")
             else:
@@ -153,10 +154,10 @@ class FilletTool(QObject):
                 if self._hud:
                     self._hud.hide()
                 self.status_message.emit(
-                    "Fillet: click the first line  |  Esc to exit")
+                    "Fillet: click the first line  |  Esc to cancel")
             else:
-                self.status_message.emit("Fillet cancelled")
-                self.cancelled.emit()
+                self.status_message.emit("Fillet canceled")
+                self.canceled.emit()
             return True
 
         if self._line1 is not None and self._line2 is not None:
@@ -262,7 +263,7 @@ class FilletTool(QObject):
         self._radius_input = ""
         self.fillet_applied.emit(l1, l2, result)
         self.status_message.emit(
-            "Fillet applied  |  click two lines to fillet another  |  Esc to exit")
+            "Fillet applied  |  click two lines to fillet another  |  Esc to cancel")
 
     # ------------------------------------------------------------------
     # Preview / hover
@@ -308,14 +309,9 @@ class FilletTool(QObject):
             self._preview.append(item)
 
     def _item_at(self, scene_pos: QPointF) -> CurveItem | None:
-        if self._view is None:
-            return None
-        vp = self._view.mapFromScene(scene_pos)
-        t = _HIT_TOL_PX
-        candidates = self._view.items(QRect(vp.x() - t, vp.y() - t, 2 * t, 2 * t))
-        return next((i for i in candidates
-                     if isinstance(i, CurveItem) and not curve_layer_locked(i)),
-                    None)
+        # Only lines are filletable, so a spline beside one never shadows it.
+        return curve_item_at(self._view, scene_pos, _HIT_TOL_PX,
+                             accept=lambda c: c.kind == "line")
 
     def _clear_hover(self):
         if self._hover_item is not None:

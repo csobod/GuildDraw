@@ -10,13 +10,16 @@ GuildDraw layer that is *valid for the target workspace* keeps that layer;
 every other entity is dropped onto ``active_layer`` and reported in the returned
 notes, so the maker can re-file it by dragging rows in the Layers panel.
 
-Coordinates are read 1:1 as millimetres (GuildDraw's scene unit).  Foreign files
+Coordinates are read 1:1 as millimeters (GuildDraw's scene unit).  Foreign files
 authored in inches/cm are not auto-scaled — that is a known limitation.
 
 Supported entities: LINE, LWPOLYLINE, POLYLINE (2D), SPLINE, CIRCLE, ARC,
-ELLIPSE.  Bulged polylines are expanded into their line/arc segments via ezdxf's
-``virtual_entities``.  Unsupported entity types are counted and reported, never
-silently dropped.
+ELLIPSE, and INSERT (block references, expanded with their transform).  Bulged
+polylines are expanded into their line/arc segments via ezdxf's
+``virtual_entities``.  Entities written in a mirrored OCS (extrusion 0,0,-1 —
+what AutoCAD's MIRROR command produces) are first converted to WCS so they land
+where the CAD file shows them.  Unsupported entity types (3D polylines,
+meshes, text, hatches…) are counted and reported, never silently dropped.
 """
 from __future__ import annotations
 
@@ -117,14 +120,42 @@ def _spline_from_points(pts: list, layer: Layer, closed: bool) -> list[Curve]:
     return [Curve(kind="spline", layer=layer, nodes=nodes, closed=closed)]
 
 
+def _unclamped_points(ct) -> list:
+    """Sample an UNCLAMPED (periodic) B-spline over its valid parameter
+    domain [knots[degree], knots[count]]. ezdxf's flattening runs the whole
+    knot range, and outside the domain the curve shoots off to nowhere."""
+    knots = list(ct.knots())
+    p, n = ct.degree, ct.count
+    t0, t1 = knots[p], knots[n]
+    cps = list(ct.control_points)
+    length = sum(math.dist((a.x, a.y), (b.x, b.y))
+                 for a, b in zip(cps, cps[1:] + cps[:1], strict=True))
+    steps = max(64, min(4000, int(length / 0.1)))
+    return [(q.x, q.y) for q in
+            (ct.point(t0 + (t1 - t0) * i / steps) for i in range(steps + 1))]
+
+
 def _spline_to_curve(e, layer: Layer) -> list[Curve]:
     ct = e.construction_tool()
     closed = bool(getattr(e, "closed", False)) or bool(e.dxf.flags & 1)
+    if not ct.is_clamped:
+        # Periodic / unclamped knot vector (how Rhino and AutoCAD write a
+        # closed spline): no exact Bézier form — bezier_decomposition raised
+        # and aborted the whole import. Sample the loop instead.
+        pts = _unclamped_points(ct)
+        if len(pts) > 2 and math.dist(pts[0], pts[-1]) < 1e-6:
+            closed = True          # it returns to its start; no flag needed
+        return _spline_from_points(pts, layer, closed)
     if ct.degree == 3 and not ct.is_rational:
-        nodes = _nodes_from_bezier_segments(list(ct.bezier_decomposition()), closed)
-        if len(nodes) < 2:
-            return []
-        return [Curve(kind="spline", layer=layer, nodes=nodes, closed=closed)]
+        try:
+            segs = list(ct.bezier_decomposition())
+        except (TypeError, ValueError):
+            segs = None
+        if segs is not None:
+            nodes = _nodes_from_bezier_segments(segs, closed)
+            if len(nodes) < 2:
+                return []
+            return [Curve(kind="spline", layer=layer, nodes=nodes, closed=closed)]
     pts = [(p.x, p.y) for p in ct.flattening(_FLATTEN_MM)]
     return _spline_from_points(pts, layer, closed)
 
@@ -150,9 +181,9 @@ def _lwpolyline_to_curves(e, layer: Layer) -> list[Curve]:
     return _expand_virtual(e, layer)
 
 
-def _polyline_to_curves(e, layer: Layer) -> list[Curve]:
+def _polyline_to_curves(e, layer: Layer):
     if e.get_mode() != "AcDb2dPolyline":
-        return []   # 3D polylines / polymeshes are unsupported
+        return None   # 3D polylines / polymeshes: reported as unsupported
     coords = [(v.dxf.location.x, v.dxf.location.y, v.dxf.bulge or 0.0)
               for v in e.vertices]
     if all(abs(b) < 1e-9 for (_x, _y, b) in coords):
@@ -179,9 +210,23 @@ _LEAF = {
     "SPLINE": _spline_to_curve,
     "ELLIPSE": _ellipse_to_curve,
 }
+def _insert_to_curves(e, layer: Layer) -> list[Curve]:
+    """Block reference: ezdxf hands back the block's entities with the
+    insert's translation/scale/rotation applied."""
+    out: list[Curve] = []
+    for ve in e.virtual_entities():
+        h = _DISPATCH.get(ve.dxftype())
+        if h:
+            got = h(ve, layer)
+            if got:
+                out.extend(got)
+    return out
+
+
 _DISPATCH = dict(_LEAF)
 _DISPATCH["LWPOLYLINE"] = _lwpolyline_to_curves
 _DISPATCH["POLYLINE"] = _polyline_to_curves
+_DISPATCH["INSERT"] = _insert_to_curves
 
 
 # ---------------------------------------------------------------------------
@@ -205,12 +250,19 @@ def import_dxf(
 ) -> tuple[list[Curve], list[str]]:
     """Read *path* and return (curves, notes).
 
-    Recognised layer names valid for *workspace_type* are kept; everything else
+    Recognized layer names valid for *workspace_type* are kept; everything else
     lands on *active_layer*.  *notes* are human-readable status strings about
     re-filing and any skipped entity types.
     """
     doc = _read_doc(path)
     msp = doc.modelspace()
+    # Entities in a mirrored OCS (extrusion 0,0,-1) would otherwise be read as
+    # if their OCS coordinates were WCS and land x-mirrored.
+    try:
+        from ezdxf import upright
+        upright.upright_all(msp)
+    except Exception:
+        pass
     allowed = set(WORKSPACE_LAYERS.get(workspace_type, list(Layer)))
 
     curves: list[Curve] = []
@@ -229,6 +281,9 @@ def import_dxf(
         target = Layer(layer_name) if kept else active_layer
 
         new = handler(e, target)
+        if new is None:                   # handler declined the entity variant
+            unsupported[dxftype] = unsupported.get(dxftype, 0) + 1
+            continue
         if not new:
             continue
         curves.extend(new)

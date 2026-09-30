@@ -56,7 +56,7 @@ class _ArrowItem(QGraphicsPathItem):
     """One gizmo arrow. Constant screen-size via ItemIgnoresTransformations."""
 
     def __init__(self, dx: int, dy: int, view, color_normal: str,
-                 on_pre_move, on_move, on_click):
+                 on_pre_move, on_move, on_click, on_move_end=None):
         super().__init__(_arrow_path(dx, dy))
         self._dx          = dx
         self._dy          = dy
@@ -64,6 +64,7 @@ class _ArrowItem(QGraphicsPathItem):
         self._on_pre_move = on_pre_move    # () -> None, once per drag session
         self._on_move     = on_move        # (dx_mm, dy_mm) -> None
         self._on_click    = on_click       # (dx_dir, dy_dir) -> None
+        self._on_move_end = on_move_end    # () -> None, after a drag session
 
         self._dragging     = False
         self._drag_started = False
@@ -125,10 +126,13 @@ class _ArrowItem(QGraphicsPathItem):
         event.accept()
 
     def mouseReleaseEvent(self, event):
+        was_drag = self._drag_started
         if not self._dragging:
             self._on_click(self._dx, self._dy)
         self._dragging     = False
         self._drag_started = False
+        if was_drag and self._on_move_end:
+            self._on_move_end()
         event.accept()
 
 
@@ -219,16 +223,22 @@ class _MoveHud(QWidget):
 class MoveGizmo:
     """Four-arrow move gizmo in the scene.
 
-    Arrow drag  → on_pre_move() then on_move(dx, dy) per frame
-    Arrow click → _MoveHud for exact distance; on_pre_move() + on_move() on confirm
+    Arrow drag  → on_pre_move() then on_move(dx, dy) per frame, then on_move_end()
+    Arrow click → _MoveHud for exact distance; on_pre_move() + on_move() +
+                  on_move_end() on confirm
+    on_move_end lets the app rebuild what on_pre_move tore down (the node
+    dots of the moved curve, the info label) — without it a gizmo move left
+    the selection dot-less until it was reselected.
     """
 
-    def __init__(self, scene, view, center: QPointF, on_pre_move, on_move):
+    def __init__(self, scene, view, center: QPointF, on_pre_move, on_move,
+                 on_move_end=None):
         self._scene       = scene
         self._view        = view
         self._center      = QPointF(center)
         self._on_pre_move = on_pre_move
         self._on_move     = on_move
+        self._on_move_end = on_move_end
         self._arrows: list[_ArrowItem] = []
         self._center_item = None
 
@@ -237,7 +247,8 @@ class MoveGizmo:
             arrow = _ArrowItem(dx, dy, view, color,
                                on_pre_move = on_pre_move,
                                on_move     = on_move,
-                               on_click    = self._on_arrow_click)
+                               on_click    = self._on_arrow_click,
+                               on_move_end = on_move_end)
             scene.addItem(arrow)
             self._arrows.append(arrow)
 
@@ -274,9 +285,11 @@ class MoveGizmo:
     def _hud_commit(self, dx_mm: float, dy_mm: float):
         self._on_pre_move()
         self._on_move(dx_mm, dy_mm)
+        if self._on_move_end:
+            self._on_move_end()
 
     def remove(self):
-        if hasattr(self, "_hud") and self._hud:
+        if self._hud:
             self._hud.hide()
             self._hud.deleteLater()
             self._hud = None

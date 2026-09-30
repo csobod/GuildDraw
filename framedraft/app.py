@@ -3,7 +3,9 @@ import datetime
 import json
 import math
 import os
+import re
 import sys
+import time
 import uuid
 from pathlib import Path
 from . import __version__
@@ -18,7 +20,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 from PySide6.QtCore import (
-    Qt, QEvent, QPointF, QSize, QTimer, Signal, QRect, QRectF, QPoint,
+    Qt, QByteArray, QEvent, QObject, QPointF, QSize, QTimer, Signal, QRect, QRectF,
+    QPoint,
 )
 from PySide6.QtGui import (
     QAction, QActionGroup, QColor, QBrush, QFontMetrics, QIcon, QPainter,
@@ -34,7 +37,8 @@ from .canvas.scene import (FrameScene, TextItem, DEFAULT_LENS_FILL_TOP,
                            DEFAULT_LENS_FILL_BOTTOM, DEFAULT_LENS_FILL_OPACITY,
                            DEFAULT_LENS_FILL_INTENSITY, deepen_tint,
                            intensity_from_slider, slider_from_intensity,
-                           LENS_FILL_INTENSITY_MIN, LENS_FILL_INTENSITY_MAX)
+                           LENS_FILL_INTENSITY_MIN, LENS_FILL_INTENSITY_MAX,
+                           _GHOST_LAYERS)
 from .canvas.snapping import SnapEngine
 from .calibration import CalibTool
 from .construction import ConstructionGuides, BoxingGuide, RectGuide
@@ -58,10 +62,11 @@ from .tools.rebuild import RebuildSplineTool
 from .tools.point_move import PointMoveTool
 from .tools.text import TextTool, TextDialog
 from .pinnable_toolbar import PinnableToolBar
+from .tooltips import TooltipFilter
 from .icons import ICONS_DIR as _ICONS_DIR, make_icon as _make_icon
 
 
-# Colour-bar size (px) inside the Lens Fill stop buttons.
+# Color-bar size (px) inside the Lens Fill stop buttons.
 _LENS_SWATCH_PX = (64, 14)
 
 
@@ -69,7 +74,7 @@ _LENS_SWATCH_PX = (64, 14)
 # _load_ws_data runs outside the open-time try/except — so a malformed value in
 # the metadata took the app down on open rather than degrading to a default.
 def _hex_or(value, fallback: str) -> str:
-    """*value* if it is a colour Qt can parse, else *fallback*."""
+    """*value* if it is a color Qt can parse, else *fallback*."""
     if isinstance(value, str) and QColor(value).isValid():
         return QColor(value).name()
     return fallback
@@ -105,23 +110,16 @@ def _curves_bbox(curves, layers=None, x_lo=None, x_hi=None):
         matched.append(c)
     if not matched:
         return None
-    from .geometry import arc_bbox
-    xs, ys = [], []
+    # Exact drawn extents (path bounds), not the control polygon: handles
+    # pushed a 150 mm temple to "200 mm" in the Measurements panel.
+    from .canvas.items import build_path
+    rect = QRectF()
     for c in matched:
-        if (c.kind == "arc" and c.radius and c.nodes
-                and c.start_angle is not None and c.end_angle is not None):
-            bx0, by0, bx1, by1 = arc_bbox(c.nodes[0].x, c.nodes[0].y, c.radius,
-                                          c.start_angle, c.end_angle)
-            xs.extend([bx0, bx1]); ys.extend([by0, by1])
-        elif c.kind in ("circle", "arc") and c.radius and c.nodes:
-            ox, oy, r = c.nodes[0].x, c.nodes[0].y, c.radius
-            xs.extend([ox - r, ox + r]); ys.extend([oy - r, oy + r])
-        else:
-            for n in c.nodes:
-                xs.append(n.x); ys.append(n.y)
-                if n.cp_in:  xs.append(n.cp_in.x);  ys.append(n.cp_in.y)
-                if n.cp_out: xs.append(n.cp_out.x); ys.append(n.cp_out.y)
-    return (min(xs), min(ys), max(xs), max(ys)) if xs else None
+        if c.nodes:
+            rect = rect.united(build_path(c).boundingRect())
+    if rect.isNull():
+        return None
+    return (rect.left(), rect.top(), rect.right(), rect.bottom())
 
 
 # Application stylesheet + canvas colors come from framedraft.theme
@@ -130,40 +128,91 @@ def _curves_bbox(curves, layers=None, x_lo=None, x_hi=None):
 
 _DOCK_WIDTH = 270
 
-# Ordered toolbar action definitions used by SettingsDialog and _toolbar_actions.
-# Tuple: (prefs_key, display_label, user_hideable)
-_TOOLBAR_ACTION_DEFS = [
-    ("select",       "Select",                  False),
-    ("line",         "Line",                    True),
-    ("spline",       "Spline",                  True),
-    ("circle",       "Circle",                  True),
-    ("arc",          "Arc",                     True),
-    ("arc_sec",      "Arc (3-point)",           True),
-    ("fillet",       "Fillet",                  True),
-    ("dim",          "Dim",                     True),
-    ("trim",         "Trim",                    True),
-    ("split_curve",  "Split Curve",             True),
-    ("offset",       "Offset",                  True),
-    ("rebuild",      "Rebuild Spline",          True),
-    ("point_move",   "Point Move",              True),
-    ("ghost",        "Ghost (mirror toggle)",   True),
-    ("guides",       "Guides",                  True),
-    ("snap",         "Snap",                    True),
-    ("snap_palette", "Snap Palette",            True),
-    ("grid",         "Grid",                    True),
-    ("smooth",       "Smooth Handles",          True),
-    ("boxing",       "Boxing",                  True),
-    ("stock",        "Stock",                   True),
-    ("pad",          "Pad",                     True),
-    ("mirror",       "Mirror (bake)",           True),
-    ("mirror_close", "Mirror-Close",            True),
-    ("copy_temple",  "Temple Copy",             True),
-    ("join",         "Join",                    True),
-    ("snap_node",    "Snap Node",               True),
-    ("split",        "Split",                   True),
-    ("explode",      "Explode",                 True),
-    ("fit",          "Fit",                     True),
+# The toolbar's buttons in its own order and sections, as Preferences ▸
+# Toolbar lists them. Tuple: (prefs_key, display_label, user_hideable).
+_TOOLBAR_SECTIONS = [
+    ("Drawing Tools", [
+        ("select",       "Select",                  False),
+        ("line",         "Line",                    True),
+        ("spline",       "Spline",                  True),
+        ("circle",       "Circle",                  True),
+        ("arc",          "Arc",                     True),
+        ("arc_sec",      "Arc (3-point)",           True),
+        ("fillet",       "Fillet",                  True),
+        ("dim",          "Dim",                     True),
+        ("text",         "Text",                    True),
+        ("trim",         "Trim",                    True),
+        ("split_curve",  "Split Curve",             True),
+        ("offset",       "Offset",                  True),
+        ("rebuild",      "Rebuild Spline",          True),
+        ("point_move",   "Point Move",              True),
+    ]),
+    ("Guides and Snapping", [
+        ("ghost",        "Ghost (mirror toggle)",   True),
+        ("guides",       "Guides",                  True),
+        ("snap",         "Snap",                    True),
+        ("snap_palette", "Snap Palette",            True),
+        ("grid",         "Grid",                    True),
+        ("smooth",       "Smooth Handles",          True),
+        ("boxing",       "Boxing",                  True),
+        ("stock",        "Stock",                   True),
+        ("pad",          "Pad",                     True),
+    ]),
+    ("Operations", [
+        ("mirror",       "Mirror (bake)",           True),
+        ("mirror_close", "Mirror-Close",            True),
+        ("copy_temple",  "Temple Copy",             True),
+        ("join",         "Join",                    True),
+        ("snap_node",    "Snap Node",               True),
+        ("split",        "Split",                   True),
+        ("explode",      "Explode",                 True),
+        ("fit",          "Fit",                     True),
+    ]),
 ]
+_TOOLBAR_ACTION_DEFS = [e for _section, entries in _TOOLBAR_SECTIONS for e in entries]
+
+# Toolbar buttons that only make sense in some workspaces — hidden elsewhere
+# whatever the prefs say (MainWindow._apply_toolbar_visibility).
+_WS_ONLY_ACTIONS = {
+    "guides":      ("front",),
+    "boxing":      ("front",),
+    "pad":         ("front",),
+    "copy_temple": ("temple_r", "temple_l"),
+    # ENGRAVING only exists in temple workspaces (WORKSPACE_LAYERS)
+    "text":        ("temple_r", "temple_l"),
+}
+
+# Shortcuts bound outside the hotkey table (menus and window QShortcuts).
+# Preferences ▸ Hotkeys lists every one, and SettingsDialog._RESERVED_KEYS —
+# which refuses them as hotkeys — is built from this list.
+_FIXED_SHORTCUTS = [
+    ("New",         ("Ctrl+N",)),
+    ("Open",        ("Ctrl+O",)),
+    ("Save",        ("Ctrl+S",)),
+    ("Save As",     ("Ctrl+Shift+S",)),
+    ("Undo",        ("Ctrl+Z",)),
+    ("Redo",        ("Ctrl+Y", "Ctrl+Shift+Z")),
+    ("Copy",        ("Ctrl+C",)),
+    ("Paste",       ("Ctrl+V",)),
+    ("Duplicate",   ("Ctrl+D",)),
+    ("Select All",  ("Ctrl+A",)),
+    ("Transform",   ("Ctrl+T",)),
+    ("Group",       ("Ctrl+G",)),
+    ("Ungroup",     ("Ctrl+Shift+G",)),
+    ("Zoom In",     ("Ctrl++", "Ctrl+=")),
+    ("Zoom Out",    ("Ctrl+-",)),
+    ("Fit",         ("Ctrl+0",)),
+    ("Preferences", ("Ctrl+,",)),
+    ("Quit",        ("Ctrl+Q",)),
+    ("Delete",      ("Del", "Backspace")),
+    ("Cancel",      ("Esc",)),
+]
+
+# Keys the tools read while a value is being typed into the canvas (a Line
+# length, a Fillet radius): a hotkey on one fired mid-number — bound to "1",
+# typing a 15 mm length switched tools on the first digit.
+_TYPING_KEYS = frozenset([*"0123456789", ".", ",", "-", "Return", "Enter",
+                          "Tab", "Backtab"])
 
 # Ordered hotkey action definitions used by SettingsDialog.
 # Tuple: (prefs_key, display_label)
@@ -187,6 +236,22 @@ _HOTKEY_ACTION_DEFS = [
     ("bookmark",     "Bookmark revision"),
     ("insert_square", "Insert □ (size notation)"),
 ]
+
+# A hotkey as a tooltip names it, "(O)" or "(Ctrl+B)", after the tool's name.
+_TIP_KEY = re.compile(r"\s*\((?:(?:Ctrl|Shift|Alt|Meta)\+)*[A-Z0-9][A-Za-z0-9]*\)\s*$")
+
+
+def _tip_with_key(tip: str, key: str) -> str:
+    """`tip` with the hotkey after the name that heads it ("Offset (O): …"),
+    replacing any key written there before; no key, no parentheses. The keys
+    were typed into the tooltips by hand, so a rebound tool kept naming its
+    old one, and most tools named none."""
+    head, sep, rest = tip.partition(":")
+    if not sep:
+        return tip
+    head = _TIP_KEY.sub("", head)
+    return f"{head} ({key}):{rest}" if key else f"{head}:{rest}"
+
 
 # Hotkeys that INSERT INTO text fields. Unlike every other binding (which the
 # _hotkey_dispatch guard silences while a text widget has focus), these only
@@ -229,6 +294,10 @@ class CanvasView(QGraphicsView):
     def __init__(self, scene: FrameScene, status_bar: QStatusBar):
         super().__init__(scene)
         self._status_bar = status_bar
+        # The pointer's coordinates have a field of their own (MainWindow's
+        # "coordsLabel"): written as the bar's message they replaced every
+        # tool's prompt on the first mouse move.
+        self._coords_label = status_bar.findChild(QLabel, "coordsLabel")
         self._calib_tool: CalibTool | None = None
         self._draw_tool:  DrawTool  | None = None
         self._dim_tool    = None
@@ -274,7 +343,9 @@ class CanvasView(QGraphicsView):
         self._grid_major_width: float = 1.0          # device px, cosmetic
 
         self.measure_bar = MeasureBar(self)
-        QTimer.singleShot(0, self._reposition_measure_bar)
+        # With `self` as context: a bare singleShot outlives the view and
+        # fired into a deleted MeasureBar.
+        QTimer.singleShot(0, self, self._reposition_measure_bar)
 
     # ------------------------------------------------------------------
     # Grid overlay (mm grid with major/minor divisions, drawn behind all)
@@ -401,6 +472,14 @@ class CanvasView(QGraphicsView):
     def set_escape_callback(self, cb):
         self._escape_cb = cb
 
+    def set_face_moved_callback(self, cb):
+        """Called after a drag moved an unlocked reference photo: its place is
+        saved with the design, and the drag left the design looking clean."""
+        self._face_moved_cb = cb
+
+    def _face_positions(self) -> list:
+        return [it.pos() for it in getattr(self.scene(), "_face_items", [])]
+
     def set_calib_tool(self, tool: CalibTool):
         self._calib_tool = tool
 
@@ -424,7 +503,10 @@ class CanvasView(QGraphicsView):
                            and sc.is_layer_visible(item.text_obj.layer)
                            and not sc.is_layer_locked(item.text_obj.layer))
                 item.setFlag(item.GraphicsItemFlag.ItemIsSelectable, allowed)
-                item.setFlag(item.GraphicsItemFlag.ItemIsMovable,    allowed)
+                # Never ItemIsMovable: a text moves through the app's own drag
+                # (snapshot, gizmo, measurements), as TextItem says. Setting it
+                # here after any tool switch let Qt drag text on its own — a
+                # jittery click moved it with no undo step and no star.
 
     def set_dim_tool(self, tool):
         self._dim_tool = tool
@@ -515,10 +597,30 @@ class CanvasView(QGraphicsView):
         event.accept()
 
     def mousePressEvent(self, event):
+        self._faces_at_press = self._face_positions()
+        # A release lost to a modal dialog (a hotkey mid-drag) must not leave
+        # a band or a pan armed for the next press.
+        if self._rb_origin is not None:
+            if self._rb_band is not None:
+                self._rb_band.hide()
+            self._rb_origin = None
+            self._rb_press_item = None
+            self._rb_dragging = False
+        if self._pan_active and event.button() != Qt.MouseButton.MiddleButton:
+            self._pan_active = False
+            self.unsetCursor()
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan_active = True
             self._pan_start = event.position()
+            self._ensure_scroll_room()   # once per pan, not per mouse move
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+        elif (event.button() != Qt.MouseButton.LeftButton
+                and ((self._calib_tool and self._calib_tool.active)
+                     or (self._dim_tool and self._dim_tool.active)
+                     or (self._draw_tool and self._draw_tool.active))):
+            # A tool answers the left button only: a right-click split or
+            # trimmed the curve under it, or placed a node, like a left one.
             event.accept()
         elif self._calib_tool and self._calib_tool.active:
             pos = self.mapToScene(event.position().toPoint())
@@ -543,13 +645,8 @@ class CanvasView(QGraphicsView):
             if (event.button() == Qt.MouseButton.LeftButton
                     and event.modifiers() & Qt.KeyboardModifier.AltModifier):
                 vp_pos = event.position().toPoint()
-                sc = self.scene()
-                candidates = [
-                    it for it in self.items(vp_pos)
-                    if isinstance(it, (CurveItem, DimItem))
-                    and not (isinstance(it, CurveItem)
-                             and sc.is_layer_locked(it.curve.layer))
-                ]
+                candidates = [it for it in self._items_near(vp_pos)
+                              if self._rb_selectable(it)]
                 if len(candidates) >= 2:
                     selected_ids = {id(it) for it in self.scene().selectedItems()}
                     current_idx = next(
@@ -572,37 +669,35 @@ class CanvasView(QGraphicsView):
                     and not (mods & Qt.KeyboardModifier.AltModifier)):
                 vp_pos    = event.position().toPoint()
                 scene_pos = self.mapToScene(vp_pos)
-                # itemAt() uses the view transform and correctly handles
-                # ItemIgnoresTransformations (NodeDots, HandleDots, gizmo arrows).
-                # Only start drag tracking when the topmost hit is a CurveItem.
-                # DimItems handle their own offset-drag via mousePressEvent/mouseMoveEvent;
-                # intercepting them here would translate the anchor points instead.
-                top_item = self.scene().itemAt(scene_pos, self.transform())
-                selected_ids = {id(it) for it in self.scene().selectedItems()
-                                if isinstance(it, (CurveItem, DimItem))}
-                hit_ids = {id(it) for it in self.items(vp_pos)
-                           if isinstance(it, (CurveItem, DimItem))}
+                # Dots, gizmo arrows and dims take the press themselves (a dim
+                # runs its own offset-drag; intercepting it would translate
+                # the anchors instead). Curves and texts are picked with a
+                # screen-pixel tolerance so they stay clickable at any zoom.
+                top_item = self._top_pick(vp_pos)
+                hit_selected = any(it.isSelected() for it in self._items_near(vp_pos)
+                                   if isinstance(it, (CurveItem, DimItem, TextItem)))
                 self._drag_moving     = False
                 self._drag_pre_called = False
-                if (isinstance(top_item, CurveItem)
-                        and (selected_ids & hit_ids)):
-                    # Press on an ALREADY-SELECTED item → drag to move it.
-                    # Capture the pre-click selection now — super() may reselect
-                    # only the topmost item otherwise.
+                if isinstance(top_item, (CurveItem, TextItem)) and hit_selected:
+                    # Press on an ALREADY-SELECTED item → drag to move it (a
+                    # text rides the same path as curves and dims, so a mixed
+                    # selection moves as one). Capture the pre-click selection
+                    # now — super() may reselect only the topmost item.
                     self._drag_move_items = [
                         it for it in self.scene().selectedItems()
-                        if isinstance(it, (CurveItem, DimItem))
+                        if isinstance(it, (CurveItem, DimItem, TextItem))
                     ]
                     self._drag_move_start = scene_pos
                     super().mousePressEvent(event)
-                elif top_item is None or isinstance(top_item, CurveItem):
-                    # Empty space or an UNSELECTED curve → manual rubber-band
-                    # (drag) or click-select (no drag). We take over selection
-                    # so a box-drag works even when it starts on top of a curve.
+                elif top_item is None or isinstance(top_item, (CurveItem, TextItem)):
+                    # Empty space or an UNSELECTED curve/text → manual
+                    # rubber-band (drag) or click-select (no drag). We take
+                    # over selection so a box-drag works even when it starts
+                    # on top of a curve.
                     self._drag_move_items = []
                     self._drag_move_start = None
                     self._rb_origin     = vp_pos
-                    self._rb_press_item = top_item if isinstance(top_item, CurveItem) else None
+                    self._rb_press_item = top_item
                     self._rb_dragging   = False
                     event.accept()
                     return
@@ -614,9 +709,26 @@ class CanvasView(QGraphicsView):
             else:
                 self._drag_move_items = []
                 self._drag_move_start = None
+                if (event.button() == Qt.MouseButton.LeftButton
+                        and mods == Qt.KeyboardModifier.ControlModifier):
+                    # Ctrl+click toggles with the same pixel tolerance as a
+                    # plain click; Qt's own hit test wanted the pointer on
+                    # the stroke itself, so it missed at low zoom.
+                    top_item = self._top_pick(event.position().toPoint())
+                    if top_item is not None and self._rb_selectable(top_item):
+                        top_item.setSelected(not top_item.isSelected())
+                        event.accept()
+                        return
                 super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton:
+            # A quick second pan stroke arrives as a double-click only.
+            self.mousePressEvent(event)
+            return
+        if event.button() != Qt.MouseButton.LeftButton:
+            event.accept()
+            return
         if self._draw_tool and self._draw_tool.active:
             pos       = self.mapToScene(event.position().toPoint())
             mods      = event.modifiers()
@@ -624,11 +736,20 @@ class CanvasView(QGraphicsView):
             constrain = bool(mods & Qt.KeyboardModifier.ShiftModifier)
             self._draw_tool.handle_dbl_click(pos, use_snap, constrain)
             event.accept()
+        elif ((self._dim_tool and self._dim_tool.active)
+                or (self._calib_tool and self._calib_tool.active)):
+            # The press already placed a point; a double-click must not fall
+            # through to select-mode node insertion on the curve underneath.
+            event.accept()
         else:
             # Double-click on a CurveItem in select mode → insert node
-            scene_pos = self.mapToScene(event.position().toPoint())
-            item = self.scene().itemAt(scene_pos, self.transform())
-            if isinstance(item, CurveItem) and self._insert_node_callback:
+            vp_pos    = event.position().toPoint()
+            scene_pos = self.mapToScene(vp_pos)
+            item = self._top_pick(vp_pos)
+            # Selectable only: a curve on a locked (or hidden) layer took a
+            # new node from a double-click, with an undo step and a star.
+            if (isinstance(item, CurveItem) and self._rb_selectable(item)
+                    and self._insert_node_callback):
                 self._insert_node_callback(item.curve, scene_pos)
                 event.accept()
                 return
@@ -636,9 +757,11 @@ class CanvasView(QGraphicsView):
 
     def mouseMoveEvent(self, event):
         scene_pos = self.mapToScene(event.position().toPoint())
-        self._status_bar.showMessage(self._fmt(scene_pos))
+        if self._coords_label is not None:
+            self._coords_label.setText(self._fmt(scene_pos))
+        else:
+            self._status_bar.showMessage(self._fmt(scene_pos))
         if self._pan_active:
-            self._ensure_scroll_room()   # grow bounds before clamping the pan
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
             self.horizontalScrollBar().setValue(
@@ -717,12 +840,47 @@ class CanvasView(QGraphicsView):
         # Never let a press-time capture leak into a later operation —
         # stale captures made gizmo/point moves act on the wrong curves.
         self._drag_move_items = []
+        cb = getattr(self, "_face_moved_cb", None)
+        if cb is not None and getattr(self, "_faces_at_press", None) is not None \
+                and self._face_positions() != self._faces_at_press:
+            cb()
+        self._faces_at_press = None
 
     @staticmethod
     def _rb_selectable(it) -> bool:
         if not isinstance(it, (CurveItem, DimItem, TextItem)):
             return False
         return bool(it.flags() & it.GraphicsItemFlag.ItemIsSelectable)
+
+    _PICK_PX = 4   # half-size of the pick box, screen px (zoom-independent)
+
+    def _items_near(self, vp_pos) -> list:
+        """Curves, dims and texts under a small screen-pixel box around the
+        cursor, topmost first. A curve's own hit stroke is 2 mm, which is
+        half a pixel at 25 % zoom; the box keeps a hairline clickable at any
+        zoom without claiming the interior of closed shapes."""
+        r = self._PICK_PX
+        rect = QRect(vp_pos.x() - r, vp_pos.y() - r, 2 * r + 1, 2 * r + 1)
+        return [it for it in self.items(rect)
+                if isinstance(it, (CurveItem, DimItem, TextItem))]
+
+    def _top_pick(self, vp_pos):
+        """What a press at *vp_pos* is aimed at: interactive chrome exactly
+        under the cursor (node/handle dots, gizmo arrows, a dim) wins, then
+        the topmost curve/text within the pick box, else None."""
+        exact = self.itemAt(vp_pos)
+        if exact is not None and not isinstance(exact, (CurveItem, TextItem)):
+            flags = exact.flags()
+            if (isinstance(exact, DimItem)
+                    or flags & exact.GraphicsItemFlag.ItemIgnoresTransformations
+                    or flags & exact.GraphicsItemFlag.ItemIsMovable):
+                # Screen-sized chrome (node/handle dots, gizmo arrows), a dim,
+                # or an unlocked face photo: each runs its own press handling.
+                return exact
+        for it in self._items_near(vp_pos):
+            if isinstance(it, (CurveItem, TextItem)):
+                return it
+        return None
 
     def _finish_rubber_band(self):
         """Resolve a manual rubber-band press: box-select on drag, click-select
@@ -738,9 +896,7 @@ class CanvasView(QGraphicsView):
             rect = band.geometry()
             band.hide()
             picked = [it for it in self.items(rect) if self._rb_selectable(it)]
-            sc.clearSelection()
-            for it in picked:
-                it.setSelected(True)
+            sc.select_items(picked)
             n = len(picked)
             self._status_bar.showMessage(
                 f"Box selected {n} item{'s' if n != 1 else ''}")
@@ -757,7 +913,10 @@ class CanvasView(QGraphicsView):
 
         # Delete / Backspace: remove selected curves (select mode only)
         if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            if not (self._draw_tool and self._draw_tool.active):
+            tool_busy = ((self._draw_tool and self._draw_tool.active)
+                         or (self._dim_tool and self._dim_tool.active)
+                         or (self._calib_tool and self._calib_tool.active))
+            if not tool_busy:
                 if self._delete_callback:
                     self._delete_callback()
                 event.accept()
@@ -858,6 +1017,7 @@ class WorkspaceState:
         self.move_gizmo_center      = QPointF(0, 0)
         self.drag_moving_curves:list = []
         self.drag_moving_dims:  list = []
+        self.drag_moving_texts: list = []
 
         # ── Sidebar state saved/restored on tab switch ────────────────────
         _CG = ConstructionGuides
@@ -896,7 +1056,7 @@ class WorkspaceState:
         self.fill_opacity:   float = 0.50
         self.fill_style:     str   = "color"      # "color" | "image" (v1.2)
         self.fill_image:     str   = ""           # material swatch, kept even
-                                                  # while the colour is showing
+                                                  # while the color is showing
         self.lens_fill_visible: bool  = False     # lens tint overlay (v1.2)
         self.lens_fill_top:     str   = DEFAULT_LENS_FILL_TOP
         self.lens_fill_bottom:  str   = DEFAULT_LENS_FILL_BOTTOM
@@ -963,9 +1123,19 @@ class WorkspaceState:
         self._notify()
         return item
 
+    @staticmethod
+    def _remove_identity(lst: list, obj) -> None:
+        # Curves/dims/texts are dataclasses, so ``in`` / ``list.remove`` compare
+        # by VALUE: deleting one of two identical curves (a double paste, a
+        # duplicate DXF entity) removed the other from the document while the
+        # scene dropped this one — the survivor on screen was no longer saved.
+        for i, x in enumerate(lst):
+            if x is obj:
+                del lst[i]
+                return
+
     def remove_curve(self, curve):
-        if curve in self.doc_curves:
-            self.doc_curves.remove(curve)
+        self._remove_identity(self.doc_curves, curve)
         self.scene.remove_curve(curve)
         self._notify()
 
@@ -976,8 +1146,7 @@ class WorkspaceState:
         return item
 
     def remove_dim(self, dim):
-        if dim in self.doc_dims:
-            self.doc_dims.remove(dim)
+        self._remove_identity(self.doc_dims, dim)
         self.scene.remove_dim(dim)
         self._notify()
 
@@ -988,8 +1157,7 @@ class WorkspaceState:
         return item
 
     def remove_text(self, text_obj):
-        if text_obj in self.doc_texts:
-            self.doc_texts.remove(text_obj)
+        self._remove_identity(self.doc_texts, text_obj)
         self.scene.remove_text(text_obj)
         self._notify()
 
@@ -1015,6 +1183,26 @@ class WorkspaceState:
         self.scene.reset_layer_states()
         self.undo_stack.clear()
         self.redo_stack.clear()
+        self.reset_session_state()
+
+    def reset_session_state(self):
+        """Per-document session state that is NOT in the file and must not
+        leak from the previous document into the next: the boxing snap and
+        the lens/outline locks derive from geometry that is gone, the bevel
+        and forming values are stored in the file (or default), and the
+        active layer starts over. Called by clear_document, so File > New
+        and every file load share it."""
+        self.boxing_snapped = False
+        self.shape_locked   = False
+        self.outline_locked = False
+        self.boxing_chain   = False
+        self.boxing_visible_pre_snap = None
+        self.boxing_guide.set_locked(False)
+        self.bevel_preset = "acetate"
+        self.bevel_depth  = BEVEL_PRESETS["acetate"]
+        self.bridge_angle  = ConstructionGuides.DEFAULT_BRIDGE_ANGLE_DEG
+        self.apical_radius = ConstructionGuides.DEFAULT_APICAL_RADIUS_MM
+        self.active_layer  = WORKSPACE_LAYERS[self.workspace_type][0]
 
     def restore_snapshot(self, snapshot: dict):
         self.clear_geometry()
@@ -1038,6 +1226,44 @@ class WorkspaceState:
         self.undo_stack.append(self.take_snapshot())
         self.restore_snapshot(self.redo_stack.pop())
         return True
+
+
+def _run_modal(dlg) -> int:
+    """exec() a dialog built for one use, then let it go. Parented to the
+    window and never deleted, every Preferences, Transform or Edit Text left a
+    live dialog behind, and each stylesheet pass re-polished them all (four
+    Preferences opens took an apply from 0.5 s to 1.4 s). deleteLater waits
+    for this handler to return, so the dialog's values stay readable here."""
+    result = dlg.exec()
+    dlg.deleteLater()
+    return result
+
+
+class _WheelGuard(QObject):
+    """Installed on the spin boxes, combos and sliders of a scrolling panel:
+    the wheel changes one only once it has focus, and otherwise scrolls the
+    panel. Scrolling the Guides tab with the pointer over A (width) resized a
+    locked lens and pushed an undo step per notch; over Frontal angle it
+    changed the saved design."""
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt)
+        if event.type() == QEvent.Type.Wheel and not obj.hasFocus():
+            event.ignore()          # unaccepted, it goes on to the scroll area
+            return True
+        return False
+
+    def guard(self, root: QWidget) -> None:
+        from PySide6.QtWidgets import QAbstractSlider, QAbstractSpinBox, QScrollBar
+        for w in root.findChildren(QWidget):
+            # Never a scroll bar (a QAbstractSlider too): a scroll area hands
+            # it the wheel by sendEvent, which does not propagate, so guarding
+            # one stopped every panel and list from scrolling at all.
+            if isinstance(w, QScrollBar):
+                continue
+            if isinstance(w, (QAbstractSpinBox, QComboBox, QAbstractSlider)):
+                # Wheel focus would hand the widget focus on the first notch.
+                w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                w.installEventFilter(self)
 
 
 class KeyCaptureEdit(QLineEdit):
@@ -1069,13 +1295,33 @@ class LayerTree(QTreeWidget):
     curves_dropped signal and MainWindow rebuilds the panel afterwards.
     """
 
-    curves_dropped = Signal(list, object)   # ([id(curve), ...], Layer)
+    curves_dropped   = Signal(list, object)   # ([id(curve), ...], Layer)
+    delete_requested = Signal()               # Del/Backspace on object rows
 
     def __init__(self):
         super().__init__()
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setDropIndicatorShown(True)
+
+    def has_object_rows_selected(self) -> bool:
+        for it in self.selectedItems():
+            data = it.data(0, Qt.ItemDataRole.UserRole)
+            if data and data[0] in ("curve", "text"):
+                return True
+        return False
+
+    def keyPressEvent(self, event):
+        # Delete works from the panel too: the rows picked here are already
+        # mirrored onto the canvas selection, so the same delete applies.
+        # Focus sits in this tree after a row click, which is why the
+        # canvas's own Delete handling never saw the key.
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if self.has_object_rows_selected():
+                self.delete_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _drop_target_layer(self, pos):
         item = self.itemAt(pos)
@@ -1096,7 +1342,7 @@ class LayerTree(QTreeWidget):
         curve_ids = []
         for it in self.selectedItems():
             data = it.data(0, Qt.ItemDataRole.UserRole)
-            if data and data[0] == "curve":
+            if data and data[0] in ("curve", "text"):
                 curve_ids.append(data[1])
         # Never let the view move/delete rows itself; report IgnoreAction so
         # InternalMove's source-row cleanup is skipped, then apply the edit
@@ -1105,23 +1351,49 @@ class LayerTree(QTreeWidget):
         event.accept()
         if layer is not None and curve_ids:
             QTimer.singleShot(
-                0, lambda: self.curves_dropped.emit(curve_ids, layer))
+                0, self, lambda: self.curves_dropped.emit(curve_ids, layer))
+
+
+def _available_screen(widget):
+    """The usable area of the screen `widget` (or its parent) will show on —
+    what a pop-up's size is bounded by. Falls back to the primary screen, and
+    to a plain rectangle when there is no screen at all (a headless import).
+    GuildModel's, shared."""
+    from PySide6.QtCore import QRect
+    parent = widget.parentWidget() if widget is not None else None
+    screen = None
+    try:
+        screen = ((parent.screen() if parent is not None else None)
+                  or QApplication.primaryScreen())
+    except Exception:
+        screen = None
+    return screen.availableGeometry() if screen is not None else QRect(0, 0, 1280, 800)
 
 
 class SettingsDialog(QDialog):
-    """Application-wide preferences dialog (General / Toolbar / Hotkeys tabs)."""
+    """Application-wide preferences: General / Appearance / Layers / Toolbar /
+    Hotkeys / Print & PDF.
+
+    Laid out as GuildModel's PrefsDialog is: every tab scrolls, so no tab
+    dictates the dialog's size; it opens at its content's size within the
+    screen, or at the size the maker last left it (`prefs_dialog_size`); the
+    guidance under a group is a short hint, and the rest is in tooltips."""
 
     def __init__(self, prefs: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Preferences")
         self.setMinimumWidth(380)
-        self.setMinimumHeight(480)
+        # Bounded by the screen: on a short panel with the OS scale up a fixed
+        # floor would put the OK row under the screen's edge.
+        self.setMinimumHeight(min(480, _available_screen(self).height()))
+        self.setSizeGripEnabled(True)
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
         tabs = QTabWidget()
+        self._tabs = tabs
         root_layout.addWidget(tabs)
 
         # ── OK / Cancel buttons ───────────────────────────────────────────
@@ -1137,7 +1409,7 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(cancel_btn)
         root_layout.addLayout(btn_row)
 
-        # ── Helper ────────────────────────────────────────────────────────
+        # ── Helpers ───────────────────────────────────────────────────────
         def _spinbox(lo, hi, step, val, suffix=" mm", decimals=1):
             s = QDoubleSpinBox()
             s.setRange(lo, hi)
@@ -1147,129 +1419,135 @@ class SettingsDialog(QDialog):
             s.setValue(val)
             return s
 
-        # ═══════════════════════════════════════════════════════════════════
-        # Tab 0 — General
-        # ═══════════════════════════════════════════════════════════════════
-        gen_scroll = QScrollArea()
-        gen_scroll.setWidgetResizable(True)
-        gen_scroll.setFrameShape(gen_scroll.Shape.NoFrame)
-        gen_inner  = QWidget()
-        gen_lay    = QVBoxLayout(gen_inner)
-        gen_lay.setSpacing(12)
-        gen_lay.setContentsMargins(16, 16, 16, 8)
-        gen_scroll.setWidget(gen_inner)
-        tabs.addTab(gen_scroll, "General")
+        def _page(title: str, spacing: int = 12) -> QVBoxLayout:
+            inner = QWidget()
+            lay = QVBoxLayout(inner)
+            lay.setSpacing(spacing)
+            lay.setContentsMargins(16, 16, 16, 12)
+            tabs.addTab(self._scrolled(inner), title)
+            return lay
 
-        # Drawing
+        # ═══════════════════════════════════════════════════════════════════
+        # General
+        # ═══════════════════════════════════════════════════════════════════
+        gen_lay = _page("General")
+
         draw_box  = QGroupBox("Drawing")
         draw_form = QFormLayout(draw_box)
         self._weight_spin = _spinbox(0.25, 10.0, 0.25, prefs["default_line_weight"],
                                      suffix=" px", decimals=2)
-        self._weight_spin.setToolTip("Default line weight (screen pixels) for new curves.")
+        self._weight_spin.setToolTip("Line weight of a new curve, in screen pixels.")
         draw_form.addRow("Default line weight:", self._weight_spin)
         gen_lay.addWidget(draw_box)
 
-        # Startup toggles
-        start_box  = QGroupBox("Startup — show/enable at launch")
-        start_form = QFormLayout(start_box)
-        self._mirror_chk = QCheckBox("Ghost axis");        self._mirror_chk.setChecked(prefs["mirror_on_startup"])
-        self._guides_chk = QCheckBox("Construction guides"); self._guides_chk.setChecked(prefs["guides_on_startup"])
-        self._snap_chk   = QCheckBox("Snap");              self._snap_chk.setChecked(prefs["snap_on_startup"])
-        self._smooth_chk = QCheckBox("Smooth handles");    self._smooth_chk.setChecked(prefs["smooth_handles"])
-        self._boxing_chk = QCheckBox("Boxing guide");      self._boxing_chk.setChecked(prefs["boxing_on_startup"])
-        self._stock_chk  = QCheckBox("Stock guide");       self._stock_chk.setChecked(prefs["stock_on_startup"])
-        self._pad_chk    = QCheckBox("Pad guide");         self._pad_chk.setChecked(prefs["pad_on_startup"])
-        for chk in (self._mirror_chk, self._guides_chk, self._snap_chk,
-                    self._smooth_chk, self._boxing_chk, self._stock_chk, self._pad_chk):
-            start_form.addRow(chk)
+        # Two columns: the drawing aids, then the Frame Front's guides.
+        start_box  = QGroupBox("On at Startup")
+        start_grid = QGridLayout(start_box)
+        start_grid.setHorizontalSpacing(24)
+        self._mirror_chk = QCheckBox("Ghost axis")
+        self._snap_chk   = QCheckBox("Snap")
+        self._smooth_chk = QCheckBox("Smooth handles")
+        self._guides_chk = QCheckBox("Construction guides")
+        self._boxing_chk = QCheckBox("Boxing guide")
+        self._stock_chk  = QCheckBox("Stock guide")
+        self._pad_chk    = QCheckBox("Pad guide")
+        for chk, key in ((self._mirror_chk, "mirror_on_startup"),
+                         (self._snap_chk,   "snap_on_startup"),
+                         (self._smooth_chk, "smooth_handles"),
+                         (self._guides_chk, "guides_on_startup"),
+                         (self._boxing_chk, "boxing_on_startup"),
+                         (self._stock_chk,  "stock_on_startup"),
+                         (self._pad_chk,    "pad_on_startup")):
+            chk.setChecked(prefs[key])
+        for chk in (self._guides_chk, self._boxing_chk, self._stock_chk,
+                    self._pad_chk):
+            chk.setToolTip("Frame Front only. The temples start with their "
+                           "stock guide shown and the others hidden.")
+        for row, chk in enumerate((self._mirror_chk, self._snap_chk,
+                                   self._smooth_chk)):
+            start_grid.addWidget(chk, row, 0)
+        for row, chk in enumerate((self._guides_chk, self._boxing_chk,
+                                   self._stock_chk, self._pad_chk)):
+            start_grid.addWidget(chk, row, 1)
+        start_grid.setColumnStretch(2, 1)
         gen_lay.addWidget(start_box)
 
-        # Boxing guide
-        box_box  = QGroupBox("Boxing Guide")
-        box_form = QFormLayout(box_box)
+        # The Frame Front's guide sizes, one row per guide (width × height).
+        size_box  = QGroupBox("Frame Front Guides")
+        size_grid = QGridLayout(size_box)
+        size_grid.setHorizontalSpacing(6)
         self._box_a   = _spinbox(30.0, 80.0,  0.5, prefs["boxing_a_mm"])
         self._box_b   = _spinbox(15.0, 60.0,  0.5, prefs["boxing_b_mm"])
         self._box_dbl = _spinbox(8.0,  40.0,  0.5, prefs["boxing_dbl_mm"])
-        box_form.addRow("A (width):",  self._box_a)
-        box_form.addRow("B (height):", self._box_b)
-        box_form.addRow("DBL:",        self._box_dbl)
-        gen_lay.addWidget(box_box)
+        self._stock_w = _spinbox(50.0, 400.0, 1.0, prefs["stock_width_mm"])
+        self._stock_h = _spinbox(20.0, 200.0, 1.0, prefs["stock_height_mm"])
+        self._pad_w   = _spinbox(10.0, 200.0, 0.5, prefs["pad_width_mm"])
+        self._pad_h   = _spinbox(10.0, 200.0, 0.5, prefs["pad_height_mm"])
+        boxing_tip = ("The dashed lens boxes: A is a box's width, B its height, "
+                      "and DBL the distance between the two boxes.")
+        for row, (label, first, second, tip) in enumerate((
+                ("Boxing A × B:", self._box_a, self._box_b, boxing_tip),
+                ("DBL:", self._box_dbl, None, boxing_tip),
+                ("Stock blank:", self._stock_w, self._stock_h,
+                 "The green dashed rectangle, centered at the origin: the "
+                 "blank the front is cut from (width × height)."),
+                ("Pad block:", self._pad_w, self._pad_h,
+                 "The purple dashed rectangle, centered at the origin "
+                 "(width × height)."))):
+            lbl = QLabel(label)
+            size_grid.addWidget(lbl, row, 0)
+            size_grid.addWidget(first, row, 1)
+            if second is not None:
+                size_grid.addWidget(QLabel("×"), row, 2)
+                size_grid.addWidget(second, row, 3)
+            for w in (lbl, first, second):
+                if w is not None:
+                    w.setToolTip(tip)
+        size_grid.setColumnStretch(1, 1)
+        size_grid.setColumnStretch(3, 1)
+        gen_lay.addWidget(size_box)
 
-        # Stock guide
-        stock_box  = QGroupBox("Stock Blank Guide  (green, centered at origin)")
-        stock_form = QFormLayout(stock_box)
-        self._stock_w = _spinbox(50.0,  400.0, 1.0, prefs["stock_width_mm"])
-        self._stock_h = _spinbox(20.0,  200.0, 1.0, prefs["stock_height_mm"])
-        stock_form.addRow("Width:",  self._stock_w)
-        stock_form.addRow("Height:", self._stock_h)
-        gen_lay.addWidget(stock_box)
-
-        # Pad guide
-        pad_box  = QGroupBox("Pad Block Guide  (purple, centered at origin)")
-        pad_form = QFormLayout(pad_box)
-        self._pad_w = _spinbox(10.0, 200.0, 0.5, prefs["pad_width_mm"])
-        self._pad_h = _spinbox(10.0, 200.0, 0.5, prefs["pad_height_mm"])
-        pad_form.addRow("Width:",  self._pad_w)
-        pad_form.addRow("Height:", self._pad_h)
-        gen_lay.addWidget(pad_box)
-
-        # Lens fill
         lens_box  = QGroupBox("Lens Fill")
         lens_form = QFormLayout(lens_box)
-        self._lens_opacity_spin = QDoubleSpinBox()
-        self._lens_opacity_spin.setRange(0, 100)
-        self._lens_opacity_spin.setDecimals(0)
-        self._lens_opacity_spin.setSingleStep(5)
-        self._lens_opacity_spin.setSuffix(" %")
-        self._lens_opacity_spin.setValue(prefs.get("lens_fill_opacity_pct", 65))
+        self._lens_opacity_spin = _spinbox(
+            0, 100, 5, prefs.get("lens_fill_opacity_pct", 65),
+            suffix=" %", decimals=0)
         self._lens_opacity_spin.setToolTip(
-            "Opacity a lens tint starts at when it is first shown.\n"
-            "The tint colours themselves are saved with each design.")
+            "The opacity a lens tint starts at. The tint colors themselves "
+            "are saved with each design.")
         lens_form.addRow("Default opacity:", self._lens_opacity_spin)
-        self._lens_intensity_spin = QDoubleSpinBox()
-        self._lens_intensity_spin.setRange(0.5, 8.0)
-        self._lens_intensity_spin.setDecimals(2)
-        self._lens_intensity_spin.setSingleStep(0.25)
-        self._lens_intensity_spin.setSuffix(" ×")
-        self._lens_intensity_spin.setValue(prefs.get("lens_fill_intensity", 1.0))
+        self._lens_intensity_spin = _spinbox(
+            0.5, 8.0, 0.25, prefs.get("lens_fill_intensity", 1.0),
+            suffix=" ×", decimals=2)
         self._lens_intensity_spin.setToolTip(
-            "Tint depth a lens fill starts at. 1.00 shows a colour exactly as\n"
-            "picked; higher deepens it, the way a longer dye time would.")
+            "The tint depth a lens fill starts at. 1.00 shows a color as "
+            "picked; higher deepens it, as a longer dye time would.")
         lens_form.addRow("Default intensity:", self._lens_intensity_spin)
         gen_lay.addWidget(lens_box)
 
         gen_lay.addStretch()
 
         # ═══════════════════════════════════════════════════════════════════
-        # Tab 1 — Appearance (mode / viewport theme / vignette / dots)
+        # Appearance (mode / viewport / editing dots / grid)
         # ═══════════════════════════════════════════════════════════════════
-        ap_scroll = QScrollArea()
-        ap_scroll.setWidgetResizable(True)
-        ap_scroll.setFrameShape(ap_scroll.Shape.NoFrame)
-        ap_inner  = QWidget()
-        ap_lay    = QVBoxLayout(ap_inner)
-        ap_lay.setSpacing(12)
-        ap_lay.setContentsMargins(16, 16, 16, 8)
-        ap_scroll.setWidget(ap_inner)
-        tabs.addTab(ap_scroll, "Appearance")
+        ap_lay = _page("Appearance")
 
         mode_box  = QGroupBox("Mode")
         mode_form = QFormLayout(mode_box)
-        self._dark_check = QCheckBox("Enable dark mode")
+        self._dark_check = QCheckBox("Dark mode")
         self._dark_check.setChecked(prefs["dark_mode"])
         mode_form.addRow(self._dark_check)
-        self._compact_check = QCheckBox("Compact toolbar (small icons)")
+        self._compact_check = QCheckBox("Compact toolbar")
         self._compact_check.setChecked(prefs.get("compact_toolbar", False))
         self._compact_check.setToolTip(
-            "Tighten the toolbar: much less button padding and slightly\n"
-            "smaller icons, for more drawing room.")
+            "Less padding and slightly smaller icons on the toolbar, for "
+            "more drawing room.")
         mode_form.addRow(self._compact_check)
         ap_lay.addWidget(mode_box)
 
         vp = prefs.get("viewport") or {}
         vp_box  = QGroupBox("Viewport")
         vp_form = QFormLayout(vp_box)
-        vp_form.setSpacing(6)
 
         # (key, label) — a preset overlays the canvas tokens in BOTH UI modes;
         # "auto" follows the UI theme as before.
@@ -1280,7 +1558,7 @@ class SettingsDialog(QDialog):
             ("blueprint", "Blueprint"),
             ("matte",     "Matte Dark"),
             ("white",     "Plain White"),
-            ("custom",    "Custom…"),
+            ("custom",    "Custom"),
         ]
         self._vp_combo = QComboBox()
         for _key, label in self._vp_choices:
@@ -1290,19 +1568,27 @@ class SettingsDialog(QDialog):
             (i for i, (k, _l) in enumerate(self._vp_choices) if k == cur_preset),
             0))
         self._vp_combo.setToolTip(
-            "Canvas backdrop + drawing ink, independent of the UI mode.\n"
-            "Follow UI theme = parchment in light mode, matte in dark mode.")
+            "The canvas backdrop and drawing ink, independent of the UI mode. "
+            "Follow UI theme is Parchment in light mode and Matte Dark in "
+            "dark mode.")
         self._vp_combo.currentIndexChanged.connect(self._on_vp_preset_changed)
-        vp_form.addRow("Canvas preset:", self._vp_combo)
 
+        # The custom color sits beside the preset it belongs to.
         self._vp_custom_color = vp.get("custom_bg", "#faf6ee")
-        self._vp_color_btn = QPushButton("Canvas colour…")
+        self._vp_color_btn = QPushButton("Color…")
         self._vp_color_btn.setToolTip(
-            "Custom canvas colour; drawing ink is derived automatically.")
+            "The canvas color for the Custom preset; the drawing ink is "
+            "derived from it.")
         self._vp_color_btn.clicked.connect(self._pick_vp_color)
         self._vp_color_btn.setEnabled(cur_preset == "custom")
         self._update_vp_swatch()
-        vp_form.addRow("Custom:", self._vp_color_btn)
+        canvas_row = QWidget()
+        cr_lay = QHBoxLayout(canvas_row)
+        cr_lay.setContentsMargins(0, 0, 0, 0)
+        cr_lay.setSpacing(6)
+        cr_lay.addWidget(self._vp_combo, 1)
+        cr_lay.addWidget(self._vp_color_btn)
+        vp_form.addRow("Canvas:", canvas_row)
 
         vig_row = QWidget()
         vig_lay = QHBoxLayout(vig_row)
@@ -1312,9 +1598,13 @@ class SettingsDialog(QDialog):
         self._vignette_slider.setRange(0, 100)
         self._vignette_slider.setValue(int(vp.get("vignette", 0)))
         self._vignette_slider.setToolTip(
-            "Darkens the viewport edges to focus the eye on the work.\n"
-            "0 = off. Display-only — never printed or exported.")
+            "Darkens the edges of the canvas to focus the eye. Display only; "
+            "never printed or exported.")
         self._vignette_lbl = QLabel(f"{self._vignette_slider.value()}%")
+        self._vignette_lbl.setMinimumWidth(
+            self._vignette_lbl.fontMetrics().horizontalAdvance("100%"))
+        self._vignette_lbl.setAlignment(Qt.AlignmentFlag.AlignRight
+                                        | Qt.AlignmentFlag.AlignVCenter)
         self._vignette_slider.valueChanged.connect(
             lambda v: self._vignette_lbl.setText(f"{v}%"))
         vig_lay.addWidget(self._vignette_slider, 1)
@@ -1322,14 +1612,13 @@ class SettingsDialog(QDialog):
         vp_form.addRow("Vignette:", vig_row)
         ap_lay.addWidget(vp_box)
 
-        dots_box  = QGroupBox("Editing dots")
+        dots_box  = QGroupBox("Editing Dots")
         dots_form = QFormLayout(dots_box)
         self._dot_spin = _spinbox(2, 10, 1, float(prefs.get("dot_radius_px", 4)),
                                   suffix=" px", decimals=0)
         self._dot_spin.setToolTip(
-            "Radius of the node dots shown on a selected curve (handles draw\n"
-            "one px smaller). Larger helps on high-DPI displays. Applies the\n"
-            "next time a curve is selected.")
+            "Radius of the node dots on a selected curve; handles draw one "
+            "pixel smaller. Larger helps on a high-DPI display.")
         dots_form.addRow("Node dot radius:", self._dot_spin)
         ap_lay.addWidget(dots_box)
 
@@ -1339,36 +1628,39 @@ class SettingsDialog(QDialog):
             0.5, 100.0, 0.5, float(prefs.get("grid_spacing_mm", 2.0)),
             suffix=" mm", decimals=1)
         self._grid_spacing_spin.setToolTip(
-            "Grid line spacing. Toggle the grid overlay with the Grid toolbar\n"
-            "button; enable Grid in the snap palette to snap to intersections.")
+            "The distance between grid lines. The Grid button shows the grid; "
+            "the Grid snap in the snap palette snaps to its intersections.")
         grid_form.addRow("Spacing:", self._grid_spacing_spin)
         from PySide6.QtWidgets import QSpinBox as _QSpinBox
         self._grid_major_spin = _QSpinBox()
         self._grid_major_spin.setRange(1, 20)
+        self._grid_major_spin.setSuffix(" lines")
         self._grid_major_spin.setValue(int(prefs.get("grid_major", 5)))
         self._grid_major_spin.setToolTip(
-            "Every Nth line is drawn heavier (a major division).\n"
-            "With 2 mm spacing the shipped default of 5 = a major every 10 mm.")
-        grid_form.addRow("Major every:", self._grid_major_spin)
+            "Every Nth line is drawn heavier. At 2 mm spacing, 5 puts a major "
+            "line every 10 mm.")
+        grid_form.addRow("Major line every:", self._grid_major_spin)
 
         self._grid_width_spin = _spinbox(
             0.5, 4.0, 0.5, float(prefs.get("grid_major_width_px", 1.0)),
             suffix=" px", decimals=1)
         self._grid_width_spin.setToolTip(
-            "Line weight of the major grid lines (screen pixels).")
-        grid_form.addRow("Major width:", self._grid_width_spin)
+            "Line weight of the major grid lines, in screen pixels.")
+        grid_form.addRow("Major line width:", self._grid_width_spin)
 
-        # Grid line colours: "" = follow the theme tokens. Swatch buttons
-        # mirror the Custom-canvas-colour pattern above.
+        # Grid line colors: "" = follow the theme tokens. Swatch buttons
+        # mirror the custom canvas color above.
         self._grid_minor_color = str(prefs.get("grid_minor_color", "") or "")
         self._grid_major_color = str(prefs.get("grid_major_color", "") or "")
-        self._grid_minor_btn = QPushButton("Minor colour…")
+        self._grid_minor_btn = QPushButton("Minor…")
+        self._grid_minor_btn.setToolTip("Color of the minor grid lines.")
         self._grid_minor_btn.clicked.connect(lambda: self._pick_grid_color("minor"))
-        self._grid_major_btn = QPushButton("Major colour…")
+        self._grid_major_btn = QPushButton("Major…")
+        self._grid_major_btn.setToolTip("Color of the major grid lines.")
         self._grid_major_btn.clicked.connect(lambda: self._pick_grid_color("major"))
-        grid_reset = QPushButton("Theme default")
-        grid_reset.setToolTip("Clear both grid colour overrides — the grid "
-                              "follows the theme again.")
+        grid_reset = QPushButton("Reset")
+        grid_reset.setToolTip("Clear both grid colors; the grid follows the "
+                              "theme again.")
         grid_reset.clicked.connect(self._reset_grid_colors)
         grid_colors_row = QWidget()
         gc_lay = QHBoxLayout(grid_colors_row)
@@ -1378,33 +1670,20 @@ class SettingsDialog(QDialog):
         gc_lay.addWidget(self._grid_major_btn)
         gc_lay.addWidget(grid_reset)
         gc_lay.addStretch()
-        grid_form.addRow("Colours:", grid_colors_row)
+        grid_form.addRow("Colors:", grid_colors_row)
         self._update_grid_swatches()
         ap_lay.addWidget(grid_box)
 
         ap_lay.addStretch()
 
         # ═══════════════════════════════════════════════════════════════════
-        # Tab 2 — Layers & Colors (per-layer light/dark overrides)
+        # Layers (per-layer light/dark color overrides)
         # ═══════════════════════════════════════════════════════════════════
-        lc_scroll = QScrollArea()
-        lc_scroll.setWidgetResizable(True)
-        lc_scroll.setFrameShape(lc_scroll.Shape.NoFrame)
-        lc_inner  = QWidget()
-        lc_lay    = QVBoxLayout(lc_inner)
-        lc_lay.setSpacing(10)
-        lc_lay.setContentsMargins(16, 16, 16, 8)
-        lc_scroll.setWidget(lc_inner)
-        tabs.addTab(lc_scroll, "Layers")
-
-        # No embedded line breaks — the label word-wraps to the tab width, and
-        # hard breaks mid-sentence fight the natural wrapping.
-        lc_note = QLabel(
-            "Drawing colour per layer, for each UI mode. Plain layers follow "
-            "the shared ink colour until you override them; SCULPT and "
-            "ENGRAVING carry their own defaults.")
-        lc_note.setWordWrap(True)
-        lc_lay.addWidget(lc_note)
+        lc_lay = _page("Layers", spacing=10)
+        lc_lay.addWidget(self._hint(
+            "Each layer's drawing color in light and dark mode. Most layers "
+            "use the shared ink until you pick a color; SCULPT and ENGRAVING "
+            "have their own."))
 
         # Only layer.* overrides are edited here; _collect_theme preserves
         # any other tokens already present in the prefs["theme"] dicts.
@@ -1442,7 +1721,7 @@ class SettingsDialog(QDialog):
                 lc_grid.addWidget(btn, row, col)
             rst = QToolButton()
             rst.setText("↺")
-            rst.setToolTip(f"Reset {name} to its default colours")
+            rst.setToolTip(f"Reset {name} to its default colors.")
             rst.clicked.connect(
                 lambda _=False, n=name: self._reset_layer_color(n))
             lc_grid.addWidget(rst, row, 3)
@@ -1450,55 +1729,54 @@ class SettingsDialog(QDialog):
         lc_grid.setColumnStretch(4, 1)
         lc_lay.addLayout(lc_grid)
 
-        lc_reset_all = QPushButton("Reset all layer colours")
+        lc_reset_all = QPushButton("Reset All Layer Colors")
         lc_reset_all.clicked.connect(self._reset_all_layer_colors)
-        lc_lay.addWidget(lc_reset_all)
+        lc_reset_row = QHBoxLayout()
+        lc_reset_row.addWidget(lc_reset_all)
+        lc_reset_row.addStretch()
+        lc_lay.addLayout(lc_reset_row)
         lc_lay.addStretch()
 
         # ═══════════════════════════════════════════════════════════════════
-        # Tab 3 — Toolbar visibility
+        # Toolbar (button visibility), grouped as the toolbar is
         # ═══════════════════════════════════════════════════════════════════
-        tb_scroll = QScrollArea()
-        tb_scroll.setWidgetResizable(True)
-        tb_scroll.setFrameShape(tb_scroll.Shape.NoFrame)
-        tb_inner  = QWidget()
-        tb_lay    = QVBoxLayout(tb_inner)
-        tb_lay.setSpacing(4)
-        tb_lay.setContentsMargins(16, 16, 16, 8)
-        tb_scroll.setWidget(tb_inner)
-        tabs.addTab(tb_scroll, "Toolbar")
-
-        note = QLabel("Uncheck a button to hide it. Hidden buttons remain "
-                      "accessible via their hotkey (set in the Hotkeys tab).")
-        note.setWordWrap(True)
-        tb_lay.addWidget(note)
+        tb_lay = _page("Toolbar")
+        tb_lay.addWidget(self._hint(
+            "Uncheck a button to hide it; a hidden tool still answers its "
+            "hotkey."))
 
         toolbar_prefs = prefs.get("toolbar", {})
         self._tb_checks: dict[str, QCheckBox] = {}
-        for key, label, hideable in _TOOLBAR_ACTION_DEFS:
-            default_on = key != "mirror_close"
-            chk = QCheckBox(label)
-            chk.setChecked(toolbar_prefs.get(key, default_on))
-            if not hideable:
-                chk.setEnabled(False)
-                chk.setToolTip("Select is always visible.")
-            self._tb_checks[key] = chk
-            tb_lay.addWidget(chk)
+        for section, entries in _TOOLBAR_SECTIONS:
+            box  = QGroupBox(section)
+            grid = QGridLayout(box)
+            grid.setHorizontalSpacing(24)
+            rows = (len(entries) + 1) // 2          # two columns, down then across
+            for i, (key, label, hideable) in enumerate(entries):
+                default_on = _prefs_mod.DEFAULTS["toolbar"].get(key, True)
+                chk = QCheckBox(label)
+                chk.setChecked(toolbar_prefs.get(key, default_on))
+                if not hideable:
+                    chk.setEnabled(False)
+                    chk.setToolTip("Select is always shown.")
+                elif key in _WS_ONLY_ACTIONS:
+                    chk.setToolTip(
+                        "Shown on the Frame Front only."
+                        if _WS_ONLY_ACTIONS[key] == ("front",)
+                        else "Shown on the temples only.")
+                self._tb_checks[key] = chk
+                grid.addWidget(chk, i % rows, i // rows)
+            grid.setColumnStretch(2, 1)
+            tb_lay.addWidget(box)
         tb_lay.addStretch()
 
         # ═══════════════════════════════════════════════════════════════════
-        # Tab 4 — Hotkeys
+        # Hotkeys
         # ═══════════════════════════════════════════════════════════════════
-        hk_outer  = QWidget()
-        hk_lay    = QVBoxLayout(hk_outer)
-        hk_lay.setSpacing(8)
-        hk_lay.setContentsMargins(16, 16, 16, 8)
-        tabs.addTab(hk_outer, "Hotkeys")
-
-        hint = QLabel("Click a field and press a key (or Ctrl/Shift/Alt + key).\n"
-                      "Press Esc inside a field to clear it.")
-        hint.setWordWrap(True)
-        hk_lay.addWidget(hint)
+        hk_lay = _page("Hotkeys", spacing=10)
+        hk_lay.addWidget(self._hint(
+            "Click a field, then press the key or combination. Esc clears "
+            "the field."))
 
         hk_form = QFormLayout()
         hk_form.setSpacing(6)
@@ -1507,12 +1785,11 @@ class SettingsDialog(QDialog):
         hotkey_prefs = prefs.get("hotkeys", {})
         self._key_edits: list[KeyCaptureEdit] = []
         self._hk_keys:   list[str]            = []
-        from . import prefs as _pm
-        defaults = _pm.DEFAULTS["hotkeys"]
+        defaults = _prefs_mod.DEFAULTS["hotkeys"]
         for key, label in _HOTKEY_ACTION_DEFS:
             edit = KeyCaptureEdit()
             edit.setPlaceholderText("none")
-            edit.setMaximumWidth(120)
+            edit.setMaximumWidth(140)
             edit.setText(hotkey_prefs.get(key, defaults.get(key, "")))
             edit.textChanged.connect(self._check_conflicts)
             self._key_edits.append(edit)
@@ -1520,52 +1797,108 @@ class SettingsDialog(QDialog):
             hk_form.addRow(label + ":", edit)
 
         self._conflict_label = QLabel()
+        self._conflict_label.setWordWrap(True)
         # Dark red vanishes on the dark chrome — brighten it there.
         self._conflict_label.setStyleSheet(
             f"color: {'#ff6b6b' if theme.is_dark() else '#cc0000'};")
         self._conflict_label.hide()
         hk_lay.addWidget(self._conflict_label)
 
-        non_reassignable = QLabel(
-            "Non-reassignable (hardcoded):\n"
-            "  Ctrl+S  Save    Ctrl+Shift+S  Save As\n"
-            "  Ctrl+Z  Undo    Ctrl+Y / Ctrl+Shift+Z  Redo\n"
-            "  Ctrl+G  Group   Ctrl+Shift+G  Ungroup\n"
-            "  Del / Backspace  Delete     Esc  Cancel"
-        )
-        non_reassignable.setStyleSheet("color: #888; font-size: 11px;")
-        hk_lay.addWidget(non_reassignable)
+        # Every shortcut a hotkey may not take, listed in full — the conflict
+        # check refuses all of them, so all of them are shown.
+        fixed_box  = QGroupBox("Fixed Shortcuts")
+        fixed_grid = QGridLayout(fixed_box)
+        fixed_grid.setHorizontalSpacing(10)
+        fixed_grid.setVerticalSpacing(3)
+        half = (len(_FIXED_SHORTCUTS) + 1) // 2
+        for i, (name, keys) in enumerate(_FIXED_SHORTCUTS):
+            row, col = i % half, (i // half) * 3
+            fixed_grid.addWidget(QLabel(name), row, col)
+            k = QLabel(" / ".join(keys))
+            k.setObjectName("hintLabel")
+            fixed_grid.addWidget(k, row, col + 1)
+        fixed_grid.setColumnMinimumWidth(2, 12)
+        fixed_grid.setColumnStretch(5, 1)
+        hk_lay.addWidget(fixed_box)
         hk_lay.addStretch()
 
         # ═══════════════════════════════════════════════════════════════════
-        # Tab 6 — Catalog PDF
+        # Print & PDF — one group per export, saying which it drives
         # ═══════════════════════════════════════════════════════════════════
         from .fontpicker import FontFilterCombo
         from .document import WORKSPACE_LAYERS as _WS_LAYERS
+        from .export.template_print import PAPER_SIZES as _TP_PAPER
 
-        cat_outer = QWidget()
-        cat_lay   = QVBoxLayout(cat_outer)
-        cat_lay.setSpacing(8)
-        cat_lay.setContentsMargins(16, 16, 16, 8)
-        cat_scroll = QScrollArea()
-        cat_scroll.setWidgetResizable(True)
-        cat_scroll.setWidget(cat_outer)
-        tabs.addTab(cat_scroll, "PDF")
+        pdf_lay = _page("Print && PDF")
 
-        cat_cfg = {**_pm.DEFAULTS["catalog_pdf"],
+        cat_cfg = {**_prefs_mod.DEFAULTS["catalog_pdf"],
                    **(prefs.get("catalog_pdf") or {})}
+        tp_cfg = {**_prefs_mod.DEFAULTS["template_print"],
+                  **(prefs.get("template_print") or {})}
 
-        cat_intro = QLabel(
-            "Settings for the PDF/print exports. The line weight and vertical "
-            "offset apply to “PDF for Catalog”, “PDF (1:1)” and “Print (1:1)”; "
-            "the caption, fill and layer choices below are for the catalog "
-            "sheet.")
-        cat_intro.setWordWrap(True)
-        cat_lay.addWidget(cat_intro)
+        # Print Front + Temples / PDF Front + Temples
+        tp_box  = QGroupBox("Front + Temples (1:1 Templates)")
+        tp_box.setToolTip("File ▸ Print Front + Temples and "
+                          "Export ▸ PDF Front + Temples.")
+        tp_form = QFormLayout(tp_box)
 
-        cat_form = QFormLayout()
-        cat_form.setSpacing(6)
-        cat_lay.addLayout(cat_form)
+        self._tp_paper = QComboBox()
+        for _k, (_lbl, _w, _h) in _TP_PAPER.items():
+            self._tp_paper.addItem(_lbl, _k)
+        self._tp_paper.setCurrentIndex(
+            max(0, self._tp_paper.findData(tp_cfg["paper"])))
+        self._tp_paper.setToolTip(
+            "The paper the pieces are laid out on, at true size. Pieces that "
+            "don't fit spill onto further pages; the print dialog can still "
+            "change the size.")
+        tp_form.addRow("Paper size:", self._tp_paper)
+
+        self._tp_orient = QComboBox()
+        for _k, _lbl in (("auto", "Automatic (fewest pages)"),
+                         ("portrait", "Portrait"), ("landscape", "Landscape")):
+            self._tp_orient.addItem(_lbl, _k)
+        self._tp_orient.setCurrentIndex(
+            max(0, self._tp_orient.findData(tp_cfg["orientation"])))
+        tp_form.addRow("Orientation:", self._tp_orient)
+
+        self._tp_lw = _spinbox(0.1, 3.0, 0.05, float(tp_cfg["line_weight_mm"]),
+                               decimals=2)
+        self._tp_lw.setToolTip(
+            "Stroke width on paper. A fine line (0.25–0.35 mm) is easiest to "
+            "saw to; a heavier one reads better through tracing paper.")
+        tp_form.addRow("Line weight:", self._tp_lw)
+
+        self._tp_labels_chk = QCheckBox("Label each piece")
+        self._tp_labels_chk.setToolTip(
+            "Print Frame Front, Temple R and Temple L beside the pieces.")
+        self._tp_labels_chk.setChecked(bool(tp_cfg["labels"]))
+        tp_form.addRow(self._tp_labels_chk)
+        tp_form.addRow(self._hint(
+            "Prints each workspace as it shows: visible layers, mirror ghost "
+            "and engraving. Every page carries a ruler to check the scale."))
+        pdf_lay.addWidget(tp_box)
+
+        # Shared by the 1:1 print, the 1:1 PDF and the catalog sheet
+        lw_box  = QGroupBox("1:1 Print, 1:1 PDF and Catalog")
+        lw_form = QFormLayout(lw_box)
+        self._cat_lw = _spinbox(0.1, 3.0, 0.1, float(cat_cfg["line_weight_mm"]),
+                                decimals=2)
+        self._cat_lw.setToolTip("Stroke width on paper.")
+        lw_form.addRow("Line weight:", self._cat_lw)
+        self._cat_offset = _spinbox(
+            -100.0, 100.0, 1.0, float(cat_cfg.get("content_offset_mm", 0.0)))
+        self._cat_offset.setToolTip(
+            "Moves the drawing down (+) or up (−) on the page; the caption "
+            "stays put. Clears a binding margin when pages are bound into a "
+            "catalog. 0 = centered.")
+        lw_form.addRow("Vertical offset:", self._cat_offset)
+        pdf_lay.addWidget(lw_box)
+
+        # PDF for Catalog only
+        cat_box  = QGroupBox("Catalog PDF")
+        cat_box.setToolTip("Export ▸ PDF for Catalog: the front and both "
+                           "temples on one sheet.")
+        cat_form = QFormLayout(cat_box)
 
         self._cat_paper = QComboBox()
         self._cat_paper_choices = [("a5", "A5 (landscape)"),
@@ -1577,81 +1910,129 @@ class SettingsDialog(QDialog):
                   if k == cat_cfg["paper"]), 0))
         cat_form.addRow("Paper size:", self._cat_paper)
 
-        self._cat_lw = QDoubleSpinBox()
-        self._cat_lw.setRange(0.1, 3.0)
-        self._cat_lw.setSingleStep(0.1)
-        self._cat_lw.setDecimals(2)
-        self._cat_lw.setSuffix(" mm")
-        self._cat_lw.setValue(float(cat_cfg["line_weight_mm"]))
-        cat_form.addRow("Line weight:", self._cat_lw)
-
-        self._cat_offset = QDoubleSpinBox()
-        self._cat_offset.setRange(-100.0, 100.0)
-        self._cat_offset.setSingleStep(1.0)
-        self._cat_offset.setDecimals(1)
-        self._cat_offset.setSuffix(" mm")
-        self._cat_offset.setValue(float(cat_cfg.get("content_offset_mm", 0.0)))
-        self._cat_offset.setToolTip(
-            "Shift the drawing down (+) or up (−) on the page; the file-name "
-            "caption stays put. Use it to clear a binding/spine margin when "
-            "several pages are bound into a catalog. 0 = centred.")
-        cat_form.addRow("Frame vertical offset:", self._cat_offset)
-
         self._cat_font = FontFilterCombo(family=cat_cfg["caption_font"])
         self._cat_font.setToolTip(
-            "Type to filter — the list narrows to the families that match, so "
-            "a weight\nor an italic is one glance away instead of a scroll. "
-            "The arrow re-filters\non what's in the box, showing the current "
-            "family's siblings.")
+            "Type to filter: the list narrows to the families that match. "
+            "The arrow shows the current family's siblings.")
         cat_form.addRow("Caption font:", self._cat_font)
 
-        self._cat_caption_chk = QCheckBox("Print the design file name (caption)")
+        self._cat_caption_chk = QCheckBox("Print the file name as a caption")
         self._cat_caption_chk.setChecked(bool(cat_cfg["caption"]))
-        cat_lay.addWidget(self._cat_caption_chk)
+        cat_form.addRow(self._cat_caption_chk)
 
-        self._cat_scale_chk = QCheckBox(
-            "Print a scale note  (off = true page scale, as rendered)")
+        self._cat_scale_chk = QCheckBox("Print the scale")
+        self._cat_scale_chk.setToolTip(
+            "Prints “Scale 1:1” in a corner, or the reduction when the "
+            "drawing had to shrink to fit the page.")
         self._cat_scale_chk.setChecked(bool(cat_cfg["show_scale"]))
-        cat_lay.addWidget(self._cat_scale_chk)
+        cat_form.addRow(self._cat_scale_chk)
 
-        self._cat_fill_chk = QCheckBox(
-            "Print Frame Fill and Lens Fill  (colour, as shown on the canvas)")
+        self._cat_fill_chk = QCheckBox("Print frame and lens fills")
         self._cat_fill_chk.setChecked(bool(cat_cfg.get("include_fill", False)))
         self._cat_fill_chk.setToolTip(
-            "Lay the display-only overlays under the line work on the catalog\n"
-            "sheet — the material swatch or tint in the frame profile and the\n"
-            "lens gradient in each aperture, per workspace, exactly as that\n"
-            "workspace shows them. A workspace with its fill switched off (or\n"
-            "whose outline doesn't close) prints line work only.\n\n"
+            "Lays the Frame Fill and Lens Fill under the line work, as each "
+            "workspace shows them. A workspace with its fill off, or whose "
+            "outline doesn't close, prints line work only.\n\n"
             "Off is the cutting-room sheet; on is the showroom page.")
-        cat_lay.addWidget(self._cat_fill_chk)
+        cat_form.addRow(self._cat_fill_chk)
 
-        def _cat_layer_group(title, ws_key, selected):
-            box = QGroupBox(title)
-            v = QVBoxLayout(box)
+        def _layer_checks(ws_key, selected) -> tuple[QWidget, dict]:
+            row = QWidget()
+            grid = QGridLayout(row)
+            layer_grids.append(grid)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(16)
+            grid.setVerticalSpacing(2)
             checks = {}
-            for layer in _WS_LAYERS[ws_key]:
+            for i, layer in enumerate(_WS_LAYERS[ws_key]):
                 cb = QCheckBox(layer.value)
                 cb.setChecked(layer.value in selected)
-                v.addWidget(cb)
+                grid.addWidget(cb, i // 3, i % 3)
                 checks[layer.value] = cb
-            cat_lay.addWidget(box)
-            return checks
+            grid.setColumnStretch(3, 1)
+            return row, checks
 
-        self._cat_front_layers = _cat_layer_group(
-            "Frame front — layers to show", "front", cat_cfg["front_layers"])
-        self._cat_temple_layers = _cat_layer_group(
-            "Temples — layers to show", "temple_r", cat_cfg["temple_layers"])
-        cat_lay.addStretch()
+        layer_grids: list[QGridLayout] = []
+        front_row, self._cat_front_layers = _layer_checks(
+            "front", cat_cfg["front_layers"])
+        cat_form.addRow("Front layers:", front_row)
+        temple_row, self._cat_temple_layers = _layer_checks(
+            "temple_r", cat_cfg["temple_layers"])
+        cat_form.addRow("Temple layers:", temple_row)
+        # Two grids, one set of columns: the widest name sets every column.
+        col_w = max(cb.sizeHint().width() for cb in
+                    (*self._cat_front_layers.values(),
+                     *self._cat_temple_layers.values()))
+        for grid in layer_grids:
+            for col in range(3):
+                grid.setColumnMinimumWidth(col, col_w)
+        pdf_lay.addWidget(cat_box)
+        pdf_lay.addStretch()
 
         self._check_conflicts()
+
+        # A typed number settles when the typing is done, as in GuildModel;
+        # and the wheel scrolls the tab unless a field has focus.
+        from PySide6.QtWidgets import QAbstractSpinBox
+        for box in self.findChildren(QAbstractSpinBox):
+            box.setKeyboardTracking(False)
+        self._wheel_guard = _WheelGuard(self)
+        self._wheel_guard.guard(tabs)
+
+        # Open at the size the maker left it, else at the content's own size,
+        # within the screen (see _initial_size).
+        self.resize(self._initial_size(prefs))
+
+    @staticmethod
+    def _scrolled(inner: QWidget) -> QScrollArea:
+        """Wrap a tab's column so no tab dictates the dialog's minimum size."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(inner)
+        return scroll
+
+    @staticmethod
+    def _hint(text: str) -> QLabel:
+        """A short line of guidance in the muted hint style (theme
+        `QLabel#hintLabel`); anything longer belongs in a tooltip."""
+        lbl = QLabel(text)
+        lbl.setObjectName("hintLabel")
+        lbl.setWordWrap(True)
+        return lbl
+
+    def _initial_size(self, prefs: dict) -> QSize:
+        """The remembered size (`prefs_dialog_size`), else the widest and
+        tallest tab content plus the scroll bar and the chrome; either way no
+        more than 80 % of the screen the dialog will show on, and never under
+        the minimums."""
+        from PySide6.QtWidgets import QStyle
+        avail = _available_screen(self)
+        max_w, max_h = int(avail.width() * 0.8), int(avail.height() * 0.8)
+        floor_w, floor_h = self.minimumWidth(), self.minimumHeight()
+        saved = prefs.get("prefs_dialog_size")
+        if (isinstance(saved, (list, tuple)) and len(saved) == 2
+                and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                        and math.isfinite(v) and v > 0 for v in saved)):
+            return QSize(max(min(int(saved[0]), max_w), floor_w),
+                         max(min(int(saved[1]), max_h), floor_h))
+        w = h = 0
+        for i in range(self._tabs.count()):
+            page = self._tabs.widget(i)
+            inner = page.widget() if isinstance(page, QScrollArea) else page
+            hint = inner.sizeHint()
+            w, h = max(w, hint.width()), max(h, hint.height())
+        bar = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        chrome = self._tabs.tabBar().sizeHint().height() + 72     # tab bar + OK row
+        return QSize(max(min(w + bar + 8, max_w), floor_w),
+                     max(min(h + chrome, max_h), floor_h))
 
     # ------------------------------------------------------------------
     # Layers & Colors helpers
     # ------------------------------------------------------------------
 
     def _layer_resolved(self, name: str, mode: str) -> tuple[str, bool]:
-        """(hex, is_override) for a layer's colour in one mode."""
+        """(hex, is_override) for a layer's color in one mode."""
         ov = self._layer_over[mode].get(f"layer.{name}")
         if ov:
             return ov, True
@@ -1669,7 +2050,7 @@ class SettingsDialog(QDialog):
     def _pick_layer_color(self, name: str, mode: str):
         cur, _ = self._layer_resolved(name, mode)
         c = QColorDialog.getColor(QColor(cur), self,
-                                  f"{name} colour ({mode} mode)")
+                                  f"{name} color ({mode} mode)")
         if c.isValid():
             self._layer_over[mode][f"layer.{name}"] = c.name()
             self._refresh_layer_btn(name)
@@ -1705,7 +2086,7 @@ class SettingsDialog(QDialog):
 
     def _pick_vp_color(self):
         c = QColorDialog.getColor(QColor(self._vp_custom_color), self,
-                                  "Canvas colour")
+                                  "Canvas color")
         if c.isValid():
             self._vp_custom_color = c.name()
             self._update_vp_swatch()
@@ -1720,7 +2101,7 @@ class SettingsDialog(QDialog):
                    else self._grid_major_color)
         fallback = theme.color(f"canvas.grid_{which}")
         c = QColorDialog.getColor(QColor(current or fallback), self,
-                                  f"Grid {which} line colour")
+                                  f"Grid {which} line color")
         if c.isValid():
             if which == "minor":
                 self._grid_minor_color = c.name()
@@ -1743,10 +2124,19 @@ class SettingsDialog(QDialog):
 
     # ------------------------------------------------------------------
 
+    # Bound elsewhere as fixed shortcuts; a hotkey on one of these makes Qt
+    # treat the sequence as ambiguous and fire NEITHER — Undo simply died.
+    # "Delete" / "Escape" are the long spellings of the same two keys.
+    _RESERVED_KEYS = ({k for _name, keys in _FIXED_SHORTCUTS for k in keys}
+                      | {"Delete", "Escape"})
+
     def _check_conflicts(self):
         texts = [e.text().strip() for e in self._key_edits]
         non_empty = [t for t in texts if t]
         conflict_keys = {t for t in non_empty if non_empty.count(t) > 1}
+        reserved = {t for t in non_empty if t in self._RESERVED_KEYS}
+        typing = {t for t in non_empty if t in _TYPING_KEYS}
+        conflict_keys |= reserved | typing
         for edit in self._key_edits:
             txt = edit.text().strip()
             if txt and txt in conflict_keys:
@@ -1758,8 +2148,17 @@ class SettingsDialog(QDialog):
         has_conflict = bool(conflict_keys)
         self._ok_btn.setEnabled(not has_conflict)
         if has_conflict:
-            dupes = ", ".join(sorted(conflict_keys))
-            self._conflict_label.setText(f"Conflict: {dupes} assigned to multiple actions.")
+            parts = []
+            dupes = sorted(conflict_keys - reserved - typing)
+            if dupes:
+                parts.append(f"{', '.join(dupes)} assigned to multiple actions")
+            if reserved:
+                parts.append(f"{', '.join(sorted(reserved))} reserved for a "
+                             "fixed shortcut (listed below)")
+            if typing:
+                parts.append(f"{', '.join(sorted(typing))} reserved for typing "
+                             "values in the tools")
+            self._conflict_label.setText("Conflict: " + "; ".join(parts) + ".")
             self._conflict_label.show()
         else:
             self._conflict_label.hide()
@@ -1820,6 +2219,12 @@ class SettingsDialog(QDialog):
                 "temple_layers":  [n for n, cb in self._cat_temple_layers.items()
                                    if cb.isChecked()],
             },
+            "template_print": {
+                "paper":          self._tp_paper.currentData(),
+                "orientation":    self._tp_orient.currentData(),
+                "line_weight_mm": self._tp_lw.value(),
+                "labels":         self._tp_labels_chk.isChecked(),
+            },
         }
 
 
@@ -1857,6 +2262,10 @@ class TransformDialog(QDialog):
         self._rot.setSingleStep(5.0)
         self._rot.setSuffix("°")
         self._rot.setValue(0.0)
+        # The Text dialog's convention, and CAD's: until 1.3 a positive angle
+        # here turned the selection clockwise while the Text dialog's turned
+        # it counter-clockwise.
+        self._rot.setToolTip("Positive rotates counter-clockwise.")
 
         self._pivot = QComboBox()
         self._pivot.addItems(["Selection center", "Scene origin (0, 0)"])
@@ -1867,8 +2276,10 @@ class TransformDialog(QDialog):
         form.addRow("Rotation:", self._rot)
         form.addRow("Pivot:", self._pivot)
 
-        note = QLabel("Non-uniform scale converts circles/arcs to splines.")
-        note.setStyleSheet("color: #888; font-size: 11px;")
+        note = QLabel("Positive rotation is counter-clockwise. A non-uniform "
+                      "scale turns circles and arcs into splines.")
+        note.setObjectName("hintLabel")
+        note.setWordWrap(True)
         form.addRow(note)
 
         btns = QHBoxLayout()
@@ -1992,6 +2403,10 @@ class MainWindow(QMainWindow):
     def _drag_moving_dims(self): return self._active_ws.drag_moving_dims
     @_drag_moving_dims.setter
     def _drag_moving_dims(self, v): self._active_ws.drag_moving_dims = v
+    @property
+    def _drag_moving_texts(self): return self._active_ws.drag_moving_texts
+    @_drag_moving_texts.setter
+    def _drag_moving_texts(self, v): self._active_ws.drag_moving_texts = v
 
     # Sidebar face-image selection index
     @property
@@ -2004,10 +2419,18 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"GuildDraw {__version__}")
-        self.resize(1440, 860)
 
         # Load persistent preferences first
         self._prefs = _prefs_mod.load()
+        # The size and place the maker left the window at (GuildModel's key);
+        # the first time, 1440×860 within the screen — on a 1366×768 laptop
+        # the fixed size opened larger than the screen.
+        _geo = self._prefs.get("main_window_geometry")
+        _avail = _available_screen(self)
+        if not (isinstance(_geo, str) and _geo
+                and self.restoreGeometry(QByteArray.fromBase64(_geo.encode()))):
+            self.resize(min(1440, int(_avail.width() * 0.95)),
+                        min(860, int(_avail.height() * 0.95)))
         # Theme overrides + viewport preset must land before any workspace/
         # canvas is built so every painter resolves user colors from the
         # start; re-render the chrome in case saved overrides retint it
@@ -2019,6 +2442,12 @@ class MainWindow(QMainWindow):
         theme.set_dot_radius(self._prefs.get("dot_radius_px", 4))
         theme.set_compact(self._prefs.get("compact_toolbar", False))
         QApplication.instance().setStyleSheet(theme.build_qss())
+        # Tooltips: wrapped to a readable width app-wide, and off altogether
+        # when the maker says so — the ? at the foot of the toolbar
+        # (framedraft/tooltips.py; GuildModel's, shared).
+        self._tooltip_filter = TooltipFilter(
+            enabled=bool(self._prefs.get("tooltips", True)), parent=self)
+        QApplication.instance().installEventFilter(self._tooltip_filter)
 
         # ── Global (non-workspace) state ──────────────────────────────────
         self._dark_mode            = self._prefs["dark_mode"]
@@ -2037,12 +2466,18 @@ class MainWindow(QMainWindow):
         # Status bar must exist before WorkspaceState creates CanvasView instances
         self._status = QStatusBar()
         self.setStatusBar(self._status)
+        self._coords_label = QLabel()
+        self._coords_label.setObjectName("coordsLabel")
+        self._coords_label.setContentsMargins(0, 0, 8, 0)
+        self._coords_label.setMinimumWidth(self._coords_label.fontMetrics()
+                                           .horizontalAdvance("x: -000.00 mm  y: -000.00 mm"))
+        self._status.addPermanentWidget(self._coords_label)
         self._info_label = QLabel()
         self._info_label.setContentsMargins(0, 0, 8, 0)
         self._status.addPermanentWidget(self._info_label)
         # "Ready for GuildModel" readiness dot (mirrors GuildModel's M5.2 traffic
         # light): green when the active workspace meets the export contract,
-        # amber when it doesn't, grey when there's nothing to hand off.
+        # amber when it doesn't, gray when there's nothing to hand off.
         self._readiness_dot = ReadinessDot()
         self._status.addPermanentWidget(self._readiness_dot)
 
@@ -2076,31 +2511,34 @@ class MainWindow(QMainWindow):
             ws.calib_tool.status_message.connect(self._status.showMessage)
             ws.draw_tool.curve_added.connect(self._on_curve_added)
             ws.draw_tool.status_message.connect(self._status.showMessage)
+            ws.draw_tool.canceled.connect(self._on_draw_canceled)
             ws.circle_tool.curve_added.connect(self._on_curve_added)
             ws.circle_tool.status_message.connect(self._status.showMessage)
+            ws.circle_tool.canceled.connect(self._on_draw_canceled)
             ws.dim_tool.dim_added.connect(self._on_dim_added)
             ws.dim_tool.status_message.connect(self._status.showMessage)
+            ws.dim_tool.canceled.connect(self._on_draw_canceled)
             ws.trim_tool.trim_applied.connect(self._on_trim_applied)
             ws.trim_tool.status_message.connect(self._status.showMessage)
-            ws.trim_tool.cancelled.connect(self._on_trim_cancelled)
+            ws.trim_tool.canceled.connect(self._on_trim_canceled)
             ws.fillet_tool.fillet_applied.connect(self._on_fillet_applied)
             ws.fillet_tool.status_message.connect(self._status.showMessage)
-            ws.fillet_tool.cancelled.connect(self._on_trim_cancelled)
+            ws.fillet_tool.canceled.connect(self._on_trim_canceled)
             ws.split_tool.split_applied.connect(self._on_split_applied)
             ws.split_tool.status_message.connect(self._status.showMessage)
-            ws.split_tool.cancelled.connect(self._on_split_cancelled)
+            ws.split_tool.canceled.connect(self._on_split_canceled)
             ws.offset_tool.offset_applied.connect(self._on_offset_applied)
             ws.offset_tool.status_message.connect(self._status.showMessage)
-            ws.offset_tool.cancelled.connect(self._on_offset_cancelled)
+            ws.offset_tool.canceled.connect(self._on_offset_canceled)
             ws.rebuild_tool.rebuild_applied.connect(self._on_rebuild_applied)
             ws.rebuild_tool.status_message.connect(self._status.showMessage)
-            ws.rebuild_tool.cancelled.connect(self._on_rebuild_cancelled)
+            ws.rebuild_tool.canceled.connect(self._on_rebuild_canceled)
             ws.point_move_tool.moved.connect(self._on_point_moved)
             ws.point_move_tool.status_message.connect(self._status.showMessage)
             ws.text_tool.text_added.connect(self._on_text_added)
-            ws.text_tool.cancelled.connect(self._on_text_cancelled)
+            ws.text_tool.canceled.connect(self._on_text_canceled)
             ws.text_tool.status_message.connect(self._status.showMessage)
-            ws.point_move_tool.cancelled.connect(self._on_point_move_cancelled)
+            ws.point_move_tool.canceled.connect(self._on_point_move_canceled)
 
         self._build_toolbar()
         self._build_side_panel()
@@ -2200,6 +2638,7 @@ class MainWindow(QMainWindow):
                 self._end_move_selected,
             )
             ws.view.set_escape_callback(self._hide_move_gizmo)
+            ws.view.set_face_moved_callback(self._mark_dirty)
             ws.view.measure_bar.commit_radius.connect(self._on_measure_commit_radius)
             ws.scene.set_dim_drag_callback(self._pre_edit_snapshot)
             ws.scene.set_text_edit_callback(self._edit_text_object)
@@ -2341,6 +2780,7 @@ class MainWindow(QMainWindow):
         self._last_ws_idx = 0
         self._ws_tab_widget.currentChanged.connect(self._on_workspace_changed)
         self._show_guide_sections("front")
+        self._apply_boxing_field_modes()
         self._refresh_library_panel()
         self._refresh_layer_panel()
 
@@ -2358,14 +2798,14 @@ class MainWindow(QMainWindow):
         def _initial_fit():
             self._fit_view()
             self._workspaces[0].fitted = True
-        QTimer.singleShot(0, _initial_fit)
+        QTimer.singleShot(0, self, _initial_fit)
 
         # ── Autosave + crash recovery ─────────────────────────────────────
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setInterval(self._AUTOSAVE_MS)
         self._autosave_timer.timeout.connect(self._do_autosave)
         self._autosave_timer.start()
-        QTimer.singleShot(400, self._offer_recovery)
+        QTimer.singleShot(400, self, self._offer_recovery)
 
         self._update_title()
 
@@ -2417,7 +2857,7 @@ class MainWindow(QMainWindow):
         self._act_fillet.setToolTip(
             "Fillet: click two connected lines, then type a radius (mm) + Enter\n"
             "to round the corner with a tangent arc (legs trimmed to the tangents).\n"
-            "Esc to exit.")
+            "Esc to cancel.")
         self._act_dim    = QAction("Dim",    self, checkable=True)
         self._act_dim.setToolTip(
             "Dim: click two points to place a dimension annotation (mm).\n"
@@ -2427,13 +2867,13 @@ class MainWindow(QMainWindow):
         self._act_trim.setToolTip(
             "Trim: click a curve to remove the segment between its two nearest\n"
             "intersections with all other curves.  Stay in trim mode to trim more.\n"
-            "Esc to exit."
+            "Esc to cancel."
         )
         self._act_split_curve = QAction("Split\nCurve", self, checkable=True)
         self._act_split_curve.setToolTip(
             "Split Curve: click anywhere on a curve to split it into two open curves\n"
             "at that point.  Click near an intersection to split both curves at once.\n"
-            "Esc to exit."
+            "Esc to cancel."
         )
 
         self._act_offset = QAction("Offset", self, checkable=True)
@@ -2510,7 +2950,7 @@ class MainWindow(QMainWindow):
             "the master on/off; holding Ctrl still suspends snapping.")
         self._act_grid = QAction("Grid", self, checkable=True, checked=False)
         self._act_grid.setToolTip(
-            "Grid: show a millimetre grid overlay (spacing + divisions in\n"
+            "Grid: show a millimeter grid overlay (spacing + divisions in\n"
             "Preferences ▸ Appearance). Enable the Grid snap in the snap\n"
             "palette to snap to its intersections.")
         self._act_smooth = QAction("Smooth\nHandles", self, checkable=True, checked=True)
@@ -2548,7 +2988,7 @@ class MainWindow(QMainWindow):
         self._act_mirror_close = QAction("Mirror\nClose", self)
         self._act_mirror_close.setToolTip(
             "Mirror-Close: combine selected open curve with its mirror to form "
-            "a single closed shape.\nBoth endpoints must be snapped to the mirror axis."
+            "a single closed shape.\nThe two endpoints are moved onto the mirror axis."
         )
         self._act_mirror_close.triggered.connect(self._copy_across_mirror)
         tb.addAction(self._act_mirror_close)
@@ -2588,7 +3028,7 @@ class MainWindow(QMainWindow):
         self._act_snap_ep.setToolTip(
             "Snap Node to Endpoint (E):\n"
             "Move the selected node (red) to the nearest endpoint of any other open curve.\n"
-            "Select a curve, click a node to turn it red, then press this button or E."
+            "Select a curve, click a node to turn it red, then press this button."
         )
         self._act_snap_ep.triggered.connect(self._snap_selected_node_to_endpoint)
         tb.addAction(self._act_snap_ep)
@@ -2616,6 +3056,16 @@ class MainWindow(QMainWindow):
         self._act_fit.setToolTip("Fit: zoom to fit all content in view.")
         self._act_fit.triggered.connect(self._fit_view)
         tb.addAction(self._act_fit)
+
+        # The tooltip switch: a ? at the foot of the bar, outside the
+        # customizable set and out of the ⋯ overflow's reach, as GuildModel's
+        # sits at the end of its toolbar. Its own tooltip shows even when
+        # tooltips are off, or nobody could find out what it does.
+        self._act_tooltips = QAction("Tooltips", self, checkable=True)
+        self._act_tooltips.setChecked(bool(self._prefs.get("tooltips", True)))
+        self._act_tooltips.toggled.connect(self._on_tooltips_toggled)
+        self._tooltip_filter.set_exempt([tb.set_trailing_action(self._act_tooltips)])
+        self._on_tooltips_toggled(self._act_tooltips.isChecked(), announce=False)
 
         # Map prefs keys → QAction objects (used by visibility and hotkey systems)
         self._toolbar_actions: dict[str, QAction] = {
@@ -2685,7 +3135,8 @@ class MainWindow(QMainWindow):
         self._weight_spin.setKeyboardTracking(False)
         self._weight_spin.setToolTip(
             "Line weight (screen pixels, cosmetic).\n"
-            "Applies to selected curve(s) in Select mode, or to new curves in draw mode."
+            "Applies to the selected curve(s). New curves take the default from "
+            "Preferences ▸ General."
         )
         self._weight_spin.valueChanged.connect(self._on_weight_spin_changed)
         draw_lay.addRow("Line weight:", self._weight_spin)
@@ -2715,14 +3166,21 @@ class MainWindow(QMainWindow):
             "Click the eye to show/hide; hidden layers offer no snap targets.\n"
             "Click the padlock to lock/unlock; locked layers stay visible and\n"
             "snappable but cannot be selected or modified.\n"
-            "Click an object to select it on the canvas.\n"
+            "Click an object to select it on the canvas; Ctrl/Shift-click\n"
+            "for several, then Delete removes them.\n"
             "Drag an object onto another layer to move it there.\n"
             "Right-click for: select all on layer, move selection to layer."
         )
+        self._layer_tree_expanded: dict = {}    # ws_type -> {Layer: bool}
         self._layer_tree.itemClicked.connect(self._on_layer_tree_clicked)
+        self._layer_tree.itemExpanded.connect(
+            lambda it: self._on_layer_row_expanded(it, True))
+        self._layer_tree.itemCollapsed.connect(
+            lambda it: self._on_layer_row_expanded(it, False))
         self._layer_tree.itemSelectionChanged.connect(
             self._on_layer_tree_selection_changed)
         self._layer_tree.curves_dropped.connect(self._on_layer_tree_drop)
+        self._layer_tree.delete_requested.connect(self._delete_selected)
         self._layer_tree.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu)
         self._layer_tree.customContextMenuRequested.connect(
@@ -2758,9 +3216,8 @@ class MainWindow(QMainWindow):
         meas_front_lay.addRow("OS  B:", self._meas_os_b_lbl)
         meas_front_lay.addRow("OS  ED:", self._meas_os_ed_lbl)
 
-        meas_refresh_btn = QPushButton("Refresh")
-        meas_refresh_btn.clicked.connect(self._refresh_measurements)
-        meas_front_lay.addRow(meas_refresh_btn)
+        # No Refresh button: every document change, node drag and layer move
+        # refreshes these (the 2026-09-29 review checked each path).
 
         curve_lay.addWidget(meas_front_box)
         self._meas_front_box = meas_front_box
@@ -2780,7 +3237,10 @@ class MainWindow(QMainWindow):
         self._meas_temple_box = meas_temple_box
 
         curve_lay.addStretch()
-        tabs.addTab(curve_w, "Properties")
+        # Scrolled like Guides and Canvas: unscrolled, this tab and Library
+        # held the window at 619 px or taller, and on a short laptop panel the
+        # status bar and the ? fell off the screen.
+        tabs.addTab(SettingsDialog._scrolled(curve_w), "Properties")
 
         # ── Tab 1: Guides (scrollable) ────────────────────────────────────
         guides_inner = QWidget()
@@ -2913,6 +3373,10 @@ class MainWindow(QMainWindow):
         self._boxing_dbl_spin.setSuffix(" mm")
         self._boxing_dbl_spin.setSingleStep(0.5)
         self._boxing_dbl_spin.setDecimals(1)
+        # As A and B: with the lens locked every value moves the lenses (and
+        # pushes an undo step), so typing 17.5 went through 17 and was then
+        # rewritten mid-typing to "17.0 mm", dropping the ".5".
+        self._boxing_dbl_spin.setKeyboardTracking(False)
         self._boxing_dbl_spin.setValue(18.0)
         self._boxing_dbl_spin.valueChanged.connect(self._on_boxing_dbl_value)
         boxing_lay.addRow("DBL:", self._boxing_dbl_spin)
@@ -3034,31 +3498,31 @@ class MainWindow(QMainWindow):
         self._fill_show_chk = QCheckBox("Show fill")
         self._fill_show_chk.setToolTip(
             "Fill the frame interior (OUTLINE minus LENS apertures) with a\n"
-            "translucent colour over the face photo. Display-only — never\n"
+            "translucent color over the face photo. Display-only — never\n"
             "exported to DXF/SVG geometry."
         )
         self._fill_show_chk.toggled.connect(self._on_fill_visible_toggled)
         fill_lay.addRow(self._fill_show_chk)
 
-        # Colour or material swatch. A supplier's acetate sample sheet scaled
+        # Color or material swatch. A supplier's acetate sample sheet scaled
         # onto the blank shows the frame in the material it will be cut from —
-        # the thing a flat colour can't do for a laminate or a tortoise.
+        # the thing a flat color can't do for a laminate or a tortoise.
         self._fill_style_combo = QComboBox()
-        self._fill_style_combo.addItem("Colour", "color")
+        self._fill_style_combo.addItem("Color", "color")
         self._fill_style_combo.addItem("Image",  "image")
         self._fill_style_combo.setToolTip(
-            "Colour: a flat translucent tint.\n"
+            "Color: a flat translucent tint.\n"
             "Image: a material swatch, scaled to span the Stock Blank width\n"
-            "and centred on the origin — the piece of sheet under the frame."
+            "and centered on the origin — the piece of sheet under the frame."
         )
         self._fill_style_combo.currentIndexChanged.connect(
             self._on_fill_style_changed)
         fill_lay.addRow("Style:", self._fill_style_combo)
 
-        self._fill_color_btn = QPushButton("Colour…")
+        self._fill_color_btn = QPushButton("Color…")
         self._fill_color_btn.clicked.connect(self._on_fill_color_clicked)
         self._update_fill_swatch("#2a6099")
-        fill_lay.addRow("Colour:", self._fill_color_btn)
+        fill_lay.addRow("Color:", self._fill_color_btn)
 
         img_row = QWidget()
         img_lay = QHBoxLayout(img_row)
@@ -3087,7 +3551,7 @@ class MainWindow(QMainWindow):
             f"QPushButton {{ min-width: {_clear_box}px;"
             f" max-width: {_clear_box}px; min-height: {_clear_box}px;"
             f" max-height: {_clear_box}px; padding: 0px; }}")
-        self._fill_image_clear_btn.setToolTip("Forget the swatch and go back to the colour.")
+        self._fill_image_clear_btn.setToolTip("Forget the swatch and go back to the color.")
         self._fill_image_clear_btn.clicked.connect(self._on_fill_image_cleared)
         img_lay.addWidget(self._fill_image_btn, 1)
         img_lay.addWidget(self._fill_image_clear_btn)
@@ -3109,7 +3573,7 @@ class MainWindow(QMainWindow):
 
         self._lens_fill_show_chk = QCheckBox("Show lens fill")
         self._lens_fill_show_chk.setToolTip(
-            "Tint each LENS aperture with a vertical two-colour gradient, the\n"
+            "Tint each LENS aperture with a vertical two-color gradient, the\n"
             "way a dyed lens runs dark to light. Display-only — never exported\n"
             "to DXF/SVG geometry."
         )
@@ -3117,7 +3581,7 @@ class MainWindow(QMainWindow):
         lens_fill_lay.addRow(self._lens_fill_show_chk)
 
         # Swatch-only buttons — the row label already says which stop it is, so
-        # a "Top…" caption inside the button would only crowd the colour bar.
+        # a "Top…" caption inside the button would only crowd the color bar.
         self._lens_top_btn = QPushButton()
         self._lens_top_btn.setIconSize(QSize(*_LENS_SWATCH_PX))
         self._lens_top_btn.clicked.connect(lambda: self._on_lens_fill_color_clicked("top"))
@@ -3128,12 +3592,12 @@ class MainWindow(QMainWindow):
         self._lens_top_bpi_btn = QToolButton()
         self._lens_top_bpi_btn.setText("BPI")
         self._lens_top_bpi_btn.setToolTip(
-            "Pick the top colour from the BPI tint reference.")
+            "Pick the top color from the BPI tint reference.")
         self._lens_top_bpi_btn.clicked.connect(lambda: self._show_tint_picker("top"))
         self._lens_bottom_bpi_btn = QToolButton()
         self._lens_bottom_bpi_btn.setText("BPI")
         self._lens_bottom_bpi_btn.setToolTip(
-            "Pick the bottom colour from the BPI tint reference.")
+            "Pick the bottom color from the BPI tint reference.")
         self._lens_bottom_bpi_btn.clicked.connect(lambda: self._show_tint_picker("bottom"))
 
         self._lens_link_btn = QToolButton()
@@ -3142,7 +3606,7 @@ class MainWindow(QMainWindow):
             "link-chain", theme.color("chrome.ink"),
             theme.color("chrome.checked_ink")))
         self._lens_link_btn.setToolTip(
-            "Link top and bottom: while locked both stops stay the same colour,\n"
+            "Link top and bottom: while locked both stops stay the same color,\n"
             "so the lens takes a flat tint. Off = a true vertical gradient.")
         self._lens_link_btn.toggled.connect(self._on_lens_fill_link_toggled)
 
@@ -3175,9 +3639,9 @@ class MainWindow(QMainWindow):
             "How deeply the dye reads — the tint's own strength, as opposed to\n"
             "Opacity, which is how much of the drawing behind it shows through.\n\n"
             "Reference swatches (BPI's included) show a dye at one modest depth\n"
-            "over white, so a colour picked from one usually needs deepening to\n"
+            "over white, so a color picked from one usually needs deepening to\n"
             "look like the lens you mean. The default sits a quarter along, at\n"
-            "the colour exactly as picked; drag right for a deeper dye.")
+            "the color exactly as picked; drag right for a deeper dye.")
         self._lens_fill_intensity_slider.valueChanged.connect(
             self._on_lens_fill_intensity_changed)
         lens_fill_lay.addRow("Intensity:", self._lens_fill_intensity_slider)
@@ -3291,7 +3755,7 @@ class MainWindow(QMainWindow):
         self._pxmm_spin.setValue(1.0)
         self._pxmm_spin.setToolTip("Image pixels per real-world mm — enter directly or use 2-point calibration above.")
         self._pxmm_spin.editingFinished.connect(self._apply_manual_calib)
-        calib_lay.addRow("img-px/mm:", self._pxmm_spin)
+        calib_lay.addRow("Scale:", self._pxmm_spin)
 
         image_lay.addWidget(calib_box)
         image_lay.addStretch()
@@ -3311,7 +3775,7 @@ class MainWindow(QMainWindow):
         btn_add = QPushButton("Bookmark Current State…")
         btn_add.setToolTip(
             "Save a named snapshot of the current drawing as a revision point.\n"
-            "Bookmarks persist for this session only.")
+            "Bookmarks are saved with the design.")
         btn_add.clicked.connect(self._add_bookmark)
         history_lay.addWidget(btn_add)
 
@@ -3360,7 +3824,7 @@ class MainWindow(QMainWindow):
         self._btn_lib_import.setEnabled(False)
         self._btn_lib_import.setToolTip(
             "Insert the selected hinge design into the current workspace\n"
-            "as HINGE-layer curves, centred at the canvas origin."
+            "as HINGE-layer curves, centered at the canvas origin."
         )
         self._btn_lib_import.clicked.connect(self._import_from_library)
         lib_lay.addWidget(self._btn_lib_import)
@@ -3394,11 +3858,24 @@ class MainWindow(QMainWindow):
         lib_tabs.addTab(pockets_w, "Pockets")
 
         lib_tabs.addTab(self._build_holes_panel(), "Holes")
-        tabs.addTab(lib_tabs, "Library")
+        tabs.addTab(SettingsDialog._scrolled(lib_tabs), "Library")
 
         self._side_tabs = tabs
         self._side_tabs.currentChanged.connect(
             lambda idx: self._refresh_measurements() if idx == 0 else None)
+        # The dock is as wide as its five tabs, with room for a two-digit
+        # bookmark count on History and for the bold of the selected tab.
+        # At the old 270 px floor the bar scrolled "Library" off the edge.
+        bar = tabs.tabBar()
+        bar.setObjectName("sideTabs")
+        bar.style().unpolish(bar)                  # measure with its own padding
+        bar.style().polish(bar)
+        bar.setTabText(3, "History (99)")
+        fit = bar.sizeHint().width() + 10
+        bar.setTabText(3, "History")
+        self._prop_dock.setMinimumWidth(max(_DOCK_WIDTH, fit))
+        self._wheel_guard = _WheelGuard(self)
+        self._wheel_guard.guard(tabs)
         self._prop_dock.setWidget(tabs)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._prop_dock)
 
@@ -3412,7 +3889,7 @@ class MainWindow(QMainWindow):
             return
         if not self._layer_refresh_pending:
             self._layer_refresh_pending = True
-            QTimer.singleShot(0, self._do_layer_panel_refresh)
+            QTimer.singleShot(0, self, self._do_layer_panel_refresh)
 
     def _do_layer_panel_refresh(self):
         self._layer_refresh_pending = False
@@ -3460,6 +3937,7 @@ class MainWindow(QMainWindow):
         """Full rebuild of the layer tree (document change / tab switch)."""
         ws   = self._active_ws
         tree = self._layer_tree
+        expanded = self._layer_tree_expanded.setdefault(ws.workspace_type, {})
         tree.blockSignals(True)
         tree.clear()
         self._layer_tree_rows: dict = {}        # id(curve) -> row item
@@ -3494,18 +3972,48 @@ class MainWindow(QMainWindow):
                 child.setFlags(child_flags)
                 top.addChild(child)
                 self._layer_tree_rows[id(c)] = child
-            # Engraving TextObjects live on their layer too — re-editable, so
-            # never drag sources (no layer reassignment) but selectable.
+            # Engraving TextObjects live on their layer too.
             for t in texts:
                 child = QTreeWidgetItem([self._text_label(t), "", ""])
                 child.setData(0, Qt.ItemDataRole.UserRole, ("text", id(t)))
-                child.setFlags(Qt.ItemFlag.ItemIsEnabled
-                               | Qt.ItemFlag.ItemIsSelectable)
+                child.setFlags(child_flags)
                 top.addChild(child)
                 self._layer_tree_text_rows[id(t)] = child
-            top.setExpanded(bool(count) and count <= 12)
+            # A layer the maker expanded or collapsed stays that way across
+            # rebuilds (every document change rebuilds); otherwise auto.
+            top.setExpanded(expanded.get(layer, bool(count) and count <= 12))
         tree.blockSignals(False)
         self._sync_layer_panel_active()
+        # The rebuild dropped the row highlight; put the canvas selection back.
+        self._sync_layer_panel_row()
+
+    def _sync_layer_panel_row(self):
+        """Highlight the row of a single selected curve/text (no rebuild)."""
+        if self._syncing_selection:
+            return
+        sel = self.scene.selectedItems()
+        rows = getattr(self, "_layer_tree_rows", {})
+        trows = getattr(self, "_layer_tree_text_rows", {})
+        row = None
+        curves = [i for i in sel if isinstance(i, CurveItem)]
+        texts  = [i for i in sel if isinstance(i, TextItem)]
+        if len(curves) == 1 and not texts:
+            row = rows.get(id(curves[0].curve))
+        elif len(texts) == 1 and not curves:
+            row = trows.get(id(texts[0].text_obj))
+        if row is not None:
+            self._syncing_selection = True
+            try:
+                self._layer_tree.setCurrentItem(row)
+            finally:
+                self._syncing_selection = False
+
+    def _on_layer_row_expanded(self, item, expanded: bool):
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if data and data[0] == "layer":
+            per_ws = self._layer_tree_expanded.setdefault(
+                self._active_ws.workspace_type, {})
+            per_ws[data[1]] = expanded
 
     def _sync_layer_panel_active(self):
         """Bold the active layer row. No tree rebuild — safe inside handlers."""
@@ -3545,6 +4053,8 @@ class MainWindow(QMainWindow):
                 item.setIcon(2, self._layer_icon(
                     "layer-lock" if locked else "layer-unlock"))
                 self._mark_dirty()
+                # Child rows carry the drag flag per lock state — refresh it.
+                self._refresh_layer_panel()
             else:
                 self._set_active_layer(layer)
             return
@@ -3576,10 +4086,15 @@ class MainWindow(QMainWindow):
                 text_ids.append(data[1])
         if not ids and not text_ids:
             return   # a layer row (or nothing) selected — leave canvas as-is
+        if self.view._draw_tool is not None or self._dim_tool.active:
+            # A live draw tool strips the selectable flag from every item;
+            # picking rows would silently select nothing.
+            self._act_select.setChecked(True)
+            self._set_tool_select()
         self._syncing_selection = True
         skipped = False
         try:
-            self.scene.clearSelection()
+            picked = []
             for cid in ids:
                 ci = self.scene._curve_items.get(cid)
                 if ci is None:
@@ -3587,7 +4102,7 @@ class MainWindow(QMainWindow):
                 lyr = ci.curve.layer
                 if (self.scene.is_layer_visible(lyr)
                         and not self.scene.is_layer_locked(lyr)):
-                    ci.setSelected(True)
+                    picked.append(ci)
                 else:
                     skipped = True
             for tid in text_ids:
@@ -3597,9 +4112,10 @@ class MainWindow(QMainWindow):
                 lyr = ti.text_obj.layer
                 if (self.scene.is_layer_visible(lyr)
                         and not self.scene.is_layer_locked(lyr)):
-                    ti.setSelected(True)
+                    picked.append(ti)
                 else:
                     skipped = True
+            self.scene.select_items(picked)
         finally:
             self._syncing_selection = False
         if skipped:
@@ -3615,7 +4131,7 @@ class MainWindow(QMainWindow):
         if not data:
             return
         kind, payload = data
-        has_sel = any(isinstance(i, CurveItem)
+        has_sel = any(isinstance(i, (CurveItem, TextItem))
                       for i in self.scene.selectedItems())
         menu = QMenu(self)
         if kind == "layer":
@@ -3628,8 +4144,8 @@ class MainWindow(QMainWindow):
                                  lambda: self._move_selection_to_layer(layer))
             act.setEnabled(has_sel)
         else:
-            menu.addAction("Select on canvas",
-                           lambda: self._on_layer_tree_clicked(item, 0))
+            # The right-click already selected the row (and so the object).
+            menu.addAction("Delete", self._delete_selected)
         menu.exec(self._layer_tree.viewport().mapToGlobal(pos))
 
     def _select_all_on_layer(self, layer: Layer):
@@ -3637,52 +4153,77 @@ class MainWindow(QMainWindow):
             self._status.showMessage(
                 f"{layer.value} is hidden or locked — nothing selected")
             return
-        self.scene.clearSelection()
-        n = 0
-        for it in self.scene._curve_items.values():
-            if it.curve.layer == layer:
-                it.setSelected(True)
-                n += 1
-        self._status.showMessage(f"Selected {n} curve(s) on {layer.value}")
+        picked = [it for it in self.scene._curve_items.values()
+                  if it.curve.layer == layer]
+        picked += [it for it in self.scene._text_items.values()
+                   if it.text_obj.layer == layer]
+        self.scene.select_items(picked)
+        self._status.showMessage(f"Selected {len(picked)} object(s) on {layer.value}")
 
     def _move_selection_to_layer(self, layer: Layer):
-        """Reassign the selected curves to *layer* (was the layer combo's job)."""
-        targets = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
+        """Reassign the selected curves/texts to *layer*."""
+        targets = [i for i in self.scene.selectedItems()
+                   if isinstance(i, (CurveItem, TextItem))]
         if not targets:
             self._status.showMessage("Move to layer: nothing selected")
             return
         self._move_curve_items_to_layer(targets, layer)
 
-    def _on_layer_tree_drop(self, curve_ids: list, layer: Layer):
+    def _on_layer_tree_drop(self, obj_ids: list, layer: Layer):
         """A drag-and-drop in the layer panel landed on *layer*."""
-        items = [self.scene._curve_items.get(cid) for cid in curve_ids]
+        items = [self.scene._curve_items.get(i) or self.scene._text_items.get(i)
+                 for i in obj_ids]
         self._move_curve_items_to_layer([it for it in items if it is not None],
                                         layer)
 
+    @staticmethod
+    def _item_layer(it):
+        return it.text_obj.layer if isinstance(it, TextItem) else it.curve.layer
+
     def _move_curve_items_to_layer(self, items: list, layer: Layer):
-        """Shared by the context menu and layer-panel drag-and-drop."""
-        items = [it for it in items if it.curve.layer is not layer]
+        """Shared by the context menu and layer-panel drag-and-drop; takes
+        CurveItems and TextItems. Locked layers keep their objects."""
+        locked = [it for it in items if self.scene.is_layer_locked(self._item_layer(it))]
+        items = [it for it in items
+                 if self._item_layer(it) is not layer and it not in locked]
         if not items:
-            self._status.showMessage(f"Move to layer: already on {layer.value}")
+            self._status.showMessage(
+                f"Move to layer: {'layer is locked' if locked else 'already on ' + layer.value}")
             return
         self._push_undo_snapshot()
         for it in items:
-            it.curve.layer = layer
-            it.refresh()
-            self.scene._update_ghost_for(it.curve)
-            self.scene._apply_layer_state_to_item(it)
+            if isinstance(it, TextItem):
+                it.text_obj.layer = layer
+                it.refresh()
+                self.scene._apply_layer_state_to_text(it)
+            else:
+                it.curve.layer = layer
+                self.scene._apply_layer_state_to_item(it)
+                # Through refresh_curve, not the item alone: the ghost, both
+                # fills, a snapped boxing guide and the Measurements read the
+                # layer too. Repainting the item left a lens moved to REF
+                # still measured as a lens and still punched out of the fill.
+                self.scene.refresh_curve(it.curve)
         self._refresh_layer_panel()
-        self._status.showMessage(f"Moved {len(items)} curve(s) → {layer.value}")
+        self._update_readiness()
+        self._refresh_measurements()
+        msg = f"Moved {len(items)} object{'s' if len(items) != 1 else ''} → {layer.value}"
+        if locked:
+            msg += f"  ({len(locked)} on a locked layer left alone)"
+        self._status.showMessage(msg)
 
     # ------------------------------------------------------------------
     # Status bar info label (layer + zoom)
     # ------------------------------------------------------------------
 
     def _update_info_label(self):
+        # Readiness is NOT recomputed here: it depends only on the document
+        # and the mirror (both have their own hooks), and this runs on every
+        # selection change and wheel tick — the validator in that path made
+        # select-all on a few hundred curves take seconds.
         layer = self._active_ws.active_layer.value
         zoom  = round(self.view.transform().m11() * 100)
         self._info_label.setText(f"{layer}  |  {zoom}%")
-        self._update_readiness()
 
     def _update_readiness(self):
         """Recompute the 'Ready for GuildModel' dot for the active workspace."""
@@ -3711,14 +4252,15 @@ class MainWindow(QMainWindow):
         # Save sidebar state into the workspace we're leaving; explicitly
         # cancel any in-progress drawing there (it cannot be carried across,
         # and silently discarding it confused makers).
-        if hasattr(self, "_last_ws_idx") and self._last_ws_idx != idx:
+        discarded = False
+        if self._last_ws_idx != idx:
             old_ws = self._workspaces[self._last_ws_idx]
             if old_ws.draw_tool.active or old_ws.circle_tool.active:
+                discarded = bool(getattr(old_ws.draw_tool, "_nodes", None)
+                                 or old_ws.circle_tool.active)
                 old_ws.draw_tool.deactivate()
                 old_ws.circle_tool.deactivate()
                 old_ws.view.set_draw_tool(None)
-                self._status.showMessage(
-                    "Workspace switched — in-progress drawing was discarded")
             # Not during a load. Opening a file whose saved active tab is not
             # the one on screen switches tabs while the widgets still show the
             # OUTGOING document, so saving them here wrote the old document's
@@ -3738,16 +4280,33 @@ class MainWindow(QMainWindow):
         self._refresh_measurements()
         if ws.boxing_snapped:
             self._sync_boxing_readouts()
-        self._refresh_library_panel()
+        # (No library refresh: the list is global, and every save, rename and
+        # delete refreshes it. Re-reading the disk per tab switch cleared the
+        # maker's selection in it.)
         self._refresh_layer_panel()
         self._refresh_mirror_icons()
         self._update_info_label()
+        self._update_readiness()
+        self._update_undo_actions()    # the menu shows THIS tab's history
+        # Selection-driven buttons follow THIS tab's selection: a curve picked
+        # on the Front left Explode lit on an empty Temple R.
+        self._update_split_enabled()
+        self._update_explode_enabled()
+        self._act_snap_ep.setEnabled(self._edit_tool.has_selected_node())
 
-        # Fit the view the first time this workspace is shown
+        # Fit the view the first time this workspace is shown — to the
+        # geometry as well as the scene rect, so a loaded temple longer than
+        # the default extents isn't half off-screen.
         if not ws.fitted:
-            self.view.fit_view(self.scene.sceneRect())
+            rect = self.scene.sceneRect().united(self.scene.geometry_rect())
+            self.view.fit_view(rect)
             ws.fitted = True
             self._update_info_label()
+        if discarded:
+            # After the Select-mode message, or it would be overwritten.
+            self._status.showMessage(
+                "Workspace switched — the in-progress drawing was discarded",
+                5000)
 
     def _save_ws_sidebar_state(self, ws: "WorkspaceState"):
         """Write current sidebar widget values into *ws* for later restore."""
@@ -3790,7 +4349,7 @@ class MainWindow(QMainWindow):
         # so position is a lossy encoding of the value (3.0 comes back 3.03) and
         # every tab switch would nudge a loaded document off its saved depth.
         # _on_lens_fill_intensity_changed is the sole writer.
-        # (the two stop colours are written by _set_lens_fill_color directly)
+        # (the two stop colors are written by _set_lens_fill_color directly)
         # Face image list paths
         ws.face_image_paths = [
             self._face_list.item(i).data(Qt.ItemDataRole.UserRole)
@@ -3930,13 +4489,14 @@ class MainWindow(QMainWindow):
         # called by _on_workspace_changed right after this restore.)
 
         # ── Calibration display ─────────────────────────────────────────
+        self._pxmm_spin.blockSignals(True)
         if ws.image_px_per_mm:
             self._calib_label.setText(f"{ws.image_px_per_mm:.4f} img-px/mm")
-            self._pxmm_spin.blockSignals(True)
             self._pxmm_spin.setValue(ws.image_px_per_mm)
-            self._pxmm_spin.blockSignals(False)
         else:
             self._calib_label.setText("Not set")
+            self._pxmm_spin.setValue(1.0)   # not the previous tab's value
+        self._pxmm_spin.blockSignals(False)
 
         # ── Face image list ─────────────────────────────────────────────
         self._face_list.blockSignals(True)
@@ -4016,7 +4576,7 @@ class MainWindow(QMainWindow):
 
     def _on_fill_color_clicked(self):
         ws = self._active_ws
-        c = QColorDialog.getColor(QColor(ws.fill_color), self, "Frame fill colour")
+        c = QColorDialog.getColor(QColor(ws.fill_color), self, "Frame fill color")
         if not c.isValid():
             return
         ws.fill_color = c.name()
@@ -4036,17 +4596,17 @@ class MainWindow(QMainWindow):
         """Push ws.fill_style / ws.fill_image onto its scene, and keep the
         swatch scaled to that workspace's own blank width. Returns False when
         an image style was asked for but the file couldn't be read — the caller
-        decides whether that deserves a modal or a silent fall back to colour;
+        decides whether that deserves a modal or a silent fall back to color;
         ws.fill_style is left on "color" either way."""
         ws.scene.set_fill_blank_width(ws.stock_w)
         if ws.fill_style == "image" and ws.fill_image:
             if ws.scene.set_fill_image(ws.fill_image):
                 return True
-            ws.fill_style = "color"      # unreadable — show the colour instead
+            ws.fill_style = "color"      # unreadable — show the color instead
             ws.scene.clear_fill_image()
             return False
         # An Image style with nothing behind it is not a state worth keeping —
-        # it would show the colour under a combo that claims otherwise.
+        # it would show the color under a combo that claims otherwise.
         ws.fill_style = "color"
         ws.scene.clear_fill_image()
         return True
@@ -4091,7 +4651,7 @@ class MainWindow(QMainWindow):
         ws = self._active_ws
         ws.fill_style = self._fill_style_combo.currentData() or "color"
         # Switching to Image with nothing chosen yet: open the picker rather
-        # than leaving the maker on a style that shows the colour anyway.
+        # than leaving the maker on a style that shows the color anyway.
         if ws.fill_style == "image" and not ws.fill_image:
             self._sync_fill_style_widgets(ws)
             self._on_fill_image_clicked()
@@ -4107,19 +4667,23 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self, "Frame fill material swatch", start,
             "Images (*.jpg *.jpeg *.png *.bmp *.tiff *.tif)")
-        if not path:
-            # Cancelling out of the auto-opened picker leaves the style where
-            # it was, so the combo doesn't sit on Image with nothing behind it.
+        def back_to_color_if_empty():
+            # Leaving the auto-opened picker without a swatch — canceled, or
+            # a file that won't decode — puts the style back, so the combo
+            # doesn't sit on Image (and save "image") with nothing behind it.
             if not ws.fill_image:
                 ws.fill_style = "color"
                 self._apply_fill_material(ws)
                 self._sync_fill_style_widgets(ws)
+        if not path:
+            back_to_color_if_empty()
             return
         ws.scene.set_fill_blank_width(ws.stock_w)
-        if not ws.scene.set_fill_image(path):
+        if not ws.scene.set_fill_image(path, reload=True):   # picked again: re-read it
             QMessageBox.warning(
                 self, "Frame Fill",
                 f"{os.path.basename(path)} couldn't be read as an image.")
+            back_to_color_if_empty()
             return
         ws.fill_image = path
         ws.fill_style = "image"
@@ -4139,10 +4703,10 @@ class MainWindow(QMainWindow):
 
     def _fill_image_missing(self, ws: "WorkspaceState"):
         """The saved swatch is gone (a .svg pointing at a file that didn't
-        travel with it). Say so once and leave the colour showing."""
+        travel with it). Say so once and leave the color showing."""
         self._status.showMessage(
             f"Frame Fill: {os.path.basename(ws.fill_image) or 'the material swatch'}"
-            " couldn't be read — showing the colour instead.", 6000)
+            " couldn't be read — showing the color instead.", 6000)
 
     # ── Lens fill controls ──────────────────────────────────────────────
 
@@ -4166,11 +4730,11 @@ class MainWindow(QMainWindow):
 
     def _update_lens_fill_swatches(self, top_hex: str, bottom_hex: str,
                                    intensity: float):
-        """Repaint the two colour bars.
+        """Repaint the two color bars.
 
-        They show the colour *as painted* — deepened by the current intensity —
+        They show the color *as painted* — deepened by the current intensity —
         because that is what the maker is judging; the picker still opens on
-        the base colour, and the tooltip names both so the two never get
+        the base color, and the tooltip names both so the two never get
         confused."""
         w, h = _LENS_SWATCH_PX
         for btn, hex_, label in ((self._lens_top_btn, top_hex, "Top"),
@@ -4183,10 +4747,10 @@ class MainWindow(QMainWindow):
             p.drawRect(0, 0, w - 1, h - 1)
             p.end()
             btn.setIcon(QIcon(pm))
-            tip = f"{label} gradient stop for every lens.\nColour: {hex_}"
+            tip = f"{label} gradient stop for every lens.\nColor: {hex_}"
             if shown.name() != QColor(hex_).name():
                 tip += f"  ·  shown at intensity: {shown.name()}"
-            btn.setToolTip(tip + "\nClick to pick a colour.")
+            btn.setToolTip(tip + "\nClick to pick a color.")
 
     def _on_lens_fill_visible_toggled(self, on: bool):
         ws = self._active_ws
@@ -4357,15 +4921,17 @@ class MainWindow(QMainWindow):
             elif od_ob:
                 fw = 2.0 * (mirror_x - od_ob[0])
             else:
-                # Joined closed outline centred on mirror axis (centroid == mirror_x)
+                # Joined closed outline centered on mirror axis (centroid == mirror_x)
                 # is dropped by _split; measure directly from all OUTLINE curves.
                 all_out_raw = [c for c in curves if c.layer == Layer.OUTLINE and c.nodes]
                 all_ob = _curves_bbox(all_out_raw) if all_out_raw else None
                 fw = (all_ob[2] - all_ob[0]) if all_ob else None
             self._meas_frame_width_lbl.setText(f"{fw:.1f} mm" if fw is not None else "—")
 
-            # Frame height — y-extent of all OUTLINE curves (mirror is vertical so no doubling)
-            all_out = os_out + od_out
+            # Frame height — y-extent of all OUTLINE curves (mirror is vertical
+            # so no doubling). Every OUTLINE curve, not the two halves: _split
+            # drops a curve centered on the axis, and a joined outline read "—".
+            all_out = [c for c in curves if c.layer == Layer.OUTLINE and c.nodes]
             fh_bb = _curves_bbox(all_out) if all_out else None
             self._meas_frame_height_lbl.setText(
                 f"{fh_bb[3] - fh_bb[1]:.1f} mm" if fh_bb else "—")
@@ -4441,20 +5007,23 @@ class MainWindow(QMainWindow):
             x_span = max_x - min_x
             self._meas_temple_length_lbl.setText(f"{x_span:.1f} mm")
 
-            # Endpiece width = y-extent in the leftmost region (hinge end)
+            # Endpiece width = the outline's height across the hinge-end band
+            # (the first tenth of the length), measured on the drawn path.
+            # Filtering whole curves by where their nodes cluster left a
+            # normal one-piece temple reading "—", and doubled it with the
+            # ghost on even when both halves were drawn.
+            from .geometry import sample_curve
             ep_threshold = min_x + max(x_span * 0.1, 2.0)
-            ep_bbox = _curves_bbox(curves, layers=_TEMPLE_LAYERS, x_hi=ep_threshold)
-            if ep_bbox:
-                ep_h = ep_bbox[3] - ep_bbox[1]
-                if ws.mirror_enabled:
-                    ep_h *= 2  # horizontal mirror doubles the height
-                self._meas_endpiece_lbl.setText(f"{ep_h:.1f} mm")
+            ys = [y for c in curves if c.layer in _TEMPLE_LAYERS and c.nodes
+                  for x, y, _t in sample_curve(c) if x <= ep_threshold]
+            if ys and ws.mirror_enabled and ws.scene.mirror is not None:
+                axis = ws.scene.mirror.x         # a temple's axis is horizontal
+                if all(y <= axis + 1e-6 for y in ys) or all(y >= axis - 1e-6 for y in ys):
+                    ys += [2.0 * axis - y for y in ys]       # a half: the ghost completes it
+            if ys:
+                self._meas_endpiece_lbl.setText(f"{max(ys) - min(ys):.1f} mm")
             else:
                 self._meas_endpiece_lbl.setText("—")
-
-    # ------------------------------------------------------------------
-    # Move gizmo + drag-to-move
-    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # Boxing snap / lock + bevel (M11 / M12)
@@ -4468,7 +5037,7 @@ class MainWindow(QMainWindow):
 
     def _apply_boxing_field_modes(self, ws=None):
         """A/B/DBL editability per mode: free = inputs; snapped = read-outs;
-        locked = A/B inputs (resize) while DBL stays a read-out (set by moving)."""
+        locked = inputs again — A/B resize the lens, DBL moves the pair."""
         ws = ws or self._active_ws
         snapped, locked = ws.boxing_snapped, ws.shape_locked
         self._boxing_a_spin.setEnabled((not snapped) or locked)
@@ -4476,6 +5045,9 @@ class MainWindow(QMainWindow):
         self._boxing_dbl_spin.setEnabled((not snapped) or locked)
         self._lock_shape_chk.setEnabled(snapped)
         self._outline_lock_chk.setEnabled(locked)
+        # The A–B link acts only on a locked lens; lit otherwise, it looked
+        # like it did something.
+        self._chain_btn.setEnabled(locked)
 
     # A/B fields: drive the free box when not snapped; live-resize the locked
     # lens when locked (read-outs while snapped-but-unlocked never user-fire).
@@ -4501,15 +5073,13 @@ class MainWindow(QMainWindow):
             self._set_dbl_by_move(v)
 
     def _on_chain_toggled(self, on: bool):
-        self._active_ws.boxing_chain = on
-        self._mark_dirty()
+        self._active_ws.boxing_chain = on      # session state — not saved
 
     def _on_outline_lock_toggled(self, on: bool):
         self._active_ws.outline_locked = on
         self._status.showMessage(
             "Outline locked to lens — it co-resizes (constant wall)."
             if on else "Outline unlocked.")
-        self._mark_dirty()
 
     def _set_dbl_by_move(self, target_dbl: float):
         """Locked-mode DBL edit → translate the lens(es) along X to hit the
@@ -4675,7 +5245,9 @@ class MainWindow(QMainWindow):
         self._refresh_measurements()
         if on:
             self._sync_boxing_readouts()
-        self._mark_dirty()
+        # No _mark_dirty: snap and lock are session state (reset_session_state),
+        # never written to the file — a snap and unsnap left a clean design
+        # starred and asking to be saved unchanged.
 
     def _on_lock_shape_toggled(self, on: bool):
         ws = self._active_ws
@@ -4687,9 +5259,8 @@ class MainWindow(QMainWindow):
         if on:
             self._sync_boxing_readouts()
         self._status.showMessage(
-            "Lens shape locked — type A/B to resize; drag to change DBL."
+            "Lens shape locked — type A/B to resize, or DBL to move the lenses."
             if on else "Lens shape unlocked — spline editing re-enabled.")
-        self._mark_dirty()
 
     def _resize_locked_lens(self, target_a, target_b):
         """Resize every LENS curve to the given finished target(s); a None target
@@ -4776,13 +5347,16 @@ class MainWindow(QMainWindow):
             return
         if not getattr(self, "_boxing_follow_pending", False):
             self._boxing_follow_pending = True
-            QTimer.singleShot(0, self._do_boxing_follow)
+            QTimer.singleShot(0, self, self._do_boxing_follow)
 
     def _do_boxing_follow(self):
         self._boxing_follow_pending = False
         ws = self._active_ws
-        # Live measurements track node drags / moves regardless of snap state.
+        # Live measurements track node drags / moves regardless of snap state,
+        # and so does the readiness dot (closing an outline's gap by dragging
+        # its end node left the dot amber with the old gap in its tooltip).
         self._refresh_measurements()
+        self._update_readiness()
         if ws.boxing_snapped:
             ws.boxing_guide.refresh()
             self._sync_boxing_readouts()
@@ -4840,17 +5414,13 @@ class MainWindow(QMainWindow):
         # reselected the topmost item (e.g. outline) even though the user's intent was
         # to move an alt-clicked lower item (e.g. lens). If the press captured an
         # explicit pre-click selection, use that; otherwise fall back to current selection.
-        initial_items = self.view._drag_move_items
-        if initial_items:
-            self._drag_moving_curves = [it.curve for it in initial_items
-                                        if isinstance(it, CurveItem)]
-            self._drag_moving_dims   = [it.dim   for it in initial_items
-                                        if isinstance(it, DimItem)]
-        else:
-            self._drag_moving_curves = [it.curve for it in self.scene.selectedItems()
-                                        if isinstance(it, CurveItem)]
-            self._drag_moving_dims   = [it.dim   for it in self.scene.selectedItems()
-                                        if isinstance(it, DimItem)]
+        items = self.view._drag_move_items or self.scene.selectedItems()
+        self._drag_moving_curves = [it.curve    for it in items
+                                    if isinstance(it, CurveItem)]
+        self._drag_moving_dims   = [it.dim      for it in items
+                                    if isinstance(it, DimItem)]
+        self._drag_moving_texts  = [it.text_obj for it in items
+                                    if isinstance(it, TextItem)]
 
     def _move_selected_by(self, dx: float, dy: float):
         """Translate the currently tracked selected geometry by (dx, dy) mm."""
@@ -4859,7 +5429,11 @@ class MainWindow(QMainWindow):
             self.scene.refresh_curve(curve)
         for dim in self._drag_moving_dims:
             self._translate_dim(dim, dx, dy)
-        # Keep the gizmo centred on the moving geometry
+        for t in self._drag_moving_texts:
+            t.anchor_x += dx
+            t.anchor_y += dy
+            self.scene.move_text(t)      # translation only — no glyph rebuild
+        # Keep the gizmo centered on the moving geometry
         if self._move_gizmo is not None:
             new_c = QPointF(self._move_gizmo_center.x() + dx,
                             self._move_gizmo_center.y() + dy)
@@ -4871,6 +5445,10 @@ class MainWindow(QMainWindow):
         # Collect the scene items that correspond to the curves that were actually moved.
         moved_items = [self.scene._curve_items.get(id(c))
                        for c in self._drag_moving_curves]
+        moved_items += [self.scene._dim_items.get(id(d))
+                        for d in self._drag_moving_dims]
+        moved_items += [self.scene._text_items.get(id(t))
+                        for t in self._drag_moving_texts]
         moved_items = [it for it in moved_items if it is not None]
 
         # Re-select the moved curves. Qt may have reselected the topmost item during
@@ -4886,32 +5464,36 @@ class MainWindow(QMainWindow):
         # selection stays rigid (no node dots), matching EditTool._on_selection
         # so a follow-up drag can't grab and endpoint-snap a node.
         self._edit_tool.clear()
-        if len(moved_items) == 1:
+        if len(moved_items) == 1 and isinstance(moved_items[0], CurveItem):
             self._edit_tool._add_curve_items(moved_items[0])
 
         self._drag_moving_curves = []
         self._drag_moving_dims   = []
+        self._drag_moving_texts  = []
 
-        # Sync layer combo and info label with the restored selection.
+        # Sync the Layers panel row and info label with the restored selection.
         if moved_items:
             self._on_selection_changed()
 
     def _gizmo_center_from_selection(self) -> QPointF | None:
-        """Return the gizmo origin: bounding-box centre of the selected curves."""
-        selected = [it for it in self.scene.selectedItems() if isinstance(it, CurveItem)]
-        if not selected:
-            return None
+        """Return the gizmo origin: bounding-box center of the selected
+        curves and text objects."""
         xs, ys = [], []
-        for it in selected:
-            for node in it.curve.nodes:
-                xs.append(node.x)
-                ys.append(node.y)
+        for it in self.scene.selectedItems():
+            if isinstance(it, CurveItem):
+                for node in it.curve.nodes:
+                    xs.append(node.x)
+                    ys.append(node.y)
+            elif isinstance(it, TextItem):
+                r = it.sceneBoundingRect()
+                xs += [r.left(), r.right()]
+                ys += [r.top(), r.bottom()]
         if not xs:
             return None
         return QPointF((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
 
     def _show_move_gizmo(self):
-        """Show the move gizmo at the current selection centre (no-op if nothing selected)."""
+        """Show the move gizmo at the current selection center (no-op if nothing selected)."""
         center = self._gizmo_center_from_selection()
         if center is None:
             self._status.showMessage("Move gizmo: nothing selected")
@@ -4923,10 +5505,12 @@ class MainWindow(QMainWindow):
             self.scene, self.view, center,
             on_pre_move = self._pre_move_selected,
             on_move     = self._move_selected_by,
+            on_move_end = self._end_move_selected,
         )
+        mk = self._hotkey_prefs.get("move_gizmo", "").strip()
         self._status.showMessage(
-            "Move gizmo active  |  drag arrow to move  |  click arrow for exact distance  |  M or Esc to dismiss"
-        )
+            "Move gizmo active  |  drag arrow to move  |  click arrow for exact "
+            f"distance  |  {mk + ' or Esc' if mk else 'Esc'} to dismiss")
 
     def _hide_move_gizmo(self):
         if self._move_gizmo is not None:
@@ -4944,14 +5528,7 @@ class MainWindow(QMainWindow):
 
     # Actions restricted to certain workspaces. Final visibility is the AND
     # of the user's toolbar pref and this rule.
-    _WS_ONLY_ACTIONS = {
-        "guides":      ("front",),
-        "boxing":      ("front",),
-        "pad":         ("front",),
-        "copy_temple": ("temple_r", "temple_l"),
-        # ENGRAVING only exists in temple workspaces (WORKSPACE_LAYERS)
-        "text":        ("temple_r", "temple_l"),
-    }
+    _WS_ONLY_ACTIONS = _WS_ONLY_ACTIONS
 
     def _apply_toolbar_visibility(self, toolbar_prefs: dict, ws_type: str | None = None):
         """Show/hide toolbar actions: user prefs AND per-workspace rules.
@@ -4994,9 +5571,14 @@ class MainWindow(QMainWindow):
             sc.deleteLater()
         self._shortcuts.clear()
         self._square_seq = None
+        self._refresh_hotkey_tooltips(hotkey_prefs)
         for key, target in self._hotkey_targets.items():
             key_str = hotkey_prefs.get(key, "").strip()
             if not key_str:
+                continue
+            if key_str in SettingsDialog._RESERVED_KEYS or key_str in _TYPING_KEYS:
+                # An older prefs file can hold a key that is now fixed (Ctrl+O)
+                # or read by the tools: bound twice, Qt fires neither.
                 continue
             if key in _TEXT_FIELD_HOTKEYS:
                 # NOT a QShortcut: application-context shortcuts go dead
@@ -5011,6 +5593,25 @@ class MainWindow(QMainWindow):
             sc.activated.connect(
                 lambda t=target: self._hotkey_dispatch(t))
             self._shortcuts[key] = sc
+
+    def _refresh_hotkey_tooltips(self, hotkey_prefs: dict):
+        for key, act in (("line", self._act_line), ("spline", self._act_spline),
+                         ("circle", self._act_circle), ("arc", self._act_arc),
+                         ("arc_sec", self._act_arc_sec), ("fillet", self._act_fillet),
+                         ("dim", self._act_dim), ("trim", self._act_trim),
+                         ("split_curve", self._act_split_curve),
+                         ("offset", self._act_offset), ("rebuild", self._act_rebuild),
+                         ("point_move", self._act_point_move), ("text", self._act_text),
+                         ("snap_node_ep", self._act_snap_ep), ("join", self._act_join)):
+            key_str = hotkey_prefs.get(key, "").strip()
+            if key_str in SettingsDialog._RESERVED_KEYS or key_str in _TYPING_KEYS:
+                key_str = ""                      # not bound (see _apply_hotkeys)
+            # Built from the tooltip as written (its typed "(X)" dropped once),
+            # never from the last result: a key like "/" or "Num+5" that the
+            # pattern cannot strip otherwise piled up one more per OK.
+            bases = self.__dict__.setdefault("_tip_bases", {})
+            base = bases.setdefault(key, _tip_with_key(act.toolTip(), ""))
+            act.setToolTip(_tip_with_key(base, key_str))
 
     def eventFilter(self, obj, event):
         """App-wide filter — installed on the QApplication, so this runs for
@@ -5089,6 +5690,7 @@ class MainWindow(QMainWindow):
             (self._act_point_move,   "tool-point-move"),
             (self._act_text,         "tool-text"),
             (self._act_panel,        "view-sidebar"),
+            (self._act_tooltips,     "toggle-tooltips"),
         ]
         for act, name in pairs:
             svg = _ICONS_DIR / f"{name}.svg"
@@ -5121,14 +5723,18 @@ class MainWindow(QMainWindow):
     def _build_menus(self):
         mb = self.menuBar()
 
+        from PySide6.QtGui import QKeySequence
         file_menu = mb.addMenu("File")
-        file_menu.addAction("New",              self._new)
-        file_menu.addAction("Open…",            self._open)
+        # New / Open / Quit and the zooms had no shortcuts at all. Kept on
+        # self: a text+slot addAction's wrapper is Python-owned (see Ctrl+,).
+        self._act_new = file_menu.addAction("New", self._new)
+        self._act_new.setShortcut(QKeySequence("Ctrl+N"))
+        self._act_open = file_menu.addAction("Open…", self._open)
+        self._act_open.setShortcut(QKeySequence("Ctrl+O"))
         self._recent_menu = file_menu.addMenu("Open Recent")
         self._recent_menu.setToolTipsVisible(True)
         self._rebuild_recent_menu()
         file_menu.addSeparator()
-        from PySide6.QtGui import QKeySequence
         # Real shortcuts (not tab-text like Undo/Redo) so the menu shows the
         # key AND the binding works window-wide through Qt's action system.
         act_save = file_menu.addAction("Save", self._save)
@@ -5146,14 +5752,19 @@ class MainWindow(QMainWindow):
         exp.addAction("All DXF…", self._export_all_dxf)
         exp.addAction("SVG…", self._export_svg)
         exp.addAction("PNG…", self._export_png)
-        exp.addAction("OMA Trace…", self._export_oma)
+        exp.addAction("OMA Lens Trace…", self._export_oma)
         exp.addSeparator()
-        exp.addAction("PDF (1:1 scale)…", self._export_pdf_1to1)
+        exp.addAction("PDF (1:1 Scale)…", self._export_pdf_1to1)
+        exp.addAction("PDF Front + Temples (1:1 Templates)…",
+                      self._export_pdf_templates)
         exp.addAction("PDF for Catalog…", self._export_pdf_catalog)
         file_menu.addSeparator()
         file_menu.addAction("Print at 1:1 Scale…", self._print_1to1)
+        file_menu.addAction("Print Front + Temples (1:1 Templates)…",
+                            self._print_templates)
         file_menu.addSeparator()
-        file_menu.addAction("Quit", self.close)
+        self._act_quit = file_menu.addAction("Quit", self.close)
+        self._act_quit.setShortcut(QKeySequence("Ctrl+Q"))
 
         edit_menu = mb.addMenu("Edit")
         self._act_undo = edit_menu.addAction("Undo\tCtrl+Z", self._handle_undo)
@@ -5171,12 +5782,28 @@ class MainWindow(QMainWindow):
         edit_menu.addAction("Ungroup\tCtrl+Shift+G", self._ungroup_selected)
 
         view_menu = mb.addMenu("View")
-        view_menu.addAction("Zoom In",  lambda: self.view.zoom_by(1.2))
-        view_menu.addAction("Zoom Out", lambda: self.view.zoom_by(1 / 1.2))
-        view_menu.addAction("Fit",      self._fit_view)
+        self._act_zoom_in = view_menu.addAction(
+            "Zoom In", lambda: self.view.zoom_by(1.2))
+        self._act_zoom_in.setShortcuts([QKeySequence("Ctrl++"),
+                                        QKeySequence("Ctrl+=")])
+        self._act_zoom_out = view_menu.addAction(
+            "Zoom Out", lambda: self.view.zoom_by(1 / 1.2))
+        self._act_zoom_out.setShortcut(QKeySequence("Ctrl+-"))
+        self._act_fit_menu = view_menu.addAction("Fit", self._fit_view)
+        self._act_fit_menu.setShortcut(QKeySequence("Ctrl+0"))
         view_menu.addSeparator()
-        view_menu.addAction(self._act_mirror)
-        view_menu.addAction(self._act_guides)
+        # The menu's own entries for the two toggles, following the toolbar's
+        # each time the menu opens. Sharing the toolbar's QActions meant that
+        # hiding the button in Preferences ▸ Toolbar hid the menu entry too —
+        # and Ghost has no hotkey, so nothing could switch it any more.
+        self._view_menu_toggles: dict[str, tuple[QAction, QAction]] = {}
+        for key, act in (("ghost", self._act_mirror), ("guides", self._act_guides)):
+            proxy = QAction(act.text(), self, checkable=True)
+            proxy.setToolTip(act.toolTip())
+            proxy.triggered.connect(lambda checked, a=act: a.setChecked(checked))
+            view_menu.addAction(proxy)
+            self._view_menu_toggles[key] = (proxy, act)
+        view_menu.aboutToShow.connect(self._sync_view_menu_toggles)
         view_menu.addSeparator()
         view_menu.addAction(
             "Revision History",
@@ -5196,8 +5823,16 @@ class MainWindow(QMainWindow):
         # the last reference deletes the underlying QAction.
         self._act_prefs = settings_menu.addAction(
             "Preferences…", self._open_settings)
-        from PySide6.QtGui import QKeySequence
         self._act_prefs.setShortcut(QKeySequence("Ctrl+,"))
+
+    def _sync_view_menu_toggles(self):
+        ws_type = self._active_ws.workspace_type
+        for key, (proxy, act) in self._view_menu_toggles.items():
+            proxy.blockSignals(True)
+            proxy.setChecked(act.isChecked())
+            proxy.blockSignals(False)
+            allowed = _WS_ONLY_ACTIONS.get(key)
+            proxy.setVisible(allowed is None or ws_type in allowed)
 
     # ------------------------------------------------------------------
     # Tool switching
@@ -5207,7 +5842,8 @@ class MainWindow(QMainWindow):
         return self._active_ws.active_layer
 
     def _deactivate_cursor_tools(self):
-        """Deactivate trim/split/offset/point-move tools and clear their state."""
+        """Deactivate the cursor tools (trim, fillet, split, offset, rebuild,
+        point move) and clear their state."""
         self._trim_tool.deactivate()
         self._fillet_tool.deactivate()
         self._split_tool.deactivate()
@@ -5233,11 +5869,15 @@ class MainWindow(QMainWindow):
         self.view.set_dim_tool(None)
         self._text_tool.deactivate()
         self._deactivate_cursor_tools()
+        # Calibration too: armed, it outranks every tool in the view's press
+        # handler, so after pressing L the next clicks still calibrated.
+        if self._calib_tool.active:
+            self._calib_tool.cancel(self.scene)
         self.view.measure_bar.hide_bar()
         if clear_selection:
             self._edit_tool.clear()
             self.scene.clearSelection()
-        # The draw tool just deactivated — grey out the context snaps. A
+        # The draw tool just deactivated — gray out the context snaps. A
         # line/spline setter re-enables them right after (below).
         self._update_snap_context()
 
@@ -5300,13 +5940,12 @@ class MainWindow(QMainWindow):
         # ENGRAVING is a temple-workspace layer (toolbar hides the button
         # elsewhere, but the hotkey can still fire).
         if Layer.ENGRAVING not in WORKSPACE_LAYERS[self._active_ws.workspace_type]:
-            self._status.showMessage(
+            self._back_to_select(
                 "Text engraving is available in the Temple workspaces.")
-            self._act_select.setChecked(True)
-            self._set_tool_select()
             return
         self._teardown_tools(clear_selection=True)
-        self._text_tool.activate(Layer.ENGRAVING, self.scene, self.view)
+        self._text_tool.activate(Layer.ENGRAVING, self.scene, self.view,
+                                 self._active_ws.snap)
         self.view.set_draw_tool(self._text_tool)
 
     def _on_text_added(self, text_obj):
@@ -5319,25 +5958,48 @@ class MainWindow(QMainWindow):
             "double-click to edit, Del to remove."
         )
 
-    def _on_text_cancelled(self):
+    def _on_text_canceled(self):
+        self._back_to_select()
+
+    def _back_to_select(self, message: str | None = None):
+        """Put the view and toolbar back in Select mode, keeping `message` —
+        or, when None, whatever the tool last said — on show. Select's own
+        prompt otherwise replaced a refusal ("select something first") or a
+        tool's "canceled" the moment it appeared."""
+        msg = self._status.currentMessage() if message is None else message
         self._act_select.setChecked(True)
         self._set_tool_select()
+        if msg:
+            self._status.showMessage(msg, 4000)
+
+    def _on_draw_canceled(self):
+        """Esc in Line/Spline/Circle/Arc/Dim: the tool has deactivated
+        itself; put the view and toolbar back in Select mode (they used to
+        keep routing to the dead tool, so nothing was selectable until the
+        Select button was clicked). Keep the tool's own message on show."""
+        self._back_to_select()
 
     def _edit_text_object(self, text_obj):
         """Double-click on a TextItem — re-open the dialog pre-filled."""
         dlg = TextDialog(self, text_obj)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        if _run_modal(dlg) != QDialog.DialogCode.Accepted:
             return
         v = dlg.values()
         if not v["text"].strip():
+            self._status.showMessage(
+                "Edit Text: empty text ignored — use Delete to remove the object.")
+            return
+        # Only what changed: OK on an untouched dialog pushed an undo step and
+        # starred the design. TextDialog hands back the stored value of any
+        # field left alone, so an exact comparison is the right one.
+        changes = {k: v[k] for k in ("text", "family", "size_mm", "rotation",
+                                     "anchor_x", "anchor_y")
+                   if v[k] != getattr(text_obj, k)}
+        if not changes:
             return
         self._push_undo_snapshot()
-        text_obj.text     = v["text"]
-        text_obj.family   = v["family"]
-        text_obj.size_mm  = v["size_mm"]
-        text_obj.rotation = v["rotation"]
-        text_obj.anchor_x = v["anchor_x"]
-        text_obj.anchor_y = v["anchor_y"]
+        for k, val in changes.items():
+            setattr(text_obj, k, val)
         self.scene.refresh_text(text_obj)
         self._refresh_layer_panel()   # label shows the (now-changed) string
         self._status.showMessage("Text updated.")
@@ -5380,13 +6042,11 @@ class MainWindow(QMainWindow):
         for c in new_curves:
             self._active_ws.add_curve(c)
 
-    def _on_trim_cancelled(self):
-        self._act_select.setChecked(True)
-        self._set_tool_select()
+    def _on_trim_canceled(self):
+        self._back_to_select()
 
-    def _on_split_cancelled(self):
-        self._act_select.setChecked(True)
-        self._set_tool_select()
+    def _on_split_canceled(self):
+        self._back_to_select()
 
     # ------------------------------------------------------------------
     # Offset tool
@@ -5412,18 +6072,15 @@ class MainWindow(QMainWindow):
         self._set_tool_select()
         # Now selection is possible — clear and select the new curve
         self.scene.clearSelection()
-        from .canvas.items import CurveItem as _CI
-        for item in self.scene.items():
-            if isinstance(item, _CI) and item.curve is offset_curve:
-                item.setSelected(True)
-                break
+        item = self.scene._curve_items.get(id(offset_curve))
+        if item is not None:
+            item.setSelected(True)
         self._status.showMessage(
             f"Offset {offset_curve.layer.value} curve created — select + edit nodes to refine"
         )
 
-    def _on_offset_cancelled(self):
-        self._act_select.setChecked(True)
-        self._set_tool_select()
+    def _on_offset_canceled(self):
+        self._back_to_select()
 
     # ------------------------------------------------------------------
     # Rebuild Spline tool (M31.2)
@@ -5454,18 +6111,15 @@ class MainWindow(QMainWindow):
         self._act_select.setChecked(True)
         self._set_tool_select()
         self.scene.clearSelection()
-        from .canvas.items import CurveItem as _CI
-        for item in self.scene.items():
-            if isinstance(item, _CI) and item.curve is rebuilt_curve:
-                item.setSelected(True)
-                break
+        item = self.scene._curve_items.get(id(rebuilt_curve))
+        if item is not None:
+            item.setSelected(True)
         self._status.showMessage(
             f"Rebuilt to {len(rebuilt_curve.nodes)} nodes — select + edit to refine"
         )
 
-    def _on_rebuild_cancelled(self):
-        self._act_select.setChecked(True)
-        self._set_tool_select()
+    def _on_rebuild_canceled(self):
+        self._back_to_select()
 
     # ------------------------------------------------------------------
     # Point Move tool
@@ -5476,13 +6130,13 @@ class MainWindow(QMainWindow):
         # from every item, which clears the Qt selection out from under us.
         # Relying on the live selection (or on the view's stale drag-capture
         # list) is why Point Move only worked intermittently.
-        self._pm_curves = [it.curve for it in self.scene.selectedItems()
-                           if isinstance(it, CurveItem)]
-        self._pm_dims   = [it.dim for it in self.scene.selectedItems()
-                           if isinstance(it, DimItem)]
-        if not self._pm_curves and not self._pm_dims:
-            self._status.showMessage("Point Move: select curves first")
-            self._act_select.setChecked(True)
+        sel = self.scene.selectedItems()
+        self._pm_curves = [it.curve for it in sel if isinstance(it, CurveItem)]
+        self._pm_dims   = [it.dim for it in sel if isinstance(it, DimItem)]
+        self._pm_texts  = [it.text_obj for it in sel if isinstance(it, TextItem)]
+        if not self._pm_curves and not self._pm_dims and not self._pm_texts:
+            # Back to Select: a previous tool must not stay live.
+            self._back_to_select("Point Move: select something first")
             return
         self._teardown_tools(clear_selection=False)
         self._point_move_tool.activate(self.scene, self.view,
@@ -5495,6 +6149,7 @@ class MainWindow(QMainWindow):
         self._edit_tool.clear()
         self._drag_moving_curves = list(self._pm_curves)
         self._drag_moving_dims   = list(self._pm_dims)
+        self._drag_moving_texts  = list(getattr(self, "_pm_texts", []))
         self._move_selected_by(dx, dy)
         # Restore Select mode first so ItemIsSelectable is True before
         # _end_move_selected calls setSelected(True) on the moved items.
@@ -5505,17 +6160,15 @@ class MainWindow(QMainWindow):
             f"Moved  Δx {dx:+.3f} mm  Δy {dy:+.3f} mm"
         )
 
-    def _on_point_move_cancelled(self):
-        self._act_select.setChecked(True)
-        self._set_tool_select()
+    def _on_point_move_canceled(self):
+        self._back_to_select()
 
     def _on_dim_added(self, dim: DimLine):
         self._push_undo_snapshot()
         self._active_ws.add_dim(dim)
         self._act_select.setChecked(True)
         self._set_tool_select()
-        import math as _math
-        dist = _math.hypot(dim.x1 - dim.x0, dim.y1 - dim.y0)
+        dist = math.hypot(dim.x1 - dim.x0, dim.y1 - dim.y0)
         self._status.showMessage(
             f"Dim placed: {dist:.2f} mm  (select + Del to remove)"
         )
@@ -5530,7 +6183,16 @@ class MainWindow(QMainWindow):
     def _toggle_snap_palette(self, on: bool):
         if on:
             anchor = self._toolbar.widgetForAction(self._act_snap_palette)
+            panel = self._toolbar.visible_panel()
+            if panel is not None and (anchor is None or not anchor.isVisible()):
+                anchor = panel.button_for(self._act_snap_palette) or anchor
             self._snap_palette.reposition(self._toolbar, anchor)
+            if panel is not None:
+                # Beside the pinned pop-out, not under it: both anchor at the
+                # toolbar's edge, and the pop-out re-raises on every refresh.
+                right = panel.geometry().right() + 4
+                if self._snap_palette.x() < right:
+                    self._snap_palette.move(right, self._snap_palette.y())
             self._update_snap_context()
             self._snap_palette.show()
             self._snap_palette.raise_()
@@ -5593,13 +6255,17 @@ class MainWindow(QMainWindow):
         self._snap.set_mirror(axis_x, on, horizontal=horizontal)
         self._boxing_guide.set_mirror(on)
         self._boxing_guide.set_axis_x(axis_x)
+        # Keep the workspace flag live (measurements read it) — it used to be
+        # written only when leaving the tab. mirror.enabled is saved with the
+        # document, so this is an unsaved change.
+        self._active_ws.mirror_enabled = on
+        self._mark_dirty()
         self._update_readiness()   # mirror doubling changes LENS/OUTLINE counts
 
     def _on_curve_added(self, curve):
         curve.line_weight = self._default_line_weight
         self._push_undo_snapshot()        # snapshot BEFORE the curve is added
-        self._active_ws.add_curve(curve)
-        self._refresh_measurements()
+        self._active_ws.add_curve(curve)  # (measurements refresh via _notify)
         # Return to select mode so the user can immediately inspect the new curve
         self._act_select.setChecked(True)
         self._set_tool_select()
@@ -5709,7 +6375,19 @@ class MainWindow(QMainWindow):
         """Rebuild the active workspace's canvas from a snapshot."""
         self._active_ws.restore_snapshot(snapshot)
 
+    def _end_operations_holding_curves(self):
+        """Undo and redo rebuild every Curve object. A tool mid-operation —
+        Rebuild, Fillet, Offset, Point Move — still holds the old ones and
+        then applies to curves no longer in the document: Fillet left both
+        originals beside their trimmed copies, Point Move reported a move
+        that never happened. End it first."""
+        if any(t.active for t in (self._rebuild_tool, self._fillet_tool,
+                                  self._offset_tool, self._point_move_tool)):
+            self._act_select.setChecked(True)
+            self._set_tool_select()
+
     def _undo(self):
+        self._end_operations_holding_curves()
         if not self._active_ws.undo():
             self._status.showMessage("Nothing to undo")
             return
@@ -5720,6 +6398,7 @@ class MainWindow(QMainWindow):
             f"Undo — {n} step{'s' if n != 1 else ''} remaining")
 
     def _redo(self):
+        self._end_operations_holding_curves()
         if not self._active_ws.redo():
             self._status.showMessage("Nothing to redo")
             return
@@ -5730,12 +6409,12 @@ class MainWindow(QMainWindow):
             f"Redo — {n} step{'s' if n != 1 else ''} remaining")
 
     def _handle_undo(self):
-        """Ctrl+Z: undo last draw-point when drawing, else canvas undo."""
-        if self._draw_tool.active:
-            if self._draw_tool.undo_last_point():
-                self._status.showMessage("Undo: last point removed")
-        else:
-            self._undo()
+        """Ctrl+Z: undo last draw-point when drawing, else canvas undo — also
+        when the Line tool is up with no point placed (Ctrl+Z did nothing)."""
+        if self._draw_tool.active and self._draw_tool.undo_last_point():
+            self._status.showMessage("Undo: last point removed")
+            return
+        self._undo()
 
     def _update_undo_actions(self):
         u, r = len(self._undo_stack), len(self._redo_stack)
@@ -5781,7 +6460,8 @@ class MainWindow(QMainWindow):
         for item in selected_texts:
             self._active_ws.remove_text(item.text_obj)
 
-        to_remove = [item.curve for item in selected_curves if item.curve in self._doc_curves]
+        doc_ids = {id(c) for c in self._doc_curves}
+        to_remove = [item.curve for item in selected_curves if id(item.curve) in doc_ids]
         if to_remove:
             self.scene.clearSelection()
             for curve in to_remove:
@@ -5797,6 +6477,10 @@ class MainWindow(QMainWindow):
 
     def _insert_node(self, curve: Curve, scene_pos):
         """Insert a node at the nearest point on *curve* to *scene_pos*."""
+        if self._active_ws.shape_locked and curve.layer == Layer.LENS:
+            self._status.showMessage(
+                "Lens shape is locked — unlock it to add nodes")
+            return
         if curve.group_id:
             self._status.showMessage(
                 "Curve is grouped — Ctrl+Shift+G to ungroup before editing nodes")
@@ -5824,48 +6508,63 @@ class MainWindow(QMainWindow):
     _PASTE_OFFSET_MM = 5.0
 
     def _selection_payload(self):
-        curves = [it.curve for it in self.scene.selectedItems()
-                  if isinstance(it, CurveItem)]
-        dims   = [it.dim for it in self.scene.selectedItems()
-                  if isinstance(it, DimItem)]
-        return curves, dims
+        """(curves, dims, texts) behind the current canvas selection."""
+        sel = self.scene.selectedItems()
+        curves = [it.curve    for it in sel if isinstance(it, CurveItem)]
+        dims   = [it.dim      for it in sel if isinstance(it, DimItem)]
+        texts  = [it.text_obj for it in sel if isinstance(it, TextItem)]
+        return curves, dims, texts
+
+    @staticmethod
+    def _payload_summary(verb: str, curves, dims, texts) -> str:
+        """'Copied 3 curves, 1 text' — only the kinds that are present."""
+        parts = []
+        for n, noun in ((len(curves), "curve"), (len(dims), "dim"),
+                        (len(texts), "text")):
+            if n:
+                parts.append(f"{n} {noun}{'s' if n != 1 else ''}")
+        return f"{verb} " + ", ".join(parts)
 
     def _copy_selected(self):
-        curves, dims = self._selection_payload()
-        if not curves and not dims:
+        curves, dims, texts = self._selection_payload()
+        if not curves and not dims and not texts:
             self._status.showMessage("Copy: nothing selected")
             return
         # In-memory clipboard — survives workspace switches, so curves can be
         # copied between tabs.
         self._clipboard = {"curves": copy.deepcopy(curves),
-                           "dims":   copy.deepcopy(dims)}
+                           "dims":   copy.deepcopy(dims),
+                           "texts":  copy.deepcopy(texts)}
         self._status.showMessage(
-            f"Copied {len(curves)} curve(s), {len(dims)} dim(s)")
+            self._payload_summary("Copied", curves, dims, texts))
 
     def _paste(self):
         clip = getattr(self, "_clipboard", None)
-        if not clip or (not clip["curves"] and not clip["dims"]):
+        if not clip or not any(clip.get(k) for k in ("curves", "dims", "texts")):
             self._status.showMessage("Paste: clipboard is empty")
             return
         self._paste_payload(copy.deepcopy(clip["curves"]),
-                            copy.deepcopy(clip["dims"]))
+                            copy.deepcopy(clip["dims"]),
+                            copy.deepcopy(clip.get("texts", [])))
 
     def _duplicate_selected(self):
-        curves, dims = self._selection_payload()
-        if not curves and not dims:
+        curves, dims, texts = self._selection_payload()
+        if not curves and not dims and not texts:
             self._status.showMessage("Duplicate: nothing selected")
             return
-        self._paste_payload(copy.deepcopy(curves), copy.deepcopy(dims))
+        self._paste_payload(copy.deepcopy(curves), copy.deepcopy(dims),
+                            copy.deepcopy(texts))
 
-    def _paste_payload(self, curves: list, dims: list):
-        """Insert deep-copied curves/dims at +5 mm offset and select them."""
+    def _paste_payload(self, curves: list, dims: list, texts: list = ()):
+        """Insert deep-copied curves/dims/texts at +5 mm offset and select them."""
         self._push_undo_snapshot()
         allowed = set(WORKSPACE_LAYERS[self._active_ws.workspace_type])
         gid_map: dict = {}
         remapped = 0
         new_items = []
+        off = self._PASTE_OFFSET_MM
         for c in curves:
-            self._translate_curve(c, self._PASTE_OFFSET_MM, self._PASTE_OFFSET_MM)
+            self._translate_curve(c, off, off)
             if c.layer not in allowed:
                 # Layer doesn't exist in this workspace (cross-tab paste) —
                 # land on REF so the curve stays visible and non-machined.
@@ -5876,13 +6575,18 @@ class MainWindow(QMainWindow):
                 c.group_id = gid_map.setdefault(c.group_id, uuid.uuid4().hex[:8])
             new_items.append(self._active_ws.add_curve(c))
         for d in dims:
-            d.x0 += self._PASTE_OFFSET_MM; d.y0 += self._PASTE_OFFSET_MM
-            d.x1 += self._PASTE_OFFSET_MM; d.y1 += self._PASTE_OFFSET_MM
-            self._active_ws.add_dim(d)
-        self.scene.clearSelection()
-        for it in new_items:
-            it.setSelected(True)
-        msg = f"Pasted {len(curves)} curve(s), {len(dims)} dim(s)"
+            d.x0 += off; d.y0 += off
+            d.x1 += off; d.y1 += off
+            new_items.append(self._active_ws.add_dim(d))
+        for t in texts:
+            t.anchor_x += off
+            t.anchor_y += off
+            if t.layer not in allowed:
+                t.layer = Layer.REF
+                remapped += 1
+            new_items.append(self._active_ws.add_text(t))
+        self.scene.select_items(new_items)
+        msg = self._payload_summary("Pasted", curves, dims, texts)
         if remapped:
             msg += f"  ({remapped} moved to REF — layer not in this workspace)"
         self._status.showMessage(msg)
@@ -5892,35 +6596,30 @@ class MainWindow(QMainWindow):
         if self.view._draw_tool is not None or self._dim_tool.active:
             self._act_select.setChecked(True)
             self._set_tool_select()
-        self.scene.clearSelection()
-        n = 0
-        for it in self.scene._curve_items.values():
-            if it.isVisible() and bool(
-                    it.flags() & it.GraphicsItemFlag.ItemIsSelectable):
-                it.setSelected(True)
-                n += 1
-        for it in self.scene._dim_items.values():
-            if it.isVisible():
-                it.setSelected(True)
-                n += 1
-        for it in self.scene._text_items.values():
-            if it.isVisible() and bool(
-                    it.flags() & it.GraphicsItemFlag.ItemIsSelectable):
-                it.setSelected(True)
-                n += 1
-        self._status.showMessage(f"Selected {n} object(s)")
+        picked = [it for group in (self.scene._curve_items, self.scene._dim_items,
+                                   self.scene._text_items)
+                  for it in group.values()
+                  if it.isVisible()
+                  and bool(it.flags() & it.GraphicsItemFlag.ItemIsSelectable)]
+        self.scene.select_items(picked)
+        self._status.showMessage(f"Selected {len(picked)} object(s)")
 
     # ------------------------------------------------------------------
     # Transform (scale / rotate)
     # ------------------------------------------------------------------
 
     def _transform_selected(self):
-        items = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
-        if not items:
-            self._status.showMessage("Transform: select curves first")
+        sel = self.scene.selectedItems()
+        items = [i for i in sel if isinstance(i, CurveItem)]
+        text_items = [i for i in sel if isinstance(i, TextItem)]
+        # Dims ride along: Ctrl+A then Transform scaled the drawing and left
+        # its dimensions measuring the old one (and said nothing of them).
+        dims = [i.dim for i in sel if isinstance(i, DimItem)]
+        if not items and not text_items and not dims:
+            self._status.showMessage("Transform: select curves or text first")
             return
         dlg = TransformDialog(self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        if _run_modal(dlg) != QDialog.DialogCode.Accepted:
             return
         sx, sy, rot, pivot_origin = dlg.values()
         if sx == 1.0 and sy == 1.0 and rot == 0.0:
@@ -5930,11 +6629,21 @@ class MainWindow(QMainWindow):
         if pivot_origin:
             px = py = 0.0
         else:
-            bb = _curves_bbox(curves)
-            px, py = (bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2
+            xs, ys = [], []
+            if curves:
+                bb = _curves_bbox(curves)
+                xs += [bb[0], bb[2]]; ys += [bb[1], bb[3]]
+            for ti in text_items:
+                r = ti.sceneBoundingRect()
+                xs += [r.left(), r.right()]; ys += [r.top(), r.bottom()]
+            for d in dims:
+                xs += [d.x0, d.x1]; ys += [d.y0, d.y1]
+            px, py = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
 
-        cos_t = math.cos(math.radians(rot))
-        sin_t = math.sin(math.radians(rot))
+        # The dialog's angle is counter-clockwise on screen; the scene is
+        # y-down, where a positive angle turns clockwise — hence the minus.
+        cos_t = math.cos(math.radians(-rot))
+        sin_t = math.sin(math.radians(-rot))
 
         def xf(x: float, y: float):
             dx, dy = (x - px) * sx, (y - py) * sy
@@ -5964,9 +6673,10 @@ class MainWindow(QMainWindow):
                 c0.x, c0.y = xf(c0.x, c0.y)
                 curve.radius = (curve.radius or 0.0) * abs(sx)
                 if curve.kind == "arc" and rot:
-                    # Rotation shifts both angles equally (same atan2 space)
-                    curve.start_angle = (curve.start_angle + rot) % 360
-                    curve.end_angle   = (curve.end_angle + rot) % 360
+                    # Rotation shifts both angles equally (same atan2 space,
+                    # scene y-down, so a counter-clockwise turn subtracts)
+                    curve.start_angle = (curve.start_angle - rot) % 360
+                    curve.end_angle   = (curve.end_angle - rot) % 360
                 self.scene.refresh_curve(curve)
                 final_curves.append(curve)
             else:
@@ -5979,15 +6689,44 @@ class MainWindow(QMainWindow):
                 self.scene.refresh_curve(curve)
                 final_curves.append(curve)
 
-        self.scene.clearSelection()
-        for c in final_curves:
-            it = self.scene._curve_items.get(id(c))
-            if it is not None:
-                it.setSelected(True)
+        # Text objects: the anchor rides the same transform; the glyphs
+        # themselves scale by size (uniform only — lettering has no
+        # stretched form) and turn with the rotation. The dialog's angle and
+        # TextObject.rotation are both counter-clockwise.
+        from .textpath import normalize_rotation
+        text_note = ""
+        for ti in text_items:
+            t = ti.text_obj
+            t.anchor_x, t.anchor_y = xf(t.anchor_x, t.anchor_y)
+            if uniform:
+                t.size_mm = max(0.1, t.size_mm * abs(sx))
+            elif sx != 1.0 or sy != 1.0:
+                text_note = "  (text size unchanged — non-uniform scale)"
+            if rot:
+                t.rotation = normalize_rotation(t.rotation + rot)
+            self.scene.refresh_text(t)
+
+        for d in dims:
+            d.x0, d.y0 = xf(d.x0, d.y0)
+            d.x1, d.y1 = xf(d.x1, d.y1)
+            if uniform:
+                d.offset *= abs(sx)
+            item = self.scene._dim_items.get(id(d))
+            if item:
+                item.prepareGeometryChange()
+                item.update()
+
+        picked = [self.scene._curve_items.get(id(c)) for c in final_curves]
+        picked = [it for it in picked if it is not None] + text_items
+        picked += [it for it in (self.scene._dim_items.get(id(d)) for d in dims)
+                   if it is not None]
+        self.scene.select_items(picked)
         self._refresh_measurements()
         self._status.showMessage(
-            f"Transformed {len(final_curves)} curve(s)  "
-            f"(scale {sx * 100:.0f}% × {sy * 100:.0f}%, rotate {rot:+.1f}°)")
+            self._payload_summary("Transformed", final_curves, dims,
+                                  [ti.text_obj for ti in text_items])
+            + f"  (scale {sx * 100:.0f}% × {sy * 100:.0f}%, rotate {rot:+.1f}°)"
+            + text_note)
 
     # ------------------------------------------------------------------
     # Group / Ungroup
@@ -6146,8 +6885,14 @@ class MainWindow(QMainWindow):
         self._push_undo_snapshot()
         self.scene.clearSelection()
 
-        copies = [mirror_curve(item.curve, axis_x, horizontal=is_horiz)
-                  for item in selected]
+        gid_map: dict = {}
+        copies = []
+        for item in selected:
+            c = mirror_curve(item.curve, axis_x, horizontal=is_horiz)
+            if item.curve.group_id:   # the copy is its own rigid group
+                c.group_id = gid_map.setdefault(item.curve.group_id,
+                                                uuid.uuid4().hex[:8])
+            copies.append(c)
         for c in copies:
             self._active_ws.add_curve(c)
 
@@ -6168,9 +6913,13 @@ class MainWindow(QMainWindow):
     def _copy_temple_to_other(self):
         """Flip all content from the current temple workspace into the other.
 
-        temple_r → temple_l: flip across x = 0 (negate all x-coords).
-        temple_l → temple_r: same flip — both sides mirror through the Y axis.
-        Confirms before overwriting non-empty target; pushes undo snapshot in target.
+        Both directions reflect through the horizontal axis (y = 0): the
+        temples are drawn hinge-left, so the other side is the same arm
+        flipped brow-edge-for-brow-edge. Curves and dims reflect exactly;
+        engraving text lands on the reflected footprint but stays readable
+        (see textpath.mirror_text), so the maker only has to change the
+        words. Confirms before overwriting a non-empty target; pushes an
+        undo snapshot in the target.
         """
         ws_type = self._active_ws.workspace_type
         if ws_type not in ("temple_r", "temple_l"):
@@ -6179,12 +6928,17 @@ class MainWindow(QMainWindow):
         # Identify source and target workspace objects
         tab_names = ["front", "temple_r", "temple_l", "hinge"]
         src_ws = self._active_ws
+        if not (src_ws.doc_curves or src_ws.doc_dims or src_ws.doc_texts):
+            self._status.showMessage(
+                "Temple Copy: this temple is empty — nothing to copy")
+            return
         target_type = "temple_l" if ws_type == "temple_r" else "temple_r"
         tgt_ws = self._workspaces[tab_names.index(target_type)]
 
         # Always confirm — a mis-click must never silently wipe a workspace.
         label = "Temple L" if target_type == "temple_l" else "Temple R"
-        has_content = bool(tgt_ws.doc_curves or tgt_ws.doc_dims)
+        has_content = bool(tgt_ws.doc_curves or tgt_ws.doc_dims
+                           or tgt_ws.doc_texts)
         detail = (f"This will REPLACE everything currently in {label}."
                   if has_content else f"{label} is currently empty.")
         r = QMessageBox.question(
@@ -6197,25 +6951,36 @@ class MainWindow(QMainWindow):
             return
 
         def flip_dim(d: DimLine) -> DimLine:
+            # The offset is measured along the dim's own normal, which the
+            # y-flip reverses — negate it so the line stays on the same side
+            # of the reflected geometry.
             return DimLine(x0=d.x0, y0=-d.y0,
                            x1=d.x1, y1=-d.y1,
-                           offset=d.offset)
+                           offset=-d.offset)
 
         # Snapshot target for undo, replace its geometry with the flipped copy.
         tgt_ws.push_undo_snapshot()
         tgt_ws.clear_geometry()
+        gid_map: dict = {}
         for c in src_ws.doc_curves:
-            tgt_ws.add_curve(mirror_curve(c, 0.0, horizontal=True))
+            m = mirror_curve(c, 0.0, horizontal=True)
+            if c.group_id:      # a grouped hinge stays a group on the other side
+                m.group_id = gid_map.setdefault(c.group_id, uuid.uuid4().hex[:8])
+            tgt_ws.add_curve(m)
         for d in src_ws.doc_dims:
             tgt_ws.add_dim(flip_dim(d))
+        from .textpath import mirror_text
+        for t in src_ws.doc_texts:
+            tgt_ws.add_text(mirror_text(t, 0.0, horizontal=True))
 
         # Switch to target tab
         self._ws_tab_widget.setCurrentIndex(tab_names.index(target_type))
         self._mark_dirty()
-        nc = len(tgt_ws.doc_curves)
+        self._update_undo_actions()   # the promised Ctrl+Z is on THIS tab now
         self._status.showMessage(
-            f"Temple Copy: {nc} curve{'s' if nc != 1 else ''} copied to {label}."
-        )
+            self._payload_summary("Temple Copy:", tgt_ws.doc_curves,
+                                  tgt_ws.doc_dims, tgt_ws.doc_texts)
+            + f" copied to {label}.")
 
     # ------------------------------------------------------------------
     # Join curves
@@ -6301,7 +7066,7 @@ class MainWindow(QMainWindow):
             self._close_single_curve(originals[0])
             return
 
-        # Arcs store only their centre node, so their endpoints can't be read
+        # Arcs store only their center node, so their endpoints can't be read
         # from nodes[0]/nodes[-1] — convert them to splines (with real endpoint
         # nodes) before chaining. Closed circles have no endpoints to join to,
         # so they're dropped from the join with a note.
@@ -6506,7 +7271,7 @@ class MainWindow(QMainWindow):
     def _split_at_node(self):
         """Break the selected curve at the selected (red) node into two open curves."""
         curve, idx = self._edit_tool.selected_node_info()
-        if curve is None or curve not in self._doc_curves:
+        if curve is None or not any(c is curve for c in self._doc_curves):
             self._status.showMessage("Split: select a node first")
             return
 
@@ -6537,8 +7302,7 @@ class MainWindow(QMainWindow):
             ]
 
         self._active_ws.remove_curve(curve)
-        for c in results:
-            self._active_ws.add_curve(c).setSelected(True)
+        self.scene.select_items([self._active_ws.add_curve(c) for c in results])
 
         n = len(results)
         self._status.showMessage(f"Split → {n} curve{'s' if n > 1 else ''}")
@@ -6550,11 +7314,22 @@ class MainWindow(QMainWindow):
             self._status.showMessage("Explode: select one or more curves first")
             return
 
+        # A circle or arc has one (center) node and no segments to break
+        # into — exploding it deleted the arc and left a radius-less ghost
+        # for the circle.
+        round_items = [i for i in selected_items if i.curve.kind in ("circle", "arc")]
+        selected_items = [i for i in selected_items if i not in round_items]
+        if not selected_items:
+            self._status.showMessage(
+                "Explode: circles and arcs have no segments to break apart")
+            return
+
         self._push_undo_snapshot()
         self._edit_tool.clear()
         self.scene.clearSelection()
 
         total_segs = 0
+        new_items = []
         for item in selected_items:
             curve  = item.curve
             nodes  = curve.nodes
@@ -6570,14 +7345,15 @@ class MainWindow(QMainWindow):
                 segments.append(seg)
 
             self._active_ws.remove_curve(curve)
-            for seg in segments:
-                self._active_ws.add_curve(seg).setSelected(True)
+            new_items += [self._active_ws.add_curve(seg) for seg in segments]
             total_segs += len(segments)
+        self.scene.select_items(new_items)
 
         n_orig = len(selected_items)
-        self._status.showMessage(
-            f"Explode: {n_orig} curve{'s' if n_orig > 1 else ''} → {total_segs} segments"
-        )
+        msg = f"Explode: {n_orig} curve{'s' if n_orig > 1 else ''} → {total_segs} segments"
+        if round_items:
+            msg += f"  ({len(round_items)} circle/arc left whole)"
+        self._status.showMessage(msg)
 
     # ------------------------------------------------------------------
     # Settings
@@ -6594,7 +7370,11 @@ class MainWindow(QMainWindow):
             "hotkeys":             dict(self._hotkey_prefs),
         }
         dlg = SettingsDialog(current, self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        accepted = _run_modal(dlg) == QDialog.DialogCode.Accepted
+        # The size the maker left it at is theirs to keep, Cancel or OK.
+        self._prefs["prefs_dialog_size"] = [int(dlg.width()), int(dlg.height())]
+        if not accepted:
+            _prefs_mod.save(self._prefs)
             return
         self._apply_settings(dlg.to_prefs())
 
@@ -6604,6 +7384,7 @@ class MainWindow(QMainWindow):
         apply logic without executing the modal dialog."""
         old_lens_opacity   = self._default_lens_fill_opacity()
         old_lens_intensity = self._default_lens_fill_intensity()
+        old_prefs = dict(self._prefs)
         self._prefs.update(p)   # dialog is the sole writer of startup defaults
 
         # Theme + appearance first, so a mode toggle (or the explicit refresh
@@ -6615,6 +7396,9 @@ class MainWindow(QMainWindow):
         theme.apply_viewport(vp["preset"], vp.get("custom_bg"))
         theme.set_dot_radius(p["dot_radius_px"])
         theme.set_compact(p["compact_toolbar"])
+        # The dots on show take the new size now, not at the next selection.
+        for ws in self._workspaces:
+            ws.edit_tool.refresh_for_selection()
         # Grid spacing/major changed in the dialog — re-push to views + engines
         # (visibility stays as the toolbar toggle left it).
         self._apply_grid_config()
@@ -6626,9 +7410,14 @@ class MainWindow(QMainWindow):
         else:
             self._refresh_theme_dependents()
 
-        # Drawing
+        # Drawing — the spin shows the default; guard it so the change is not
+        # applied to whatever curve happens to be selected (with an undo step).
         self._default_line_weight = p["default_line_weight"]
-        self._weight_spin.setValue(p["default_line_weight"])
+        self._updating_weight_spin = True
+        try:
+            self._weight_spin.setValue(p["default_line_weight"])
+        finally:
+            self._updating_weight_spin = False
 
         # Startup toggles + guide dimensions — these prefs describe the Frame
         # Front workspace (temple/hinge have their own fixed stock defaults),
@@ -6637,51 +7426,78 @@ class MainWindow(QMainWindow):
         # workspace's session state (GitHub issue #4: saving Settings inside a
         # Temple workspace re-drew the temple stock as the frame-front stock
         # and stranded a pad guide with no button to remove it).
+        #
+        # And only the ones the maker CHANGED: OK re-applied every one, so
+        # opening Preferences to switch dark mode turned Snap back on and put
+        # the stock and boxing sizes back to their defaults. The Ghost axis is
+        # never pushed into the open document — it is saved with the design
+        # (an asymmetric one would have flipped, and saved, mirrored); the
+        # startup value is for the documents that follow.
+        changed = {k for k in (
+            "guides_on_startup", "snap_on_startup", "smooth_handles",
+            "boxing_on_startup", "stock_on_startup", "pad_on_startup",
+            "boxing_a_mm", "boxing_b_mm", "boxing_dbl_mm",
+            "stock_width_mm", "stock_height_mm", "pad_width_mm", "pad_height_mm",
+        ) if p[k] != old_prefs.get(k)}
         front = self._workspaces[0]
         if self._active_ws is front:
             # Widgets drive the active (= front) workspace via their signals.
-            self._act_mirror.setChecked(p["mirror_on_startup"])
-            self._act_guides.setChecked(p["guides_on_startup"])
-            self._act_snap.setChecked(p["snap_on_startup"])
-            self._act_smooth.setChecked(p["smooth_handles"])
-            self._act_boxing.setChecked(p["boxing_on_startup"])
-            self._act_stock.setChecked(p["stock_on_startup"])
-            self._act_pad.setChecked(p["pad_on_startup"])
-            self._boxing_a_spin.setValue(p["boxing_a_mm"])
-            self._boxing_b_spin.setValue(p["boxing_b_mm"])
-            self._boxing_dbl_spin.setValue(p["boxing_dbl_mm"])
-            self._stock_w_spin.setValue(p["stock_width_mm"])
-            self._stock_h_spin.setValue(p["stock_height_mm"])
-            self._pad_w_spin.setValue(p["pad_width_mm"])
-            self._pad_h_spin.setValue(p["pad_height_mm"])
+            for key, act in (("guides_on_startup", self._act_guides),
+                             ("snap_on_startup",   self._act_snap),
+                             ("smooth_handles",    self._act_smooth),
+                             ("boxing_on_startup", self._act_boxing),
+                             ("stock_on_startup",  self._act_stock),
+                             ("pad_on_startup",    self._act_pad)):
+                if key in changed:
+                    act.setChecked(p[key])
+            if not front.boxing_snapped:
+                # Snapped, the fields follow the lens (and with the shape
+                # locked would RESIZE it to the startup A/B) — leave them.
+                for key, spin in (("boxing_a_mm",   self._boxing_a_spin),
+                                  ("boxing_b_mm",   self._boxing_b_spin),
+                                  ("boxing_dbl_mm", self._boxing_dbl_spin)):
+                    if key in changed:
+                        spin.setValue(p[key])
+            for key, spin in (("stock_width_mm",  self._stock_w_spin),
+                              ("stock_height_mm", self._stock_h_spin),
+                              ("pad_width_mm",    self._pad_w_spin),
+                              ("pad_height_mm",   self._pad_h_spin)):
+                if key in changed:
+                    spin.setValue(p[key])
         else:
             # Write the front workspace's session state directly; the sidebar
             # widgets stay on the active workspace's values and the front tab
             # picks these up on activation (_restore_ws_sidebar_state).
-            front.mirror_enabled = p["mirror_on_startup"]
-            front.guides_visible = p["guides_on_startup"]
-            front.snap_enabled   = p["snap_on_startup"]
-            front.smooth_handles = p["smooth_handles"]
-            front.boxing_visible = p["boxing_on_startup"]
-            front.stock_visible  = p["stock_on_startup"]
-            front.pad_visible    = p["pad_on_startup"]
-            front.boxing_a       = p["boxing_a_mm"]
-            front.boxing_b       = p["boxing_b_mm"]
-            front.boxing_dbl     = p["boxing_dbl_mm"]
-            front.stock_w        = p["stock_width_mm"]
-            front.stock_h        = p["stock_height_mm"]
-            front.pad_w          = p["pad_width_mm"]
-            front.pad_h          = p["pad_height_mm"]
+            for key, attr in (("guides_on_startup", "guides_visible"),
+                              ("snap_on_startup",   "snap_enabled"),
+                              ("smooth_handles",    "smooth_handles"),
+                              ("boxing_on_startup", "boxing_visible"),
+                              ("stock_on_startup",  "stock_visible"),
+                              ("pad_on_startup",    "pad_visible"),
+                              ("boxing_a_mm",       "boxing_a"),
+                              ("boxing_b_mm",       "boxing_b"),
+                              ("boxing_dbl_mm",     "boxing_dbl"),
+                              ("stock_width_mm",    "stock_w"),
+                              ("stock_height_mm",   "stock_h"),
+                              ("pad_width_mm",      "pad_w"),
+                              ("pad_height_mm",     "pad_h")):
+                if key in changed:
+                    setattr(front, attr, p[key])
 
         # Lens Fill default opacity — a starting value, so it moves the live
         # slider only for workspaces that are still sitting on the old default
-        # (a maker who has already dialled a tint in keeps their setting).
+        # (a maker who has already dialed a tint in keeps their setting).
+        # The values are saved with the design, so a design with content that
+        # moves is marked unsaved — it used to change silently, leaving the
+        # screen and the file disagreeing until the next save.
+        moved_a_design = False
         new_opacity = self._default_lens_fill_opacity()
         if new_opacity != old_lens_opacity:
             for ws in self._workspaces:
                 if abs(ws.lens_fill_opacity - old_lens_opacity) < 1e-9:
                     ws.lens_fill_opacity = new_opacity
                     ws.scene.set_lens_fill_opacity(new_opacity)
+                    moved_a_design |= bool(ws.doc_curves)
             self._lens_fill_opacity_slider.blockSignals(True)
             self._lens_fill_opacity_slider.setValue(
                 round(self._active_ws.lens_fill_opacity * 100))
@@ -6692,6 +7508,7 @@ class MainWindow(QMainWindow):
                 if abs(ws.lens_fill_intensity - old_lens_intensity) < 1e-9:
                     ws.lens_fill_intensity = new_intensity
                     ws.scene.set_lens_fill_intensity(new_intensity)
+                    moved_a_design |= bool(ws.doc_curves)
             self._lens_fill_intensity_slider.blockSignals(True)
             self._lens_fill_intensity_slider.setValue(
                 slider_from_intensity(self._active_ws.lens_fill_intensity))
@@ -6699,6 +7516,8 @@ class MainWindow(QMainWindow):
             self._update_lens_fill_swatches(self._active_ws.lens_fill_top,
                                             self._active_ws.lens_fill_bottom,
                                             self._active_ws.lens_fill_intensity)
+        if moved_a_design:
+            self._mark_dirty()
 
         # Toolbar visibility
         self._toolbar_prefs = p["toolbar"]
@@ -6758,6 +7577,7 @@ class MainWindow(QMainWindow):
         items = self._timeline_list.selectedItems()
         if not items:
             return
+        self._end_operations_holding_curves()     # it rebuilds every Curve too
         idx = items[0].data(Qt.ItemDataRole.UserRole)
         bm = self._bookmarks[idx]
         self._push_undo_snapshot()
@@ -6835,9 +7655,9 @@ class MainWindow(QMainWindow):
                                     "This library entry contains no geometry.")
             return
 
-        # Translate bounding-box centre to canvas origin.
-        # _curves_bbox is radius-aware, so circles/arcs centre correctly
-        # (node-only bbox put a lone circle's *centre point* at the origin).
+        # Translate bounding-box center to canvas origin.
+        # _curves_bbox is radius-aware, so circles/arcs center correctly
+        # (node-only bbox put a lone circle's *center point* at the origin).
         bb = _curves_bbox([c for c in curves if not c.mirrored])
         if bb:
             cx = (bb[0] + bb[2]) / 2
@@ -6938,7 +7758,7 @@ class MainWindow(QMainWindow):
         lay.setSpacing(6)
 
         hint = QLabel("Holes go on the DRILL layer, offset from the lens boxing "
-                      "centre (the OMA datum).")
+                      "center (the OMA datum).")
         hint.setWordWrap(True)
         lay.addWidget(hint)
 
@@ -6955,11 +7775,14 @@ class MainWindow(QMainWindow):
         self._drill_dia.setRange(0.5, 6.0); self._drill_dia.setSuffix(" mm")
         self._drill_dia.setDecimals(2); self._drill_dia.setSingleStep(0.1)
         self._drill_dia.setValue(1.4)
-        form.addRow("X (from centre):", self._drill_x)
-        form.addRow("Y (from centre):", self._drill_y)
+        self._drill_x.setToolTip("Toward the nose is positive, on either lens.")
+        self._drill_y.setToolTip("Above the lens center is positive, as in an "
+                                 "OMA trace.")
+        form.addRow("X (from center):", self._drill_x)
+        form.addRow("Y (from center):", self._drill_y)
         form.addRow("Diameter:", self._drill_dia)
         btn_add = QPushButton("Add Hole")
-        btn_add.setToolTip("Place a hole at this offset from the lens boxing centre.")
+        btn_add.setToolTip("Place a hole at this offset from the lens boxing center.")
         btn_add.clicked.connect(self._add_drill_hole_from_fields)
         form.addRow(btn_add)
         lay.addWidget(entry)
@@ -7004,51 +7827,76 @@ class MainWindow(QMainWindow):
         if not lenses:
             return None
         from .boxing import lens_bbox
-        bb = lens_bbox(lenses[0])
-        if bb is None:
+        boxes = [bb for bb in (lens_bbox(c) for c in lenses) if bb is not None]
+        if not boxes:
             return None
+        # With both lenses drawn the datum is the OD lens (smaller boxing-
+        # center x, the OMA export's rule), not whichever was drawn first.
+        bb = min(boxes, key=lambda b: (b[0] + b[2]) / 2.0)
         return ((bb[0] + bb[2]) / 2.0, (bb[1] + bb[3]) / 2.0)
 
-    def _place_drill_holes(self, holes) -> bool:
-        """holes: list of (dx, dy, dia). Place DRILL circles relative to the lens
-        boxing centre on the front workspace; undo-safe + selected."""
+    def _drill_datum(self):
+        """(cx, cy, sx) for drill offsets: the datum lens's boxing center and
+        the x sign that puts an offset in the OD lens's frame. A pattern's dx
+        is measured on the OD lens (the OMA rule), so an offset taken from or
+        placed on a lens drawn right of the axis (the OS side) is mirrored —
+        before, a pattern saved on one side landed nasal-for-temporal on a
+        frame drawn on the other. Either way +dx points toward the nose."""
         center = self._lens_boxing_center()
+        if center is None:
+            return None
+        cx, cy = center
+        front = self._workspaces[0]
+        axis_x = front.scene.mirror.x if front.scene.mirror is not None else 0.0
+        return cx, cy, (-1.0 if cx > axis_x else 1.0)
+
+    def _place_drill_holes(self, holes, od_frame: bool = True) -> bool:
+        """holes: list of (dx, dy, dia), dx in the OD lens's frame (see
+        _drill_datum) — or, od_frame=False, as drawn (a version-1 pattern).
+        Place DRILL circles relative to the lens boxing center on the front
+        workspace; undo-safe + selected."""
+        center = self._drill_datum()
         if center is None:
             QMessageBox.information(
                 self, "No lens",
                 "Draw a LENS shape first — drill holes are placed relative to the "
-                "lens boxing centre.")
+                "lens boxing center.")
             return False
-        cx, cy = center
+        cx, cy, sx = center
+        if not od_frame:
+            sx = 1.0
         self._ws_tab_widget.setCurrentIndex(0)   # holes live on the front
         self._push_undo_snapshot()
         self.scene.clearSelection()
         for dx, dy, dia in holes:
             c = Curve(kind="circle", layer=Layer.DRILL,
-                      nodes=[SplineNode(cx + dx, cy + dy)],
+                      nodes=[SplineNode(cx + sx * dx, cy + dy)],
                       radius=max(0.05, dia / 2.0), closed=True)
             self._active_ws.add_curve(c).setSelected(True)
         return True
 
     def _add_drill_hole_from_fields(self):
-        if self._place_drill_holes([(self._drill_x.value(), self._drill_y.value(),
+        # The field reads y-up, as the hint's OMA datum does; the scene is
+        # y-down. Typed as-is, a lab's "3 mm above" landed 3 mm below.
+        if self._place_drill_holes([(self._drill_x.value(), -self._drill_y.value(),
                                      self._drill_dia.value())]):
             self._status.showMessage(
                 f"Placed a {self._drill_dia.value():.2f} mm hole at "
                 f"({self._drill_x.value():.2f}, {self._drill_y.value():.2f}) "
-                "from the lens centre.")
+                "from the lens center.")
 
     def _current_drill_holes_relative(self):
-        """Front DRILL circles → [(dx, dy, dia)] offsets from the boxing centre."""
-        center = self._lens_boxing_center()
+        """Front DRILL circles → [(dx, dy, dia)] offsets from the boxing
+        center, dx in the OD lens's frame (see _drill_datum)."""
+        center = self._drill_datum()
         if center is None:
             return []
-        cx, cy = center
+        cx, cy, sx = center
         holes = []
         for c in self._workspaces[0].doc_curves:
             if (c.layer == Layer.DRILL and not c.mirrored
                     and c.kind == "circle" and c.nodes):
-                holes.append((c.nodes[0].x - cx, c.nodes[0].y - cy,
+                holes.append((sx * (c.nodes[0].x - cx), c.nodes[0].y - cy,
                               2.0 * (c.radius or 0.7)))
         return holes
 
@@ -7076,9 +7924,15 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         from .library import DrillLibrary
-        holes = DrillLibrary().load_entry(item.data(Qt.ItemDataRole.UserRole))
+        try:
+            holes = DrillLibrary().load_entry(item.data(Qt.ItemDataRole.UserRole))
+        except Exception as exc:        # a damaged pattern file did nothing, silently
+            QMessageBox.warning(self, "Import failed",
+                                f"The pattern could not be read.\n\n{exc}")
+            return
         if holes and self._place_drill_holes(
-                [(h["dx"], h["dy"], h["dia"]) for h in holes]):
+                [(h["dx"], h["dy"], h["dia"]) for h in holes],
+                od_frame=all(h.get("od_frame", True) for h in holes)):
             self._status.showMessage(
                 f"Imported {len(holes)} hole(s) from "
                 f"'{item.text().split('  ·')[0]}'.")
@@ -7102,7 +7956,9 @@ class MainWindow(QMainWindow):
         item = self._drill_list.currentItem()
         if item is None:
             return
-        new_name, ok = QInputDialog.getText(self, "Rename Pattern", "New name:")
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Pattern", "New name:",
+            text=item.text().split("  ·")[0])
         if not ok or not new_name.strip():
             return
         from .library import DrillLibrary
@@ -7150,8 +8006,15 @@ class MainWindow(QMainWindow):
 
     def _apply_manual_calib(self):
         v = self._pxmm_spin.value()
-        if v > 0:
-            self._apply_calibration(v)
+        current = self._image_px_per_mm
+        # editingFinished fires on a mere click away. Apply a change only:
+        # leaving an uncalibrated photo's untouched 1.0 placeholder applied
+        # 1 px/mm — a 3000 px photo became 3 m wide — and marked the design
+        # changed.
+        if v <= 0 or (current and abs(v - current) < 1e-9) \
+                or (not current and v == 1.0):
+            return
+        self._apply_calibration(v)
 
     # ------------------------------------------------------------------
     # Dirty flag / window title
@@ -7192,14 +8055,39 @@ class MainWindow(QMainWindow):
             return False
         if r == QMessageBox.StandardButton.Save:
             self._save()
-            return not self._dirty   # False if the save dialog was cancelled
+            if self._dirty and self._current_path \
+                    and not self._current_path.lower().endswith(".gdraw") \
+                    and self._other_workspaces_in_use():
+                # "Save Front Only" into a .svg: the rest is still unsaved, so
+                # stay open — and say why, or the window just refuses to close.
+                QMessageBox.information(
+                    self, "Not closed",
+                    "Only the Frame Front was saved. Unsaved work remains in "
+                    f"{', '.join(self._other_workspaces_in_use())}: save as a "
+                    ".gdraw project to keep it, or close again and choose "
+                    "Discard.")
+            return not self._dirty   # False if the save dialog was canceled
         return True   # Discard
 
     def closeEvent(self, event):
         if not self._confirm_discard():
             event.ignore()
             return
+        self._prefs["main_window_geometry"] = bytes(
+            self.saveGeometry().toBase64()).decode()
+        _prefs_mod.save(self._prefs)
+        # The app-wide filters go with the window. Left installed, a closed
+        # window's two filters kept running on every event the app delivers —
+        # one stylesheet pass is ~12,000 of them — and a test session's
+        # closed windows piled them up until each new window took seconds.
+        app = QApplication.instance()
+        app.removeEventFilter(self._tooltip_filter)
+        app.removeEventFilter(self)
         self._clear_autosave()
+        for lock in [getattr(self, "_autosave_lock", None),
+                     *getattr(self, "_orphan_locks", {}).values()]:
+            if lock is not None:
+                lock.unlock()
         # Teardown: destroying a scene deletes its items, and deleting a
         # selected item emits selectionChanged — into slots that would call
         # back into the half-destroyed scene (shiboken RuntimeError on quit).
@@ -7219,9 +8107,105 @@ class MainWindow(QMainWindow):
     _AUTOSAVE_MS  = 180_000   # 3 minutes
     _AUTOSAVE_DIR = Path.home() / ".guilddraw" / "autosave"
 
+    # One recovery slot per running copy, "recovery-<pid>-<token>" (the token
+    # so a crashed copy whose pid comes round again is never taken for this
+    # one), owned through a QLockFile held while that copy runs. A slot whose lock can be taken
+    # belongs to a copy that is gone — a crash's work, offered at startup.
+    # Until 1.3 every copy shared one "recovery.gdraw": a second launch
+    # offered the first copy's live work, and answering No deleted it.
+    # (That legacy name is still offered once, as an orphan.)
+
     def _autosave_paths(self) -> tuple[Path, Path]:
-        return (self._AUTOSAVE_DIR / "recovery.gdraw",
-                self._AUTOSAVE_DIR / "recovery.json")
+        token = getattr(self, "_autosave_token", None)
+        if token is None:
+            token = self._autosave_token = uuid.uuid4().hex[:8]
+        slot = self._AUTOSAVE_DIR / f"recovery-{os.getpid()}-{token}"
+        return slot.with_suffix(".gdraw"), slot.with_suffix(".json")
+
+    def _hold_autosave_slot(self) -> bool:
+        """Take (once) the lock that marks this copy's slot as live."""
+        lock = getattr(self, "_autosave_lock", None)
+        if lock is None:
+            from PySide6.QtCore import QLockFile
+            self._AUTOSAVE_DIR.mkdir(parents=True, exist_ok=True)
+            rec, _meta = self._autosave_paths()
+            lock = QLockFile(str(rec.with_suffix(".lock")))
+            lock.setStaleLockTime(0)          # stale only when the owner is gone
+            self._autosave_lock = lock
+        return lock.isLocked() or lock.tryLock(0)
+
+    def _orphan_slots(self) -> list[Path]:
+        """Recovery files left by copies that are no longer running, newest
+        first. Taking an orphan's lock keeps a second copy starting now from
+        offering the same work; it is let go with the slot (_remove_slot)."""
+        try:
+            found = [p for p in self._AUTOSAVE_DIR.glob("recovery*.gdraw")
+                     if p != self._autosave_paths()[0]]
+        except OSError:
+            return []
+        from PySide6.QtCore import QLockFile
+        def _mtime(p: Path) -> float:
+            try:
+                return p.stat().st_mtime
+            except OSError:
+                return 0.0
+        self._sweep_leftover_locks()
+        out = []
+        for rec in sorted(found, key=_mtime, reverse=True):
+            lock = QLockFile(str(rec.with_suffix(".lock")))
+            lock.setStaleLockTime(0)
+            if not lock.tryLock(0) and lock.getLockInfo()[0] == 0 \
+                    and _mtime(rec) < time.time() - 2 * self._AUTOSAVE_MS / 1000:
+                # A lock cut short by a crash or a power cut names no owner, so
+                # Qt can never call it stale. Its slot has not been written in
+                # two autosave periods: nobody owns it.
+                rec.with_suffix(".lock").unlink(missing_ok=True)
+                lock.tryLock(0)
+            if lock.isLocked():               # its owner is gone (or never locked)
+                self._orphan_locks = {**getattr(self, "_orphan_locks", {}),
+                                      rec: lock}
+                out.append(rec)
+        return out
+
+    def _sweep_leftover_locks(self):
+        """Delete the lock files of slots that no longer exist — a copy that
+        crashed after a save, New or Open (which empty its slot) left one."""
+        from PySide6.QtCore import QLockFile
+        own = self._autosave_paths()[0].with_suffix(".lock")
+        try:
+            leftovers = [p for p in self._AUTOSAVE_DIR.glob("recovery*.lock")
+                         if p != own and not p.with_suffix(".gdraw").exists()]
+        except OSError:
+            return
+        for path in leftovers:
+            lock = QLockFile(str(path))
+            lock.setStaleLockTime(0)
+            if lock.tryLock(0):               # stale: taking and letting go removes it
+                lock.unlock()
+            elif lock.getLockInfo()[0] == 0:
+                # Unreadable (cut short by a crash). A minute old, it is not a
+                # lock another copy is writing this instant.
+                try:
+                    if path.stat().st_mtime < time.time() - 60:
+                        path.unlink()
+                except OSError:
+                    pass
+
+    def _release_orphan(self, rec: Path):
+        """Let go of an orphan's lock and leave its files for the next launch."""
+        lock = getattr(self, "_orphan_locks", {}).pop(rec, None)
+        if lock is not None:
+            lock.unlock()
+
+    def _remove_slot(self, rec: Path):
+        for p in (rec, rec.with_suffix(".json"), rec.with_name(rec.name + ".tmp")):
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+        lock = getattr(self, "_orphan_locks", {}).pop(rec, None)
+        if lock is not None:
+            lock.unlock()                     # removes the orphan's lock file
 
     def _do_autosave(self):
         """Timer tick: snapshot dirty work to the recovery slot.
@@ -7233,7 +8217,8 @@ class MainWindow(QMainWindow):
             return
         rec, meta = self._autosave_paths()
         try:
-            self._AUTOSAVE_DIR.mkdir(parents=True, exist_ok=True)
+            if not self._hold_autosave_slot():
+                return
             tmp = str(rec) + ".tmp"
             self._do_save_gdraw(tmp)
             os.replace(tmp, rec)
@@ -7241,22 +8226,59 @@ class MainWindow(QMainWindow):
                 "source_path": self._current_path,
                 "saved_at": datetime.datetime.now().isoformat(timespec="seconds"),
             }), encoding="utf-8")
+            # A brief note that hands the bar back: shown bare, it wiped the
+            # active tool's instructions every three minutes.
+            covered = self._status.currentMessage()
             self._status.showMessage("Autosaved", 2000)
+            if covered:
+                self._autosave_covered = covered
+                QTimer.singleShot(2100, self, self._restore_after_autosave_note)
         except Exception:
             pass
 
-    def _clear_autosave(self):
-        for p in self._autosave_paths():
-            try:
-                p.unlink(missing_ok=True)
-            except OSError:
-                pass
+    def _restore_after_autosave_note(self):
+        msg, self._autosave_covered = getattr(self, "_autosave_covered", ""), ""
+        if msg and not self._status.currentMessage():
+            self._status.showMessage(msg)
 
-    def _offer_recovery(self):
-        """On startup: if a recovery autosave exists, offer to restore it."""
-        rec, meta = self._autosave_paths()
-        if not rec.exists():
-            return
+    def _clear_autosave(self):
+        """Empty this copy's own slot (after a save, New, Open or a clean
+        close). Other copies' slots are never touched here."""
+        self._remove_slot(self._autosave_paths()[0])
+
+    def _offer_recovery(self, opening: str | None = None) -> bool:
+        """On startup: offer to restore work a crashed copy left behind.
+        Runs once. `opening` is a file named on the command line, which is
+        opened only when the maker declines. Returns True when work was
+        restored."""
+        if getattr(self, "_recovery_offered", False):
+            return False
+        self._recovery_offered = True
+        for rec in self._orphan_slots():
+            if self._offer_one_recovery(rec, opening):
+                return True
+        return False
+
+    def _ask_recovery(self, text: str, detail: str) -> str:
+        """"restore", "later" (also Esc and the window's close box: the safe
+        answer) or "discard"."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Recover unsaved work?")
+        box.setText(text)
+        box.setInformativeText(detail)
+        restore = box.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+        later = box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+        discard = box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(restore)
+        box.setEscapeButton(later)
+        _run_modal(box)
+        clicked = box.clickedButton()
+        return ("restore" if clicked is restore
+                else "discard" if clicked is discard else "later")
+
+    def _offer_one_recovery(self, rec: Path, opening: str | None) -> bool:
+        meta = rec.with_suffix(".json")
         source = None
         when   = "an unknown time"
         try:
@@ -7266,22 +8288,58 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         name = os.path.basename(source) if source else "an unsaved document"
-        r = QMessageBox.question(
-            self, "Recover unsaved work?",
-            f"GuildDraw found autosaved work from {when}\n({name}).\n\n"
-            "Restore it?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if r != QMessageBox.StandardButton.Yes:
-            self._clear_autosave()
-            return
-        self._open_gdraw(str(rec), remember=False)
-        # The recovered content belongs to the original document, not the
-        # recovery file: restore the real path and mark it unsaved.
-        self._current_path = (source if source and os.path.isfile(source)
-                              else None)
+        try:    # "2026-09-27T10:33:12" → "2026-09-27 at 10:33"
+            when = datetime.datetime.fromisoformat(when).strftime("%Y-%m-%d at %H:%M")
+        except (TypeError, ValueError):
+            pass
+        text = f"GuildDraw found autosaved work from {when}\n({name})."
+        later = "Later keeps it and asks again next time."
+        if opening:
+            # A file was double-clicked: say what happens to it, and never
+            # steer toward the answer that throws the recovered work away.
+            later = (f"Later opens {os.path.basename(opening)} now, and keeps "
+                     "the autosaved work to ask about next time.")
+        choice = self._ask_recovery(
+            text, f"Restore it? {later} Discard deletes it.")
+        if choice == "later":
+            self._release_orphan(rec)
+            return False
+        if choice != "restore":
+            self._remove_slot(rec)
+            return False
+        status = self._open_gdraw(str(rec), remember=False)
+        if status is None:
+            # Unreadable: keep it for manual salvage under another name so
+            # the next launch does not ask (and fail) again.
+            stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            try:
+                rec.rename(rec.with_name(f"failed-{stamp}.gdraw.bak"))
+            except OSError:
+                pass
+            self._remove_slot(rec)
+            self._status.showMessage(
+                f"Recovery file could not be read — kept as failed-{stamp}.gdraw.bak")
+            return False
+        if status == "ok":
+            # The recovered content belongs to the original document, not
+            # the recovery file: restore the real path and mark it unsaved.
+            self._current_path = (source if source and os.path.isfile(source)
+                                  else None)
+        # ("errors": _open_gdraw already dropped the path so Save asks for a
+        # new name — a half-recovered file must never overwrite the original.)
         self._mark_dirty()
         self._update_title()
+        # The work is in this copy now: write it to this copy's own slot
+        # before letting the dead copy's go, so a second crash loses nothing.
+        self._do_autosave()
+        if self._autosave_paths()[0].exists():
+            self._remove_slot(rec)
+        # Say what happened in the maker's words; _open_gdraw's own message
+        # named the internal slot file.
+        self._status.showMessage(
+            f"Restored autosaved work from {when}"
+            + (f"; {os.path.basename(opening)} was not opened" if opening else ""))
+        return True
 
     # ------------------------------------------------------------------
     # Recent files
@@ -7408,9 +8466,21 @@ class MainWindow(QMainWindow):
     # New / Open / Save (SVG as native format)
     # ------------------------------------------------------------------
 
+    def _settle_before_replacing_document(self):
+        """Before New or Open swaps the document: end any tool mid-operation
+        (a half-drawn Line carried its nodes into the next document, and the
+        next click continued it) and flush the panel into the active
+        workspace as a tab switch does — the restore that follows otherwise
+        reverted the edits made since the last switch, some fields and not
+        others."""
+        self._act_select.setChecked(True)
+        self._set_tool_select()
+        self._save_ws_sidebar_state(self._active_ws)
+
     def _new(self):
         if not self._confirm_discard():
             return
+        self._settle_before_replacing_document()
         for ws in self._workspaces:
             ws.clear_document()
             ws.bookmarks.clear()
@@ -7418,11 +8488,7 @@ class MainWindow(QMainWindow):
             ws.face_image_paths.clear()
             ws.selected_face_idx = -1
             ws.image_px_per_mm = None        # calibration belongs to the document
-            ws.boxing_snapped  = False       # snap/lock state derives from the
-            ws.shape_locked    = False       # (now empty) lens geometry
-            ws.outline_locked  = False
-            ws.boxing_visible_pre_snap = None
-            ws.boxing_guide.set_locked(False)
+            # (snap/lock/bevel/forming state: reset by clear_document)
             ws.fill_visible = False          # fill resets with the document
             ws.fill_color   = "#2a6099"
             ws.fill_opacity = 0.50
@@ -7454,6 +8520,7 @@ class MainWindow(QMainWindow):
         self._current_path = None
         self._clear_autosave()
         self._clear_dirty()
+        self._update_info_label()      # the layer shown was the old document's
         self._status.showMessage("New document")
 
     def _open(self):
@@ -7485,6 +8552,17 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Open failed", str(e))
             return
+        self._settle_before_replacing_document()
+        # A plain .svg is a single-workspace document: the temples and hinge
+        # start empty, or the previous project's would ride along into the
+        # next save.
+        for ws in self._workspaces[1:]:
+            ws.clear_document()
+            ws.bookmarks.clear()
+            ws.scene.clear_faces()
+            ws.face_image_paths.clear()
+            ws.selected_face_idx = -1
+            ws.image_px_per_mm = None
         self._load_ws_data(self._workspaces[0], data)
         # Switch to Front tab
         self._loading = True
@@ -7495,10 +8573,11 @@ class MainWindow(QMainWindow):
         # Pull the loaded state into the sidebar. The tab change above does
         # this via _on_workspace_changed — but only when the index actually
         # moves, so opening a file while already on Front left the widgets
-        # (fill tick, tint colours, guide sizes) showing the previous document.
+        # (fill tick, tint colors, guide sizes) showing the previous document.
         self._restore_ws_sidebar_state(self._active_ws)
         self._current_path = path
         self._clear_dirty()
+        self._clear_autosave()      # the recovery slot held the previous document
         self._add_recent(path)
         self.view.fit_view(self.scene.sceneRect())
         bm = self._workspaces[0].bookmarks
@@ -7507,14 +8586,18 @@ class MainWindow(QMainWindow):
             + (f"  ·  {len(bm)} bookmark(s)" if bm else "")
         )
 
-    def _open_gdraw(self, path: str, remember: bool = True):
-        """Load a .gdraw ZIP into all four workspaces."""
+    def _open_gdraw(self, path: str, remember: bool = True) -> str | None:
+        """Load a .gdraw ZIP into all four workspaces.
+
+        Returns "ok", "errors" (some tabs loaded empty; the path was NOT
+        kept, so Save asks for a new name) or None (nothing was loaded)."""
         try:
             from .export.gdraw import load_gdraw
             all_data = load_gdraw(path)
         except Exception as e:
             QMessageBox.critical(self, "Open failed", str(e))
-            return
+            return None
+        self._settle_before_replacing_document()
         tab_names = ["front", "temple_r", "temple_l", "hinge"]
         for ws, tab in zip(self._workspaces, tab_names, strict=True):
             self._load_ws_data(ws, all_data[tab])
@@ -7546,13 +8629,15 @@ class MainWindow(QMainWindow):
             self._update_title()
             self._status.showMessage(
                 f"Opened with errors: {os.path.basename(path)}")
-            return
+            return "errors"
 
         self._current_path = path
         self._clear_dirty()
         if remember:
             self._add_recent(path)
+            self._clear_autosave()  # the recovery slot held the previous document
         self._status.showMessage(f"Opened: {os.path.basename(path)}")
+        return "ok"
 
     def _load_ws_data(self, ws: "WorkspaceState", data: dict):
         """Populate a WorkspaceState from a load_svg result dict.  Clears first."""
@@ -7639,7 +8724,7 @@ class MainWindow(QMainWindow):
         ws.fill_color   = _hex_or(fill.get("color"), "#2a6099")
         ws.fill_opacity = _num_or(fill.get("opacity"), 0.50, 0.0, 1.0)
         # Absent in pre-1.2 files, and any unknown style from a future version
-        # degrades to the colour rather than blanking the fill.
+        # degrades to the color rather than blanking the fill.
         img = fill.get("image")
         ws.fill_image = img if isinstance(img, str) else ""
         ws.fill_style = "image" if fill.get("style") == "image" else "color"
@@ -7651,7 +8736,7 @@ class MainWindow(QMainWindow):
             ws.fill_visible = False   # a saved fill-on that no longer encloses
 
         # Lens fill. Absent in pre-1.2 files: the tint stays off at the shipped
-        # colours, with the opacity the maker prefers for a fresh tint.
+        # colors, with the opacity the maker prefers for a fresh tint.
         lens_fill = data.get("lens_fill") or {}
         ws.lens_fill_visible = bool(lens_fill.get("visible", False))
         ws.lens_fill_top     = _hex_or(lens_fill.get("top"),
@@ -7694,22 +8779,28 @@ class MainWindow(QMainWindow):
         else:
             self._do_save(self._current_path)
 
-    def _save_as(self):
+    def _save_as(self, start: str | None = None):
         # Untitled project: suggest the frame-size notation (49□27.gdraw) so
         # the □ is in the filename without typing it — the native Windows
         # dialog can't receive the insert-□ application shortcut.
-        start = getattr(self, "_current_path", "") or ""
+        start = start or getattr(self, "_current_path", "") or ""
         if not start:
             size = self._size_string()
             if size:
                 start = f"{size}.gdraw"
-        path, _ = QFileDialog.getSaveFileName(
+        path, chosen = QFileDialog.getSaveFileName(
             self, "Save GuildDraw File", start,
             "GuildDraw Project (*.gdraw);;SVG Files (*.svg)"
         )
-        if path:
-            self._current_path = path
-            self._do_save(path)
+        if not path:
+            return
+        if not path.lower().endswith((".gdraw", ".svg")):
+            # Non-native dialogs hand back exactly what was typed; a bare
+            # name used to fall through to the single-workspace SVG writer.
+            path += ".svg" if "svg" in chosen.lower() else ".gdraw"
+        # _do_save takes the path on success only: set before it, a failed
+        # Save As left every later Ctrl+S aimed at the file that failed.
+        self._do_save(path)
 
     def _size_string(self) -> str | None:
         """Frame-size notation ``A□DBL`` from the front workspace's finished
@@ -7754,9 +8845,51 @@ class MainWindow(QMainWindow):
             return None
         return f"{a:.0f}□{dbl:.0f}"
 
-    def _do_save(self, path: str):
+    def _other_workspaces_in_use(self) -> list[str]:
+        """Tab names of the non-front workspaces holding anything a .svg
+        cannot carry (it is the Frame Front alone)."""
+        return [self._ws_tab_widget.tabText(i)
+                for i, ws in enumerate(self._workspaces)
+                if ws.workspace_type != "front"
+                and (ws.doc_curves or ws.doc_dims or ws.doc_texts
+                     or ws.face_image_paths or ws.bookmarks)]
+
+    def _ask_svg_scope(self, path: str, others: list[str]) -> str:
+        """A .svg holds the Frame Front alone: "gdraw" (Save As a project),
+        "front" (write the front anyway) or "cancel"."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Save as .svg?")
+        box.setText(f"{os.path.basename(path)} can hold only the Frame Front. "
+                    f"{', '.join(others)} would not be saved.")
+        box.setInformativeText("Save the whole design as a .gdraw project instead?")
+        as_gdraw = box.addButton("Save as .gdraw…", QMessageBox.ButtonRole.AcceptRole)
+        front = box.addButton("Save Front Only", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(as_gdraw)
+        _run_modal(box)
+        clicked = box.clickedButton()
+        return ("gdraw" if clicked is as_gdraw
+                else "front" if clicked is front else "cancel")
+
+    def _do_save(self, path: str) -> bool:
         """Atomic save: write a temp file, keep the previous version as .bak,
-        then replace. A failure mid-write can never destroy the existing file."""
+        then replace. A failure mid-write can never destroy the existing file.
+        Returns True when the file was written; on success `path` becomes the
+        document's path."""
+        front_only = False
+        if not path.lower().endswith(".gdraw"):
+            others = self._other_workspaces_in_use()
+            if others:
+                # Ctrl+S on a legacy .svg used to write the front, clear the
+                # star and drop the temple and hinge work without a word.
+                choice = self._ask_svg_scope(path, others)
+                if choice == "gdraw":
+                    self._save_as(start=os.path.splitext(path)[0] + ".gdraw")
+                    return False
+                if choice != "front":
+                    return False
+                front_only = True
         tmp = path + ".tmp"
         try:
             if path.lower().endswith(".gdraw"):
@@ -7776,11 +8909,21 @@ class MainWindow(QMainWindow):
             except OSError:
                 pass
             QMessageBox.critical(self, "Save failed", str(e))
-            return
-        self._clear_dirty()
+            return False
+        self._current_path = path
         self._add_recent(path)
+        if front_only:
+            # The temples and hinge are still unsaved: keep the star, the
+            # close prompt and the recovery slot.
+            self._update_title()
+            self._status.showMessage(
+                f"Saved the Frame Front to {os.path.basename(path)}; the other "
+                "workspaces are not saved. Use Save As .gdraw to keep them.", 10000)
+            return True
+        self._clear_dirty()
         self._clear_autosave()
         self._status.showMessage(f"Saved: {os.path.basename(path)}")
+        return True
 
     def _ws_to_data_dict(self, ws: "WorkspaceState") -> dict:
         """Build the data dict for save_svg from a WorkspaceState."""
@@ -7819,7 +8962,7 @@ class MainWindow(QMainWindow):
                 "color":   ws.fill_color,
                 "opacity": ws.fill_opacity,
                 "style":   ws.fill_style,
-                # Saved even while the colour is showing, so switching back to
+                # Saved even while the color is showing, so switching back to
                 # Image after a reload finds the swatch still attached.
                 "image":   ws.fill_image,
             },
@@ -7834,12 +8977,16 @@ class MainWindow(QMainWindow):
             "texts": ws.doc_texts,
         }
 
-    def _do_save_svg(self, path: str):
-        """Save the active workspace as a plain SVG (legacy format)."""
+    def _do_save_svg(self, path: str, ws: "WorkspaceState | None" = None):
+        """Write one workspace as a plain SVG. Used by File > Save/Save As
+        for a .svg document (legacy single-workspace format: always the
+        Frame Front, whatever tab is showing — otherwise Ctrl+S from a
+        temple tab wrote the temple over front.svg) and by Export > SVG
+        (the active workspace)."""
         # First flush sidebar into active ws
         self._save_ws_sidebar_state(self._active_ws)
         from .export.svg import save_svg, portable_face_images, portable_fill
-        ws = self._active_ws
+        ws = ws or self._workspaces[0]
         d  = self._ws_to_data_dict(ws)
         save_svg(
             curves          = d["curves"],
@@ -7895,6 +9042,7 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        path = self._ensure_suffix(path, ".dxf")
         try:
             from .export.dxf import export_dxf
             # TextObjects become outline splines on their layer at export
@@ -8000,8 +9148,9 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        path = self._ensure_suffix(path, ".svg")
         try:
-            self._do_save_svg(path)
+            self._do_save_svg(path, self._active_ws)
             self._status.showMessage(f"SVG exported: {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.critical(self, "SVG export failed", str(e))
@@ -8015,9 +9164,11 @@ class MainWindow(QMainWindow):
 
     def _png_content_rect(self) -> QRectF | None:
         """Tight scene-mm bounds for the PNG export: the geometry (same bbox
-        rule as the SVG viewBox), its mirror ghost when displayed, and any
-        visible face photos. None = no content (caller falls back to sceneRect)."""
+        rule as the SVG viewBox), its mirror ghost when displayed, the
+        engraving text, and any visible face photos. None = no content
+        (caller falls back to sceneRect)."""
         from .export.svg import _content_bbox
+        from .textpath import text_outline_path
         ws = self._active_ws
         rect = QRectF()
         curves = [c for c in self._doc_curves if c.nodes]
@@ -8031,6 +9182,9 @@ class MainWindow(QMainWindow):
                     ax = self.scene.mirror.x if self.scene.mirror else 0.0
                     ghost = QRectF(2 * ax - x1, y0, x1 - x0, y1 - y0)
                 rect = rect.united(ghost)
+        for t in ws.doc_texts:
+            if t.text.strip() and self.scene.is_layer_visible(t.layer):
+                rect = rect.united(text_outline_path(t).boundingRect())
         for i in range(self.scene.face_count()):
             item = self.scene.get_face_item(i)
             if item is not None and item.isVisible():
@@ -8077,7 +9231,7 @@ class MainWindow(QMainWindow):
 
     def _import_dxf(self):
         """File > Import > DXF… — pour any DXF's geometry into the active
-        workspace.  Recognised GuildDraw layer names valid for this workspace
+        workspace.  Recognized GuildDraw layer names valid for this workspace
         are kept; everything else lands on the active layer, ungrouped, so the
         maker can drag each path to the right layer in the Layers panel."""
         path, _ = QFileDialog.getOpenFileName(
@@ -8113,7 +9267,7 @@ class MainWindow(QMainWindow):
         """Ask whether to shrink an imported OMA trace by the bevel depth.
 
         Returns the depth to shrink by (0.0 = import at traced size), or
-        None if the user cancelled the import. Split out so tests can
+        None if the user canceled the import. Split out so tests can
         monkeypatch the answer without driving a modal dialog."""
         return self._ask_oma_bevel(
             "Import OMA Lens Trace",
@@ -8129,7 +9283,7 @@ class MainWindow(QMainWindow):
         """Ask whether to grow the exported OMA trace by the bevel depth.
 
         Returns the depth to grow by (0.0 = export the drawn lens opening
-        as-is), or None if the user cancelled the export. Split out so tests
+        as-is), or None if the user canceled the export. Split out so tests
         can monkeypatch the answer without driving a modal dialog."""
         return self._ask_oma_bevel(
             "Export OMA Trace",
@@ -8175,7 +9329,7 @@ class MainWindow(QMainWindow):
         b_asis.clicked.connect(lambda: _accept("asis"))
         b_apply.setDefault(True)
         lay.addWidget(btns)
-        if dlg.exec() != QDialog.Accepted:
+        if _run_modal(dlg) != QDialog.Accepted:
             return None
         return spin.value() if result.get("mode") == "apply" else 0.0
 
@@ -8212,7 +9366,7 @@ class MainWindow(QMainWindow):
         # writes). Ask whether to shrink back to the drawn lens shape.
         shrink = self._ask_oma_import_bevel(front.bevel_depth)
         if shrink is None:
-            return                              # cancelled
+            return                              # canceled
         if shrink > 0.0:
             try:
                 from .geometry import offset_curve as _offset
@@ -8229,7 +9383,7 @@ class MainWindow(QMainWindow):
         # the finished edges still land DBL apart.
         dbl_place = dbl + 2.0 * shrink
 
-        # Place each lens: boxing centres on y = 0, nasal edges DBL apart.
+        # Place each lens: boxing centers on y = 0, nasal edges DBL apart.
         # Side R (OD) sits at negative x — viewer's left, same convention as
         # the measurement panel's OD/OS split about the mirror axis.
         # Sampled bbox (lens_bbox) so placement uses the same boxing basis as
@@ -8259,7 +9413,7 @@ class MainWindow(QMainWindow):
             self._active_ws.add_curve(c)
 
         # DRILLE holes → DRILL circles. OMA is y-up from the binocular frame
-        # centre, which the import places at the scene origin (0, 0).
+        # center, which the import places at the scene origin (0, 0).
         for d in job.drills:
             self._active_ws.add_curve(Curve(
                 kind="circle", layer=Layer.DRILL,
@@ -8309,7 +9463,7 @@ class MainWindow(QMainWindow):
                 self, "OMA export",
                 f"OMA export needs exactly 2 LENS contours "
                 f"(found {len(lenses)}).\nMirror doubling counts — draw one "
-                "lens with Mirror on, or both lenses with it off.")
+                "lens with Ghost on, or both lenses with it off.")
             return
         for c in lenses:
             if not c.closed and len(c.nodes) >= 2:
@@ -8322,13 +9476,13 @@ class MainWindow(QMainWindow):
                         f"(endpoint gap {gap:.3f} mm > 0.1 mm).")
                     return
 
-        # OD (side R) = the lens with the smaller boxing-centre x.
+        # OD (side R) = the lens with the smaller boxing-center x.
         lenses.sort(key=lambda c: boxing_center(c)[0])
         od, os_lens = lenses
 
         depth = self._ask_oma_export_bevel(max(0.0, self._active_ws.bevel_depth))
         if depth is None:
-            return                              # cancelled
+            return                              # canceled
 
         # Build the job before asking for a filename — the tracer rejects
         # non-star-shaped contours and we want that error first.
@@ -8355,7 +9509,7 @@ class MainWindow(QMainWindow):
             return
 
         # Drill-mount holes (DRILL layer) → DRILLE features, in the binocular
-        # frame system: origin midway between the two lens centres, y-up.
+        # frame system: origin midway between the two lens centers, y-up.
         from .export.oma import OmaDrill
         origin_x = (boxing_center(od)[0] + boxing_center(os_lens)[0]) / 2.0
         mirror_on = self._act_mirror.isChecked()
@@ -8376,6 +9530,7 @@ class MainWindow(QMainWindow):
             "OMA / DCS Trace Files (*.oma);;All Files (*)")
         if not path:
             return
+        path = self._ensure_suffix(path, ".oma")
         try:
             with open(path, "w", encoding="ascii", newline="") as f:
                 f.write(build_oma(job))
@@ -8406,9 +9561,16 @@ class MainWindow(QMainWindow):
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         dlg = QPrintDialog(printer, self)
         dlg.setWindowTitle("Print at 1:1 Scale")
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        if _run_modal(dlg) != QDialog.DialogCode.Accepted:
             return
-        self._render_1to1(printer, self._view_source_rect())
+        try:
+            clipped = self._render_1to1(printer, self._view_source_rect())
+        except Exception as e:
+            QMessageBox.critical(self, "Print failed", str(e))
+            return
+        self._status.showMessage(
+            "Printed at 1:1 — view larger than the page, edges cropped."
+            if clipped else "Printed at 1:1 scale.")
 
     def _export_pdf_1to1(self):
         from PySide6.QtPrintSupport import QPrinter
@@ -8421,32 +9583,40 @@ class MainWindow(QMainWindow):
             self, "Export PDF (current view, 1:1)", "", "PDF Files (*.pdf)")
         if not path:
             return
+        path = self._ensure_suffix(path, ".pdf")
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
         printer.setOutputFileName(path)
         try:
-            self._render_1to1(printer, self._view_source_rect())
-            self._status.showMessage(f"PDF exported at 1:1: {os.path.basename(path)}")
+            clipped = self._render_1to1(printer, self._view_source_rect())
         except Exception as e:
             QMessageBox.critical(self, "PDF export failed", str(e))
+            return
+        self._status.showMessage(
+            f"PDF exported at 1:1: {os.path.basename(path)}"
+            + ("  — view larger than the page, edges cropped." if clipped else ""))
 
     def _has_visible_geometry(self) -> bool:
-        return any(c.nodes and not c.mirrored and self.scene.is_layer_visible(c.layer)
-                   for c in self._doc_curves)
+        if any(c.nodes and not c.mirrored and self.scene.is_layer_visible(c.layer)
+               for c in self._doc_curves):
+            return True
+        return any(t.text.strip() and self.scene.is_layer_visible(t.layer)
+                   for t in self._active_ws.doc_texts)
 
     def _render_1to1(self, printer, source):
         """Paint the CURRENT VIEW at exactly 1 mm = 1 mm paper scale.
 
-        Renders the visible-layer geometry (and its mirror ghost) currently
-        framed in the viewport, drawn as clean vectors in each layer's colour
-        at the uniform PDF line weight from Settings ▸ PDF, shifted by the
-        vertical frame offset. A 50 mm ruler verifies the scale. Content larger
-        than the page is cropped 1:1.
+        Renders the visible-layer geometry (and its mirror ghost) and the
+        engraving text currently framed in the viewport, drawn as clean
+        vectors in each layer's color at the uniform PDF line weight from
+        Settings ▸ PDF, shifted by the vertical frame offset. A 50 mm ruler
+        verifies the scale. Content larger than the page is cropped 1:1.
         """
         from PySide6.QtCore import QRectF as _QRectF
         from PySide6.QtPrintSupport import QPrinter
         from .canvas.items import build_path
         from .geometry import mirror_curve
+        from .textpath import text_outline_path
 
         cfg    = self._prefs.get("catalog_pdf", {})
         lw_mm  = float(cfg.get("line_weight_mm", 0.6))
@@ -8470,11 +9640,18 @@ class MainWindow(QMainWindow):
         if self._act_mirror.isChecked() and self.scene.mirror is not None:
             horizontal = self._active_ws.workspace_type in ("temple_r", "temple_l")
             axis_x = self.scene.mirror.x
-            draw += [mirror_curve(c, axis_x, horizontal=horizontal) for c in vis]
+            # The layers the canvas ghosts, no others: a REF line printed
+            # twice though the screen showed it once.
+            draw += [mirror_curve(c, axis_x, horizontal=horizontal)
+                     for c in vis if c.layer in _GHOST_LAYERS]
 
-        self.scene.clearSelection()
-        self._edit_tool.clear()
-        painter = QPainter(printer)
+        # begin() checked, as the template and catalog exports do: an
+        # unwritable PDF path left the painter inactive and the status bar
+        # announcing a file that was never written.
+        painter = QPainter()
+        if not painter.begin(printer):
+            where = printer.outputFileName() or printer.printerName()
+            raise OSError(f"could not write {where}")
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.save()
@@ -8494,6 +9671,15 @@ class MainWindow(QMainWindow):
                 painter.setPen(pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawPath(build_path(c))
+            for t in self._active_ws.doc_texts:
+                if not self.scene.is_layer_visible(t.layer):
+                    continue
+                pen = QPen(QColor(theme.default_layer_color(t.layer.value, False)))
+                pen.setCosmetic(True)
+                pen.setWidthF(cos_w)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawPath(text_outline_path(t))
             painter.restore()
 
             # 50 mm verification ruler, bottom-left of the printable area
@@ -8515,11 +9701,104 @@ class MainWindow(QMainWindow):
         finally:
             painter.end()
 
+        return clipped
+
+    # ------------------------------------------------------------------
+    # Print Front + Temples — 1:1 cutting templates (front + both temples,
+    # stacked at true size on the maker's paper, paginated as needed)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ensure_suffix(path: str, suffix: str) -> str:
+        """Append *suffix* unless the chosen name already ends with it (a
+        non-native file dialog returns exactly what was typed; QPrinter and
+        ezdxf happily write to a suffix-less name)."""
+        return path if path.lower().endswith(suffix) else path + suffix
+
+    def _design_name(self) -> str:
+        """The open file's stem, or '' for an unsaved design."""
+        return (os.path.splitext(os.path.basename(self._current_path))[0]
+                if self._current_path else "")
+
+    def _gather_template_components(self) -> dict:
+        """What each of the front and temple workspaces currently shows —
+        visible-layer curves plus the mirror ghost (so a half-drawn front
+        prints whole) and visible engraving text — keyed for
+        export.template_print."""
+        # Flush the live toolbar into the active workspace (mirror toggle).
+        self._save_ws_sidebar_state(self._active_ws)
+        out = {}
+        for key, ws in zip(("front", "temple_r", "temple_l"),
+                           self._workspaces[:3], strict=True):
+            vis = [c for c in ws.doc_curves
+                   if c.nodes and not c.mirrored
+                   and ws.scene.is_layer_visible(c.layer)]
+            curves = list(vis)
+            if ws.mirror_enabled and ws.scene.mirror is not None:
+                horizontal = ws.workspace_type in ("temple_r", "temple_l")
+                curves += [mirror_curve(c, ws.scene.mirror.x, horizontal=horizontal)
+                           for c in vis if c.layer in _GHOST_LAYERS]
+            texts = [t for t in ws.doc_texts
+                     if t.text.strip() and ws.scene.is_layer_visible(t.layer)]
+            out[key] = {"curves": curves, "texts": texts}
+        return out
+
+    def _template_print_status(self, verb: str, pages: int, clipped: bool):
+        msg = f"{verb} {pages} page{'s' if pages != 1 else ''} at 1:1."
         if clipped:
-            self._status.showMessage(
-                "Printed at 1:1 — view larger than the page, edges cropped.")
-        else:
-            self._status.showMessage("Printed at 1:1 scale.")
+            msg += "  A piece was larger than the page — its edges are cropped."
+        self._status.showMessage(msg)
+
+    def _print_templates(self):
+        from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+        from .export.template_print import configure_printer, render_template_pages
+        components = self._gather_template_components()
+        if not any(c["curves"] or c["texts"] for c in components.values()):
+            QMessageBox.information(
+                self, "Print Front + Temples",
+                "Nothing to print — the front and temple workspaces have no "
+                "visible geometry.")
+            return
+        cfg = self._prefs.get("template_print", {})
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        configure_printer(printer, cfg, components)
+        dlg = QPrintDialog(printer, self)
+        dlg.setWindowTitle("Print Front + Temples at 1:1")
+        if _run_modal(dlg) != QDialog.DialogCode.Accepted:
+            return
+        try:
+            pages, clipped = render_template_pages(
+                printer, components, cfg, self._design_name())
+        except Exception as e:
+            QMessageBox.critical(self, "Print failed", str(e))
+            return
+        self._template_print_status("Printed", pages, clipped)
+
+    def _export_pdf_templates(self):
+        from .export.template_print import export_template_pdf
+        components = self._gather_template_components()
+        if not any(c["curves"] or c["texts"] for c in components.values()):
+            QMessageBox.information(
+                self, "PDF Front + Temples",
+                "Nothing to export — the front and temple workspaces have no "
+                "visible geometry.")
+            return
+        base = self._design_name()
+        suggested = f"{base} templates.pdf" if base else "templates.pdf"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "PDF Front + Temples (1:1 templates)", suggested,
+            "PDF Files (*.pdf)")
+        if not path:
+            return
+        path = self._ensure_suffix(path, ".pdf")
+        try:
+            pages, clipped = export_template_pdf(
+                path, components, self._prefs.get("template_print", {}), base)
+        except Exception as e:
+            QMessageBox.critical(self, "PDF export failed", str(e))
+            return
+        self._template_print_status(
+            f"Templates PDF exported ({os.path.basename(path)}):", pages, clipped)
 
     # ------------------------------------------------------------------
     # PDF for Catalog (front + both temples on one sheet + the design name)
@@ -8536,7 +9815,8 @@ class MainWindow(QMainWindow):
         if ws.mirror_enabled and ws.scene.mirror is not None:
             horizontal = ws.workspace_type in ("temple_r", "temple_l")
             axis_x = ws.scene.mirror.x
-            out += [mirror_curve(c, axis_x, horizontal=horizontal) for c in base]
+            out += [mirror_curve(c, axis_x, horizontal=horizontal)
+                    for c in base if c.layer in _GHOST_LAYERS]
         return out
 
     def _gather_catalog_components(self) -> dict:
@@ -8575,15 +9855,15 @@ class MainWindow(QMainWindow):
                 self, "PDF for Catalog",
                 "Nothing to export — the front and temple workspaces have no "
                 "geometry on the selected layers (set them in "
-                "Settings ▸ Catalog PDF).")
+                "Preferences ▸ PDF).")
             return
-        base = (os.path.splitext(os.path.basename(self._current_path))[0]
-                if self._current_path else "")
+        base = self._design_name()
         suggested = f"{base}.pdf" if base else "catalog.pdf"
         path, _ = QFileDialog.getSaveFileName(
             self, "PDF for Catalog", suggested, "PDF Files (*.pdf)")
         if not path:
             return
+        path = self._ensure_suffix(path, ".pdf")
         caption = base or os.path.splitext(os.path.basename(path))[0]
         try:
             from .export.catalog_pdf import export_catalog_pdf
@@ -8616,6 +9896,20 @@ class MainWindow(QMainWindow):
         """User toggled the toolbar overflow pin — persist the choice."""
         self._save_prefs()
 
+    def _on_tooltips_toggled(self, on: bool, announce: bool = True):
+        """The ? button: tooltips on or off, app-wide, remembered."""
+        self._tooltip_filter.enabled = bool(on)
+        self._act_tooltips.setToolTip(
+            "Tooltips are on \u2014 click to hide them everywhere" if on
+            else "Tooltips are off \u2014 click to show them again")
+        if self._prefs.get("tooltips") != bool(on):
+            self._prefs["tooltips"] = bool(on)
+            _prefs_mod.save(self._prefs)
+        if announce:
+            self._status.showMessage(
+                "Tooltips on" if on
+                else "Tooltips off \u2014 the ? button turns them back on", 4000)
+
     # ------------------------------------------------------------------
     # Dark mode
     # ------------------------------------------------------------------
@@ -8641,7 +9935,7 @@ class MainWindow(QMainWindow):
         if getattr(self, "_snap_palette", None) is not None:
             self._snap_palette.apply_theme()
         self._refresh_layer_panel()   # eye/padlock icons are theme-colored
-        self._update_readiness()      # dot colours are theme-aware
+        self._update_readiness()      # dot colors are theme-aware
 
     def _toggle_dark_mode(self, dark: bool):
         self._dark_mode = dark
@@ -8724,11 +10018,14 @@ def main():
     win.show()
     splash.finish(win)   # dismiss once the window is up
     # Open a project passed on the command line (e.g. double-clicking a
-    # .gdraw/.svg via the installed file association).
-    for arg in app.arguments()[1:]:
-        if not arg.startswith("-") and os.path.isfile(arg):
-            win._open_path(arg)
-            break
+    # .gdraw/.svg via the installed file association) — after the recovery
+    # offer, not before: on its 400 ms timer the offer used to find the slot
+    # already emptied by the open, and a crash's work was lost to a
+    # double-click.
+    target = next((a for a in app.arguments()[1:]
+                   if not a.startswith("-") and os.path.isfile(a)), None)
+    if target is not None and not win._offer_recovery(opening=target):
+        win._open_path(target)
     sys.exit(app.exec())
 
 

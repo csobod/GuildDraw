@@ -14,7 +14,7 @@ def render_png(scene, path: str, dpi: float = 300.0,
     """
     Render *rect* (scene coords; defaults to the full sceneRect) to a PNG.
 
-    Scene units are millimetres, so pixels = mm * dpi / 25.4 — true print
+    Scene units are millimeters, so pixels = mm * dpi / 25.4 — true print
     scale (a 60 mm lens at 300 dpi is ~709 px). The old export mapped scene
     units at 96/inch, which capped a whole frame at around a thousand pixels
     regardless of the requested DPI (GitHub issue #7).

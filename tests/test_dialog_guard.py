@@ -29,7 +29,7 @@ def test_an_unstubbed_input_dialog_fails_instead_of_blocking():
         QInputDialog.getItem(None, "t", "t", ["a"], 0, False)
 
 
-def test_an_unstubbed_colour_picker_fails_instead_of_blocking():
+def test_an_unstubbed_color_picker_fails_instead_of_blocking():
     with pytest.raises(UnexpectedDialog):
         QColorDialog.getColor()
 

@@ -8,8 +8,8 @@ def line(pts, closed=False, layer=Layer.REF):
 
 
 def spline(pts, closed=False, layer=Layer.OUTLINE):
-    """Spline through pts with centripetal Catmull-Rom handles
-    (same formula as tools.draw.compute_catmull_handles, Qt-free)."""
+    """Spline through pts with uniform Catmull-Rom handles
+    (same formula as geometry.compute_catmull_handles)."""
     nodes = [SplineNode(x=x, y=y) for x, y in pts]
     n = len(nodes)
 

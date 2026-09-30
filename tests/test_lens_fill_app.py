@@ -230,7 +230,7 @@ def test_pre_1_2_file_loads_with_the_tint_off(fresh, tmp_path):
 # ------------------------------------------------------------------ intensity
 
 
-def test_intensity_slider_starts_at_the_colour_as_picked(fresh):
+def test_intensity_slider_starts_at_the_color_as_picked(fresh):
     win = fresh
     assert win._active_ws.lens_fill_intensity == pytest.approx(1.0)
     assert (win._lens_fill_intensity_slider.value()
@@ -250,7 +250,7 @@ def test_dragging_intensity_deepens_the_painted_tint(fresh):
     assert QColor(deep).lightness() < QColor(pale).lightness()
 
 
-def test_intensity_leaves_the_picked_colour_alone(fresh):
+def test_intensity_leaves_the_picked_color_alone(fresh):
     # The stop keeps the hex the maker chose; intensity is a render-time depth,
     # so winding the slider back recovers exactly what was picked.
     win = fresh
@@ -262,13 +262,13 @@ def test_intensity_leaves_the_picked_colour_alone(fresh):
 
 
 def _swatch_color(btn):
-    """Centre pixel of a stop button's colour bar (inside the hairline border)."""
+    """Center pixel of a stop button's color bar (inside the hairline border)."""
     from framedraft.app import _LENS_SWATCH_PX
     w, h = _LENS_SWATCH_PX
     return btn.icon().pixmap(w, h).toImage().pixelColor(w // 2, h // 2)
 
 
-def test_swatch_button_previews_the_deepened_colour(fresh):
+def test_swatch_button_previews_the_deepened_color(fresh):
     win = fresh
     win._set_lens_fill_color("top", "#e4f5fd")
     win._lens_fill_intensity_slider.setValue(slider_from_intensity(1.0))
@@ -283,7 +283,7 @@ def test_swatch_button_previews_the_deepened_colour(fresh):
 
 
 def test_stop_buttons_carry_no_redundant_caption(fresh):
-    # The row label already says Top / Bottom; the button is the colour bar.
+    # The row label already says Top / Bottom; the button is the color bar.
     win = fresh
     assert win._lens_top_btn.text() == ""
     assert win._lens_bottom_btn.text() == ""
@@ -508,7 +508,7 @@ def _rewrite_lens_fill(src, dst, replacement):
 @pytest.mark.parametrize("block, why", [
     ('"lens_fill": {"opacity": "very"}',       "opacity is not a number"),
     ('"lens_fill": {"intensity": "deep"}',     "intensity is not a number"),
-    ('"lens_fill": {"top": "chartreusey"}',    "colour Qt cannot parse"),
+    ('"lens_fill": {"top": "chartreusey"}',    "color Qt cannot parse"),
     ('"lens_fill": {"opacity": null}',         "null where a number belongs"),
     ('"lens_fill": {"intensity": 1e400}',      "overflows to infinity"),
     ('"lens_fill": {"opacity": 40}',           "percent where 0-1 belongs"),

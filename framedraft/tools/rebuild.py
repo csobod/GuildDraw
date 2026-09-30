@@ -19,11 +19,12 @@ re-simplifies any hand-drawn or offset-heavy spline.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Signal, QPointF, Qt, QRect
+from PySide6.QtCore import QObject, Signal, QPointF, Qt
 from PySide6.QtGui  import QPen, QColor, QFont
 from PySide6.QtWidgets import QLabel
 
-from ..canvas.items import CurveItem, curve_layer_locked
+from ..canvas.items import CurveItem
+from .trim import curve_item_at
 
 
 _PREVIEW_COLOR = "#ffd580"   # amber — matches the Offset preview
@@ -70,7 +71,7 @@ class RebuildSplineTool(QObject):
 
     rebuild_applied = Signal(object, object)   # (source_curve, rebuilt_curve)
     status_message  = Signal(str)
-    cancelled       = Signal()
+    canceled       = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -174,8 +175,8 @@ class RebuildSplineTool(QObject):
                 self._clear_preview_item()
                 return True
             self._clear_preview()
-            self.status_message.emit("Rebuild cancelled")
-            self.cancelled.emit()
+            self.status_message.emit("Rebuild canceled")
+            self.canceled.emit()
             return True
 
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -238,7 +239,15 @@ class RebuildSplineTool(QObject):
         from ..geometry import sample_curve
         from ..fitting import fit_curve
         src = self._source_curve
-        pts = [(x, y) for x, y, _ in sample_curve(src, 24)]
+        if src.kind == "line":
+            # A polyline IS its vertices; sampling 24 points per segment only
+            # inflated a 500-vertex DXF import to 12,000 points and made every
+            # keystroke a second-long fit.
+            pts = [(n.x, n.y) for n in src.nodes]
+        else:
+            n_seg = max(1, len(src.nodes) - (0 if src.closed else 1))
+            pts = [(x, y) for x, y, _ in
+                   sample_curve(src, max(4, min(24, 2000 // n_seg)))]
         if len(pts) < 2:
             return None
         try:
@@ -314,7 +323,7 @@ class RebuildSplineTool(QObject):
         if not self._source_curve:
             self.status_message.emit("Rebuild: no source curve — click one first")
             return
-        fit = self._compute_fit()
+        fit = self._last_fit or self._compute_fit()   # the HUD already fitted it
         if fit is None:
             hint = ("a node count (≥2)" if self._mode == MODE_COUNT
                     else "a tolerance in mm")
@@ -324,11 +333,6 @@ class RebuildSplineTool(QObject):
         self.rebuild_applied.emit(self._source_curve, fit.curve)
 
     def _item_at(self, scene_pos: QPointF) -> CurveItem | None:
-        if self._view is None:
-            return None
-        vp = self._view.mapFromScene(scene_pos)
-        t  = 8
-        candidates = self._view.items(QRect(vp.x() - t, vp.y() - t, 2 * t, 2 * t))
-        return next((i for i in candidates
-                     if isinstance(i, CurveItem) and not curve_layer_locked(i)),
-                    None)
+        return curve_item_at(
+            self._view, scene_pos,
+            accept=lambda c: not c.mirrored and c.kind in ("spline", "line"))

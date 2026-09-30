@@ -52,7 +52,7 @@ jobs:
       # timeout is deliberate: a modal dialog inside a native event loop cannot
       # be interrupted by the default signal method. tests/conftest.py now turns
       # an unanswered modal into a named failure, so this is the second line of
-      # defence rather than the first.
+      # defense rather than the first.
       - name: Test gate
         timeout-minutes: 20
         run: .venv\Scripts\python.exe -m pytest tests -v --timeout=120 --timeout-method=thread

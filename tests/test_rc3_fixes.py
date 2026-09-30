@@ -10,7 +10,7 @@ Covers the correctness fixes from the pre-RC3 audit:
   * Mirror-Close preserves hand-tuned Bézier handles;
   * File > New resets calibration and boxing snap/lock state;
   * bookmarks round-trip their dims and texts through save/load;
-  * arc parameterisation helpers tolerate None angles and treat a zero
+  * arc parameterization helpers tolerate None angles and treat a zero
     sweep as a full circle (same rule as build_path);
   * hidden layers are not trim/split cutting edges.
 """
@@ -74,7 +74,7 @@ def test_finished_box_is_sampled_not_control_point_bbox():
 
 
 # ---------------------------------------------------------------------------
-# Qt-free: arc parameterisation guards
+# Qt-free: arc parameterization guards
 # ---------------------------------------------------------------------------
 
 def test_sample_curve_arc_with_none_angles_does_not_crash():

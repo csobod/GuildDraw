@@ -23,7 +23,7 @@ from framedraft.export.dxf import export_dxf
 # Boxing dimensions (mm) — GuildDraw defaults: A=50, DBL=18; B chosen for a
 # classic acetate front. Scene is Y-down; export negates Y.
 A, B, DBL = 50.0, 38.0, 18.0
-LENS_CX = DBL / 2 + A / 2          # 34.0 — boxing centre of the right-half lens
+LENS_CX = DBL / 2 + A / 2          # 34.0 — boxing center of the right-half lens
 OUTLINE_OFFSET = 4.5               # rim width around the lenses
 BROW_LIFT = 2.0                    # extra material along the brow
 

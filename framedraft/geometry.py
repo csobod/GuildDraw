@@ -1,7 +1,9 @@
 """
-Shared geometry helpers for Trim and Split tools.
+Shared, Qt-free geometry: curve parameterization, segment extraction for
+Trim/Split, intersections, mirroring, Catmull-Rom handles, circle/arc
+conversion, fillets and the offset engine.
 
-Curve parameterisation: t in [0.0, 1.0].
+Curve parameterization: t in [0.0, 1.0].
   t=0 = curve start, t=1 = curve end (same physical point as t=0 for closed
   curves/circles).
 
@@ -73,7 +75,7 @@ def _copy_node(n: SplineNode) -> SplineNode:
 
 
 # ---------------------------------------------------------------------------
-# Parameterisation helpers
+# Parameterization helpers
 # ---------------------------------------------------------------------------
 
 def _n_segs(curve: Curve) -> int:
@@ -94,7 +96,7 @@ def _arc_sweep_deg(curve: Curve) -> float:
     """Positive sweep of an arc in degrees, None-safe.
 
     A zero sweep (equal start/end angles) means a full circle — the same rule
-    build_path and arc_bbox use — so every parameterisation helper agrees with
+    build_path and arc_bbox use — so every parameterization helper agrees with
     what is drawn on screen.
     """
     sweep = ((curve.end_angle or 0.0) - (curve.start_angle or 0.0)) % 360
@@ -214,7 +216,8 @@ def arc_to_spline(curve: Curve) -> Curve:
 
 
 def compute_catmull_handles(nodes: list, closed: bool) -> None:
-    """Set cp_in / cp_out on every node using centripetal Catmull-Rom.
+    """Set cp_in / cp_out on every node using uniform Catmull-Rom
+    (handles at ±(P[i+1] − P[i−1]) / 6).
 
     Single source of truth for smooth-spline handle generation — used by the
     draw tool, OMA trace import, and offset reconstruction. (Moved here from
@@ -348,16 +351,80 @@ def sample_curve(curve: Curve,
     return result
 
 
-def t_nearest(curve: Curve, px: float, py: float) -> float:
-    """Return the t in [0, 1] of the sample point nearest to (px, py)."""
-    best_t  = 0.0
-    best_d2 = float("inf")
-    for x, y, t in sample_curve(curve, n_per_seg=_SAMPLES_PER_SEG * 2):
-        d2 = (x - px)**2 + (y - py)**2
+def _refine_t(curve: Curve, px: float, py: float,
+              t_lo: float, t_hi: float, iters: int = 40) -> float:
+    """Ternary search for the t in [t_lo, t_hi] nearest (px, py) — the
+    distance is unimodal between two adjacent samples. (2/3)^40 of the
+    bracket is far below any machining tolerance."""
+    lo, hi = max(0.0, t_lo), min(1.0, t_hi)
+
+    def d2(t):
+        x, y = point_at_t(curve, t)
+        return (x - px) ** 2 + (y - py) ** 2
+    for _ in range(iters):
+        m1 = lo + (hi - lo) / 3.0
+        m2 = hi - (hi - lo) / 3.0
+        if d2(m1) < d2(m2):
+            hi = m2
+        else:
+            lo = m1
+    return (lo + hi) / 2.0
+
+
+def _nearest_sample_t(samples, px: float, py: float) -> tuple:
+    """(t_best, t_prev, t_next) around the nearest sample."""
+    best_i, best_d2 = 0, float("inf")
+    for i, (x, y, _t) in enumerate(samples):
+        d2 = (x - px) ** 2 + (y - py) ** 2
         if d2 < best_d2:
-            best_d2 = d2
-            best_t  = t
-    return best_t
+            best_d2, best_i = d2, i
+    t_best = samples[best_i][2]
+    t_prev = samples[best_i - 1][2] if best_i > 0 else t_best
+    t_next = samples[best_i + 1][2] if best_i + 1 < len(samples) else t_best
+    return t_best, t_prev, t_next
+
+
+def _nearest_refined_t(curve: Curve, samples, px: float, py: float) -> float:
+    """The sample nearest (px, py), refined between its neighbors — and on a
+    closed curve whose nearest sample is the seam, refined on both sides of
+    it. The first and last samples are the same point there, and the first
+    won the tie, so a point on the closing segment resolved to t = 0 (a Split
+    opened 0.9 mm from the click; a Trim cut the wrong side)."""
+    _t, t_prev, t_next = _nearest_sample_t(samples, px, py)
+    t = _refine_t(curve, px, py, t_prev, t_next)
+    closed = curve.closed or curve.kind == "circle"
+    if closed and len(samples) > 2 and (_t <= samples[0][2] or _t >= samples[-1][2]):
+        options = [t,
+                   _refine_t(curve, px, py, 0.0, samples[1][2]),
+                   _refine_t(curve, px, py, samples[-2][2], 1.0)]
+
+        def d2(tt):
+            x, y = point_at_t(curve, tt)
+            return (x - px) ** 2 + (y - py) ** 2
+        t = min(options, key=d2)
+    return t
+
+
+def t_nearest_coarse(curve: Curve, px: float, py: float, n_per_seg: int = 8) -> float:
+    """`t_nearest` on a coarser grid, refined the same way: for a hover that
+    only ranks candidates, 8 samples a segment instead of 64 (a 500-node
+    DXF spline cost 37 ms a mouse move in Trim and Split)."""
+    samples = sample_curve(curve, n_per_seg=n_per_seg)
+    if not samples:
+        return 0.0
+    return _nearest_refined_t(curve, samples, px, py)
+
+
+def t_nearest(curve: Curve, px: float, py: float) -> float:
+    """Return the t in [0, 1] of the point on *curve* nearest to (px, py).
+
+    Nearest of the samples, then refined between its neighbors: the raw
+    sample grid is 1/64 of a segment, which left a trim end up to 0.7 mm
+    short of the cutting edge on a 100 mm line."""
+    samples = sample_curve(curve, n_per_seg=_SAMPLES_PER_SEG * 2)
+    if not samples:
+        return 0.0
+    return _nearest_refined_t(curve, samples, px, py)
 
 
 # ---------------------------------------------------------------------------
@@ -439,12 +506,9 @@ def intersect_curve_params(target: Curve, other: Curve,
     samples = sample_curve(target, n_per_seg=_SAMPLES_PER_SEG * 2)
 
     def nearest_t(px: float, py: float) -> float:
-        best_t, best_d2 = 0.0, float("inf")
-        for x, y, t in samples:
-            d2 = (x - px) ** 2 + (y - py) ** 2
-            if d2 < best_d2:
-                best_d2, best_t = d2, t
-        return best_t
+        if not samples:
+            return 0.0
+        return _nearest_refined_t(target, samples, px, py)
 
     ts = []
     for pt in _iter_shapely_pts(inter):
@@ -572,6 +636,11 @@ def _extract_spline_segment(curve: Curve,
             en.cp_in = ControlPoint(*left_e[2])
             result.append(en)
 
+    # An open piece has no handle on the outside of its two ends (a copied
+    # node kept the source's, which showed as a stray handle dot).
+    if result:
+        result[0].cp_in   = None
+        result[-1].cp_out = None
     return Curve(kind="spline", layer=curve.layer, nodes=result,
                  closed=False, line_weight=curve.line_weight)
 
@@ -663,6 +732,18 @@ def extract_wrapping_segment(curve: Curve,
     if curve.kind in ("circle", "arc"):
         return extract_open_segment(curve, t_start, t_end)
 
+    # A piece that starts or ends on the seam itself has no length: joined
+    # anyway, it left two coincident nodes with degenerate handles.
+    seam_x, seam_y = point_at_t(curve, 0.0)
+
+    def at_seam(t: float) -> bool:
+        x, y = point_at_t(curve, t)
+        return math.hypot(x - seam_x, y - seam_y) < 1e-3
+    if at_seam(t_start) and t_start > 0.5:
+        return extract_open_segment(curve, 0.0, t_end)
+    if at_seam(t_end) and t_end < 0.5:
+        return extract_open_segment(curve, t_start, 1.0)
+
     seg_hi = extract_open_segment(curve, t_start, 1.0)
     seg_lo = extract_open_segment(curve, 0.0,     t_end)
 
@@ -689,7 +770,33 @@ def split_curve_at_t(curve: Curve,
     Split curve at t in (0, 1) into (left, right) open curves.
     Returns (curve, None) if the split point is within end_tol_mm (scene mm)
     of either endpoint — a split there would create a degenerate sliver.
+
+    A CLOSED spline/line has no ends: one cut opens it into a single open
+    curve running from t all the way round back to t, returned as
+    (opened, None). (Two pieces would have hidden a second cut at the seam
+    node.) Circles keep the two-arc result — an arc from t round to t is
+    not a valid entity.
     """
+    if curve.kind in ("spline", "line") and curve.closed and len(curve.nodes) >= 2:
+        px, py = point_at_t(curve, t)
+        sx, sy = point_at_t(curve, 0.0)
+        if math.hypot(px - sx, py - sy) <= end_tol_mm:
+            # At the seam: open it there, at the node, rather than cut a
+            # sliver off (an OMA lens's seam sits on the datum line, so a
+            # Split snapped to that crossing lands here every time).
+            return extract_open_segment(curve, 0.0, 1.0), None
+        return extract_wrapping_segment(curve, t, t), None
+    if curve.kind == "circle":
+        t = t % 1.0
+        px, py = point_at_t(curve, t)
+        sx, sy = point_at_t(curve, 0.0)
+        if math.hypot(px - sx, py - sy) <= end_tol_mm:
+            # A circle's 0° point is where its two arcs are usually cut
+            # apart, not an end: there the second cut goes opposite the first.
+            # (A datum line through a lens or hole center hit it and the
+            # circle stayed whole.)
+            u = (t + 0.5) % 1.0
+            return extract_open_segment(curve, t, u), extract_open_segment(curve, u, t)
     if t <= 0.0 or t >= 1.0:
         return curve, None
     px, py = point_at_t(curve, t)
@@ -743,12 +850,23 @@ def _unit(dx: float, dy: float):
 
 
 def _cubic_tangent(p0, p1, p2, p3, t: float):
-    """Unit tangent of a cubic at t, falling back to the chord when the
-    derivative degenerates (coincident control points)."""
+    """Unit tangent of a cubic at t. When the derivative degenerates (a
+    retracted handle) the limiting tangent at an end is towards the NEXT
+    control point (p2 − p0 at t=0, p3 − p1 at t=1), the same ladder
+    _end_tangents uses — the chord is only the last resort. Using the chord
+    first displaced the offset's endpoint along the wrong normal, so the
+    reduced refit always failed and the node-heavy backstop shipped."""
     u = 1.0 - t
     dx = 3*u*u*(p1[0]-p0[0]) + 6*u*t*(p2[0]-p1[0]) + 3*t*t*(p3[0]-p2[0])
     dy = 3*u*u*(p1[1]-p0[1]) + 6*u*t*(p2[1]-p1[1]) + 3*t*t*(p3[1]-p2[1])
-    return _unit(dx, dy) or _unit(p3[0]-p0[0], p3[1]-p0[1]) or (1.0, 0.0)
+    tangent = _unit(dx, dy)
+    if tangent:
+        return tangent
+    if t < 0.5:
+        return (_unit(p2[0]-p0[0], p2[1]-p0[1])
+                or _unit(p3[0]-p0[0], p3[1]-p0[1]) or (1.0, 0.0))
+    return (_unit(p3[0]-p1[0], p3[1]-p1[1])
+            or _unit(p3[0]-p0[0], p3[1]-p0[1]) or (1.0, 0.0))
 
 
 def _end_tangents(p0, p1, p2, p3):
@@ -777,7 +895,7 @@ def _offset_cubic_th(p0, p1, p2, p3, d: float):
 
     Endpoints are displaced exactly d along the curve normal; the interior
     control points come from intersecting the translated control-polygon legs,
-    so tangent directions are preserved (G1 with the neighbours). Accuracy is
+    so tangent directions are preserved (G1 with the neighbors). Accuracy is
     enforced by the caller's error check + subdivision, not here.
     """
     t0, t1 = _end_tangents(p0, p1, p2, p3)
@@ -918,7 +1036,7 @@ _OFFSET_FIT_PER_SEG = 24                   # exact-offset samples per source seg
 
 def _tangent_break(curve: Curve, i: int) -> float:
     """Turn angle (radians) between the incoming and outgoing tangents at node
-    i — handles when present, neighbour nodes otherwise. Large ⇒ a source
+    i — handles when present, neighbor nodes otherwise. Large ⇒ a source
     corner where the offset breaks (and gets a bevel)."""
     nodes = curve.nodes
     n = len(nodes)
@@ -1115,6 +1233,7 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
     if curve.kind in ("circle", "arc"):
         c = _copy.deepcopy(curve)
         c.radius = max(0.0, (c.radius or 0.0) + d_mm)
+        c.group_id = None      # the offset is its own curve, like a spline's
         return c
 
     nodes = curve.nodes
@@ -1182,18 +1301,18 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
 def arc_start_end_center(sx: float, sy: float,
                          ex: float, ey: float,
                          cx: float, cy: float):
-    """Build a true circular arc from two endpoints and an approximate centre.
+    """Build a true circular arc from two endpoints and an approximate center.
 
-    The clicked centre is snapped onto the perpendicular bisector of the
+    The clicked center is snapped onto the perpendicular bisector of the
     chord S→E so both endpoints lie on the circle (equal radii). The *minor*
-    arc between the endpoints is always returned, so placing the centre on
+    arc between the endpoints is always returned, so placing the center on
     one side of the chord vs. the other flips which way the arc bulges — an
     intuitive, predictable control.
 
     Returns ``(cx2, cy2, radius, start_deg, end_deg)`` in the scene angle
     convention (degrees; 0=right, 90=down-screen; sweep runs positive from
     start to end, matching :func:`point_at_t` / build_path), or ``None`` when
-    the construction is degenerate (coincident endpoints, or a centre that
+    the construction is degenerate (coincident endpoints, or a center that
     lands on the chord).
     """
     mx, my = (sx + ex) / 2.0, (sy + ey) / 2.0
@@ -1202,7 +1321,7 @@ def arc_start_end_center(sx: float, sy: float,
     if chord_len2 < 1e-12:
         return None   # endpoints coincide
 
-    # Perpendicular bisector direction (unit), then project the clicked centre
+    # Perpendicular bisector direction (unit), then project the clicked center
     # onto the bisector line through the chord midpoint.
     bx, by = -chord_dy, chord_dx
     bL = math.hypot(bx, by)
@@ -1235,7 +1354,7 @@ def fillet_lines(corner: tuple, far1: tuple, far2: tuple, r: float):
     Returns a dict with::
 
         t1, t2      tangent points on leg 1 / leg 2 (the legs are trimmed here)
-        center      arc centre
+        center      arc center
         radius      r
         start_deg   arc start angle (scene convention, minor arc t1→t2)
         end_deg     arc end angle
@@ -1269,7 +1388,7 @@ def fillet_lines(corner: tuple, far1: tuple, far2: tuple, r: float):
     t1 = (cxv + d1x * tan_len, cyv + d1y * tan_len)
     t2 = (cxv + d2x * tan_len, cyv + d2y * tan_len)
 
-    # Centre lies along the angle bisector at distance r / sin(half).
+    # Center lies along the angle bisector at distance r / sin(half).
     bx, by = d1x + d2x, d1y + d2y
     bL = math.hypot(bx, by)
     if bL < 1e-9:

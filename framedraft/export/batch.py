@@ -3,8 +3,11 @@ Batch DXF export (M9) — write every populated workspace's DXF in one go.
 
 One frame = four files (`<name>_front.dxf`, `<name>_temple_r.dxf`,
 `<name>_temple_l.dxf`, `<name>_hinge.dxf`); exporting them one tab at a
-time invites mistakes, so this module validates all workspaces first and
-writes nothing unless every populated workspace passes.
+time invites mistakes. `check_batch` validates every populated workspace and
+returns the findings; `write_batch` writes every populated workspace. The
+caller decides what to do with the findings — since 1.0 the validator
+informs and never blocks (the maker decides when the geometry is complete;
+GuildModel's intake is the final gate).
 
 Qt-free: the caller (app.py) converts TextObjects to outline curves before
 building the BatchWorkspace items, exactly as the single-file export does.

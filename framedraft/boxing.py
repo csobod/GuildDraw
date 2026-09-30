@@ -18,7 +18,7 @@ from .document import Curve
 from .geometry import point_at_t
 
 _SAMPLES = 256       # polygon sample points around the curve
-_JOIN_ROUND = 1      # shapely round join — smooth offset, no mitre spikes
+_JOIN_ROUND = 1      # shapely round join — smooth offset, no miter spikes
 
 
 def lens_polygon(curve: Curve):
@@ -115,5 +115,5 @@ def finished_ab(shape_a: float, shape_b: float, depth_mm: float) -> tuple[float,
 
 def finished_dbl(shape_dbl: float, depth_mm: float) -> float:
     """Finished DBL = bare-shape DBL minus 2·depth — the beveled nasal edges sit
-    *depth* closer to centre than the bare-material edges, narrowing the gap."""
+    *depth* closer to center than the bare-material edges, narrowing the gap."""
     return shape_dbl - 2 * max(0.0, depth_mm)

@@ -12,21 +12,21 @@ Workflow:
 Special case: if the click is near the *intersection* of two curves, both
 curves are split simultaneously at the shared intersection point, producing
 four fragments.  The proximity threshold for detecting "near intersection" is
-_ISECT_SNAP_MM scene-millimetres.
+_ISECT_SNAP_MM scene-millimeters.
 """
 
 from __future__ import annotations
 
 import math
-from PySide6.QtCore import QObject, Signal, QPointF, Qt, QRect
+from PySide6.QtCore import QObject, Signal, QPointF, Qt
 from PySide6.QtGui  import QPen, QColor
 
-from ..canvas.items import CurveItem, curve_layer_locked
+from ..canvas.items import CurveItem
 from ..geometry import (
     intersect_curve_params, dedup_ts_mm, t_nearest,
-    split_curve_at_t, point_at_t,
+    split_curve_at_t, point_at_t, _DEDUP_TOL_MM,
 )
-from .trim import _visible_curves
+from .trim import _visible_curves, curve_item_at
 
 
 _HOVER_COLOR    = "#ffd580"
@@ -43,7 +43,7 @@ class SplitTool(QObject):
     # a single signal lets the app record ONE undo step for the whole click.
     split_applied  = Signal(list)
     status_message = Signal(str)
-    cancelled      = Signal()
+    canceled      = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -66,7 +66,7 @@ class SplitTool(QObject):
         self._view      = view
         self._curves_fn = curves_fn
         self.status_message.emit(
-            "Split: click a curve to split it at that point  |  Esc to exit"
+            "Split: click a curve to split it at that point  |  Esc to cancel"
         )
 
     def deactivate(self):
@@ -97,32 +97,38 @@ class SplitTool(QObject):
         px, py     = pos.x(), pos.y()
 
         # Find the split t, snapping to a nearby intersection if one exists
-        split_t = self._snap_to_intersection(target, all_curves, px, py)
+        split_t, crossing = self._snap_to_intersection(target, all_curves, px, py)
         if split_t is None:
             split_t = t_nearest(target, px, py)
 
         left, right = split_curve_at_t(target, split_t)
-        if right is None:
+        opened = right is None and left is not target   # closed curve opened
+        if right is None and not opened:
             self.status_message.emit(
                 "Split: click point is too close to an endpoint — "
                 "click somewhere in the middle of the curve"
             )
             return True
 
-        results = [left, right]
+        results = [left] if right is None else [left, right]
 
-        # Intersection-split: also split any other curve near the same point
+        # Intersection-split: the curves that actually cross the target at
+        # the snapped intersection are split there too. Proximity alone used
+        # to qualify, which cut a parallel line 1.2 mm away; and a curve on a
+        # locked layer stays whole (it still gave the snap point, as a locked
+        # curve still cuts in Trim).
         split_x, split_y = point_at_t(target, split_t)
+        is_locked = getattr(self._scene, "is_layer_locked", None)
         extra_pairs: list[tuple] = []
-        for other in all_curves:
-            if other is target:
+        for other in crossing:
+            if is_locked is not None and is_locked(other.layer):
                 continue
             o_t = t_nearest(other, split_x, split_y)
-            ox, oy = point_at_t(other, o_t)
-            if math.hypot(ox - split_x, oy - split_y) <= _ISECT_SNAP_MM:
-                ol, orr = split_curve_at_t(other, o_t)
-                if orr is not None:
-                    extra_pairs.append((other, [ol, orr]))
+            ol, orr = split_curve_at_t(other, o_t)
+            if orr is not None:
+                extra_pairs.append((other, [ol, orr]))
+            elif ol is not other:               # a closed curve, opened
+                extra_pairs.append((other, [ol]))
 
         self._clear_hover()
 
@@ -130,10 +136,11 @@ class SplitTool(QObject):
         self.split_applied.emit([(target, results)] + extra_pairs)
 
         n_extra = len(extra_pairs)
-        msg = "Split → 2 curves"
+        msg = ("Split → opened the closed curve at the click"
+               if opened else "Split → 2 curves")
         if n_extra:
             msg += f"  (+{n_extra} intersecting curve{'s' if n_extra>1 else ''} also split)"
-        msg += "  |  click to split more  |  Esc to exit"
+        msg += "  |  click to split more  |  Esc to cancel"
         self.status_message.emit(msg)
         return True
 
@@ -163,8 +170,8 @@ class SplitTool(QObject):
             return False
         if key == Qt.Key.Key_Escape:
             self._clear_hover()
-            self.status_message.emit("Split cancelled")
-            self.cancelled.emit()
+            self.status_message.emit("Split canceled")
+            self.canceled.emit()
             return True
         return False
 
@@ -173,31 +180,35 @@ class SplitTool(QObject):
     # ------------------------------------------------------------------
 
     def _item_at(self, scene_pos: QPointF) -> CurveItem | None:
-        if self._view is None:
-            return None
-        vp = self._view.mapFromScene(scene_pos)
-        t  = _HIT_TOL_PX
-        candidates = self._view.items(QRect(vp.x()-t, vp.y()-t, 2*t, 2*t))
-        return next((i for i in candidates
-                     if isinstance(i, CurveItem) and not curve_layer_locked(i)),
-                    None)
+        return curve_item_at(self._view, scene_pos, _HIT_TOL_PX)
 
     def _clear_hover(self):
         if self._hover_item is not None:
             self._hover_item.refresh()
             self._hover_item = None
 
-    def _snap_to_intersection(self, target, all_curves, px, py) -> float | None:
+    def _snap_to_intersection(self, target, all_curves, px, py) -> tuple:
         """
-        If the click (px, py) is within _ISECT_SNAP_MM of an intersection on
-        target, return the intersection's t value; otherwise return None.
+        The intersection on target nearest the click (px, py), if one lies
+        within _ISECT_SNAP_MM: returns (t, crossing), where crossing lists
+        the other curves that pass through that same point. (None, []) when
+        the click is not near an intersection.
         """
+        hits = []    # (distance to click, t on target, x, y, other)
         for other in all_curves:
             if other is target:
                 continue
-            ts = dedup_ts_mm(target, intersect_curve_params(target, other))
-            for t in ts:
+            for t in dedup_ts_mm(target, intersect_curve_params(target, other)):
                 ix, iy = point_at_t(target, t)
-                if math.hypot(ix - px, iy - py) <= _ISECT_SNAP_MM:
-                    return t
-        return None
+                d = math.hypot(ix - px, iy - py)
+                if d <= _ISECT_SNAP_MM:
+                    hits.append((d, t, ix, iy, other))
+        if not hits:
+            return None, []
+        _d, best_t, bx, by, _o = min(hits, key=lambda h: h[0])
+        crossing: list = []
+        for _d, _t, ix, iy, other in hits:
+            if (math.hypot(ix - bx, iy - by) <= _DEDUP_TOL_MM
+                    and not any(c is other for c in crossing)):
+                crossing.append(other)
+        return best_t, crossing

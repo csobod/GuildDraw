@@ -40,7 +40,7 @@ def _record_drag_step(kind: str, layer, prev, target, event) -> None:
         print(f"[draglog] !! JUMP >40px scale={scale:.4f} "
               f"hbar={hb} vbar={vb} prev={prev} target={target}", file=sys.stderr)
 
-# ---------- theme colour functions ----------
+# ---------- theme color functions ----------
 # All colors resolve through framedraft.theme (the single palette source);
 # these wrappers just add the QColor and keep call sites short.
 
@@ -57,9 +57,6 @@ def _handle_color() -> QColor:
 
 def _handle_fill() -> QColor:
     return QColor(theme.color("geometry.handle_fill"))
-
-def _handle_hover() -> QColor:
-    return QColor(theme.color("geometry.handle"))
 
 def _node_fill() -> QColor:
     return QColor(theme.color("geometry.node_fill"))
@@ -241,6 +238,7 @@ class NodeDot(QGraphicsEllipseItem):
         # the reference and sent the dot flying toward the anchor — the M32
         # "fly-away" report. scenePos()-based dragging is transform-independent.
         self._drag_active = False
+        self._drag_started = False
         self._grab_dx     = 0.0
         self._grab_dy     = 0.0
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, False)
@@ -289,16 +287,19 @@ class NodeDot(QGraphicsEllipseItem):
         if event.button() != Qt.MouseButton.LeftButton:
             event.ignore()
             return
-        if self._on_clicked:
+        # A press on the red (selected) node is how you drag it: deselect only
+        # on a release without a drag. Toggling here, a drag left it plain,
+        # and Delete then removed the whole curve instead of the node.
+        self._toggle_on_release = bool(self._on_clicked) and self._node_selected
+        if self._on_clicked and not self._toggle_on_release:
             self._on_clicked(self)
-        if self._on_drag_start:
-            self._on_drag_start()
         # Grab offset in SCENE coords: the node keeps its position relative to
         # the cursor for the whole drag, whatever the view transform does.
         gp = event.scenePos()
         self._grab_dx = self.pos().x() - gp.x()
         self._grab_dy = self.pos().y() - gp.y()
         self._drag_active = True
+        self._drag_started = False
         event.accept()   # become the mouse grabber (no ItemIsMovable to do it)
 
     def mouseMoveEvent(self, event):
@@ -307,6 +308,13 @@ class NodeDot(QGraphicsEllipseItem):
             return
         gp = event.scenePos()
         tx, ty = gp.x() + self._grab_dx, gp.y() + self._grab_dy
+        if not self._drag_started:
+            # Undo snapshot on the first real movement only — a click that
+            # merely selects the node must not add an undo step or dirty
+            # the document.
+            self._drag_started = True
+            if self._on_drag_start:
+                self._on_drag_start()
         if _DRAG_LOG:
             _record_drag_step("node", self._curve.layer,
                               (self.pos().x(), self.pos().y()), (tx, ty), event)
@@ -316,6 +324,9 @@ class NodeDot(QGraphicsEllipseItem):
 
     def mouseReleaseEvent(self, event):
         self._drag_active = False
+        if getattr(self, "_toggle_on_release", False) and not self._drag_started:
+            self._on_clicked(self)
+        self._toggle_on_release = False
         if self._on_drag_end:
             self._on_drag_end()
         event.accept()
@@ -350,7 +361,7 @@ class HandleDot(QGraphicsEllipseItem):
     """Movable Bézier control-point handle shown when a spline is selected.
 
     smooth=True (default): moving this handle also moves the sibling handle
-    symmetrically through the node — Fusion 360 "tangent lock" behaviour.
+    symmetrically through the node — Fusion 360 "tangent lock" behavior.
     Uses ItemIgnoresTransformations so it stays a constant screen size;
     drawn one px smaller than node dots so the two read differently.
     """
@@ -370,6 +381,7 @@ class HandleDot(QGraphicsEllipseItem):
         # Explicit scene-coordinate drag state (mirrors NodeDot — no
         # ItemIsMovable, so a mid-drag zoom/pan can't send the handle flying).
         self._drag_active = False
+        self._drag_started = False
         self._grab_dx     = 0.0
         self._grab_dy     = 0.0
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, False)
@@ -403,7 +415,7 @@ class HandleDot(QGraphicsEllipseItem):
         self._updating = False
 
     def hoverEnterEvent(self, event):
-        self.setBrush(QBrush(_handle_hover()))
+        self.setBrush(QBrush(_handle_color()))
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event):
@@ -414,12 +426,11 @@ class HandleDot(QGraphicsEllipseItem):
         if event.button() != Qt.MouseButton.LeftButton:
             event.ignore()
             return
-        if self._on_drag_start:
-            self._on_drag_start()
         gp = event.scenePos()
         self._grab_dx = self.pos().x() - gp.x()
         self._grab_dy = self.pos().y() - gp.y()
         self._drag_active = True
+        self._drag_started = False
         event.accept()
 
     def mouseMoveEvent(self, event):
@@ -428,6 +439,10 @@ class HandleDot(QGraphicsEllipseItem):
             return
         gp = event.scenePos()
         tx, ty = gp.x() + self._grab_dx, gp.y() + self._grab_dy
+        if not self._drag_started:
+            self._drag_started = True       # snapshot on first movement
+            if self._on_drag_start:
+                self._on_drag_start()
         if _DRAG_LOG:
             _record_drag_step("handle", self._curve.layer,
                               (self.pos().x(), self.pos().y()), (tx, ty), event)

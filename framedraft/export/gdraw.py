@@ -21,7 +21,7 @@ Backward compat:
     file exists on this machine, exactly as before).
   - Old files with temple.svg (no temple_r.svg) load temple.svg into temple_r.
   - Plain .svg files still open as before (single Front workspace only).
-  - Pre-1.2 files carry no Frame Fill swatch; the fill loads as a flat colour.
+  - Pre-1.2 files carry no Frame Fill swatch; the fill loads as a flat color.
 """
 
 import dataclasses
@@ -63,11 +63,31 @@ def _empty_ws_data() -> dict:
 
 
 def _cache_dir_for(doc_path: str) -> Path:
-    """Per-document extraction folder for embedded images."""
+    """Per-document extraction folder for embedded images. Falls back to a
+    temp directory when the home cache is unwritable (read-only or full
+    home) so the photos still show instead of silently vanishing."""
     key = hashlib.sha1(os.path.abspath(doc_path).encode("utf-8")).hexdigest()[:12]
     d = Path(_IMAGE_CACHE_ROOT) / key
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except OSError:
+        return Path(tempfile.mkdtemp(prefix=f"guilddraw-{key}-"))
+
+
+def _member_too_large(zf: zipfile.ZipFile, name: str, cap: int) -> bool:
+    """True when the member's UNCOMPRESSED size exceeds *cap* — checked from
+    the archive directory before anything is decompressed, so a small .gdraw
+    that inflates to hundreds of MB is refused rather than read into memory."""
+    try:
+        return zf.getinfo(name).file_size > cap
+    except KeyError:
+        return False
+
+
+# Embedded images are bounded like the SVG members: a photo or swatch that
+# inflates beyond this is skipped (the design still loads).
+_MAX_IMAGE_BYTES = 64 * 1024 * 1024
 
 
 def _embed_fill_image(zf: zipfile.ZipFile, tab: str, fill: dict | None) -> dict | None:
@@ -78,17 +98,23 @@ def _embed_fill_image(zf: zipfile.ZipFile, tab: str, fill: dict | None) -> dict 
     if not fill or not fill.get("image"):
         return fill
     src = fill["image"]
-    if src.startswith(_IMAGE_PREFIX):
-        return fill                     # already a member name (defensive)
     out = dict(fill)
     base = os.path.basename(src)
+    if src.startswith(_IMAGE_PREFIX):
+        # A member name that never got extracted (unwritable cache): no
+        # bytes to embed, so keep the bare name only.
+        out["image"] = base
+        return out
     if os.path.isfile(src):
         member = f"{_IMAGE_PREFIX}{tab}_fill_{base}"
         with open(src, "rb") as f:
             zf.writestr(member, f.read())
         out["image"] = member
     else:
-        out["image"] = base             # source gone — keep the name only
+        # Source gone (or a member name that never got extracted — the
+        # cache was unwritable): keep only the bare name, never a member
+        # name with no bytes behind it.
+        out["image"] = base
     return out
 
 
@@ -108,8 +134,8 @@ def _extract_fill_image(zf: zipfile.ZipFile, names: list, doc_path: str,
         return
     try:
         if p.startswith(_IMAGE_PREFIX):
-            if p not in names:
-                fill["image"] = ""            # damaged archive — colour fill
+            if p not in names or _member_too_large(zf, p, _MAX_IMAGE_BYTES):
+                fill["image"] = ""            # damaged archive — color fill
                 return
             member = os.path.basename(p)
             prefix = f"{tab}_fill_"
@@ -126,7 +152,7 @@ def _extract_fill_image(zf: zipfile.ZipFile, names: list, doc_path: str,
             if cand.startswith(doc_dir + os.sep) and os.path.isfile(cand):
                 fill["image"] = cand
     except OSError:
-        pass          # unwritable cache / unreadable member — colour fill only
+        pass          # unwritable cache / unreadable member — color fill only
 
 
 def _embed_face_images(zf: zipfile.ZipFile, tab: str, face_images: list) -> list:
@@ -139,12 +165,13 @@ def _embed_face_images(zf: zipfile.ZipFile, tab: str, face_images: list) -> list
         if not src:
             rewritten.append(fi)
             continue
-        if src.startswith(_IMAGE_PREFIX):
-            # Already a member name (defensive; save data normally carries
-            # resolved cache paths, not member names).
-            rewritten.append(fi)
-            continue
         base = os.path.basename(src)
+        if src.startswith(_IMAGE_PREFIX):
+            # A member name that was never extracted (unwritable cache):
+            # there are no bytes to embed, so persist the bare name rather
+            # than a member the archive will not contain.
+            rewritten.append(dataclasses.replace(fi, path=base))
+            continue
         if os.path.isfile(src):
             member = f"{_IMAGE_PREFIX}{tab}_{i}_{base}"
             with open(src, "rb") as f:
@@ -171,7 +198,7 @@ def _extract_face_images(zf: zipfile.ZipFile, names: list, doc_path: str,
             continue
         try:
             if p.startswith(_IMAGE_PREFIX):
-                if p not in names:
+                if p not in names or _member_too_large(zf, p, _MAX_IMAGE_BYTES):
                     continue                  # damaged archive — skip photo
                 if cache_dir is None:
                     cache_dir = _cache_dir_for(doc_path)
@@ -278,6 +305,13 @@ def load_gdraw(path: str) -> dict:
             svg_stem = _COMPAT_MAP.get(tab, tab)
             svg_name = f"{svg_stem}.svg"
             if svg_name not in names:
+                continue
+            if _member_too_large(zf, svg_name, _svg_mod._MAX_SVG_BYTES):
+                # Same cap load_svg applies, enforced BEFORE decompression.
+                result["errors"].append(
+                    f"{tab}: Refusing to open — {svg_name} inflates to "
+                    f"{zf.getinfo(svg_name).file_size // (1024 * 1024)} MB "
+                    f"(limit {_svg_mod._MAX_SVG_BYTES // (1024 * 1024)} MB).")
                 continue
             fd, tmp_path = tempfile.mkstemp(suffix=".svg")
             os.close(fd)

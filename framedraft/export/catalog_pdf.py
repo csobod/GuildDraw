@@ -2,7 +2,7 @@
 
 Lays the frame front and both temples out on one printable sheet with the
 design's file name, for a catalog page that shows a frame and its name. The
-front sits at the top, the two temples stacked beneath it, everything centred
+front sits at the top, the two temples stacked beneath it, everything centered
 horizontally and drawn at a uniform line weight. True size (1 mm = 1 mm on
 paper) when it fits; scaled down uniformly only if the content is taller than
 the page.
@@ -33,26 +33,18 @@ _ORDER = ("front", "temple_r", "temple_l")
 
 
 def _content_bbox(curves):
-    """(min_x, min_y, max_x, max_y) over the drawn extent of *curves*, or None."""
-    from ..geometry import arc_bbox
-    xs, ys = [], []
+    """(min_x, min_y, max_x, max_y) over the DRAWN extent of *curves*, or None.
+
+    Exact path bounds, not the Bézier control polygon: a hand-tuned lens with
+    long handles measured up to a third taller than it draws, which centered
+    the front several mm off and could shrink a page that would have fit."""
+    rect = QRectF()
     for c in curves:
-        if (c.kind == "arc" and c.radius and c.nodes
-                and c.start_angle is not None and c.end_angle is not None):
-            bx0, by0, bx1, by1 = arc_bbox(c.nodes[0].x, c.nodes[0].y, c.radius,
-                                          c.start_angle, c.end_angle)
-            xs.extend([bx0, bx1]); ys.extend([by0, by1])
-        elif c.kind in ("circle", "arc") and c.radius and c.nodes:
-            cx, cy, r = c.nodes[0].x, c.nodes[0].y, c.radius
-            xs.extend([cx - r, cx + r]); ys.extend([cy - r, cy + r])
-        else:
-            for n in c.nodes:
-                xs.append(n.x); ys.append(n.y)
-                if n.cp_in:  xs.append(n.cp_in.x);  ys.append(n.cp_in.y)
-                if n.cp_out: xs.append(n.cp_out.x); ys.append(n.cp_out.y)
-    if not xs:
+        if c.nodes:
+            rect = rect.united(build_path(c).boundingRect())
+    if rect.isNull():
         return None
-    return (min(xs), min(ys), max(xs), max(ys))
+    return (rect.left(), rect.top(), rect.right(), rect.bottom())
 
 
 def _draw_fill(painter, fill, clip: QRectF):
@@ -61,7 +53,7 @@ def _draw_fill(painter, fill, clip: QRectF):
     *fill* is the {"frame": …, "lens": [...]} record the app collects from the
     workspace's scene (see FrameScene.fill_paint_spec) — already in the same
     scene-mm space as the curves, so it rides the component transform the
-    strokes ride. Nothing here changes the geometry; it is the colour the
+    strokes ride. Nothing here changes the geometry; it is the color the
     maker set on canvas, printed.
 
     The fill comes from the OUTLINE and LENS layers whether or not those are
@@ -142,7 +134,7 @@ def paint_catalog(painter: QPainter, page_w_mm: float, page_h_mm: float,
     stack_h = sum(r[4] for r in rows) + _GAP_MM * (len(rows) - 1)
     cap_h   = 6.0 if show_caption else 0.0
     # The caption is pinned to the lower-right corner; the content block gets
-    # the space above it and is centred there.
+    # the space above it and is centered there.
     cap_reserve   = (cap_h + _CAP_GAP_MM) if show_caption else 0.0
     content_avail = avail_h - cap_reserve
 
@@ -156,13 +148,13 @@ def paint_catalog(painter: QPainter, page_w_mm: float, page_h_mm: float,
     painter.scale(px_per_mm, px_per_mm)         # work in mm
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-    # Centre the content block vertically in the area above the caption, then
+    # Center the content block vertically in the area above the caption, then
     # apply the maker's vertical offset (for a binding/spine margin). The
     # caption is unaffected — it stays pinned to the corner below.
     offset = float(settings.get("content_offset_mm", 0.0))
     y = _MARGIN_MM + max(0.0, (content_avail - stack_h * s) / 2.0) + offset
     for _key, curves, bb, w, h in rows:
-        place_x = _MARGIN_MM + (avail_w - w * s) / 2.0   # centre horizontally
+        place_x = _MARGIN_MM + (avail_w - w * s) / 2.0   # center horizontally
         _draw_component(painter, curves, place_x, y, s, bb, pen,
                         (fills or {}).get(_key))
         y += h * s + _GAP_MM * s
@@ -205,8 +197,8 @@ def _make_printer(path: str, paper: str):
     printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
     printer.setOutputFileName(path)
     if paper == "half_letter":
-        size = QPageSize(QSizeF(139.7, 215.9), QPageSize.Unit.Millimeter,
-                         "Half Letter")
+        w, h = PAPER_MM["half_letter"]
+        size = QPageSize(QSizeF(w, h), QPageSize.Unit.Millimeter, "Half Letter")
     else:
         size = QPageSize(QPageSize.PageSizeId.A5)
     printer.setPageSize(size)
@@ -223,7 +215,12 @@ def export_catalog_pdf(path: str, components: dict, settings: dict,
     printer = _make_printer(path, settings.get("paper", "a5"))
     page_mm = printer.pageRect(QPrinter.Unit.Millimeter)
     px_per_mm = printer.logicalDpiX() / 25.4
-    painter = QPainter(printer)
+    # begin() fails when the PDF cannot be opened (a read-only folder, a
+    # vanished drive); painting on regardless wrote nothing and the export
+    # still reported success.
+    painter = QPainter()
+    if not painter.begin(printer):
+        raise OSError(f"could not write {path}")
     try:
         paint_catalog(painter, page_mm.width(), page_mm.height(), px_per_mm,
                       components, caption, settings, fills)

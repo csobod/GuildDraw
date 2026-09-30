@@ -17,6 +17,8 @@ create an offscreen one). No QtWidgets dependency.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtGui import QFont, QFontMetricsF, QPainterPath, QTransform
 
 from .document import ControlPoint, Curve, SplineNode, TextObject
@@ -42,6 +44,49 @@ def text_outline_path(t: TextObject) -> QPainterPath:
         xf.rotate(-t.rotation)     # scene is y-down: CCW display = negative Qt angle
     xf.scale(t.size_mm / cap, t.size_mm / cap)
     return xf.map(path)
+
+
+def text_bbox_center(t: TextObject) -> tuple[float, float]:
+    """Center (scene mm) of the rendered glyph footprint of *t*."""
+    c = text_outline_path(t).boundingRect().center()
+    return c.x(), c.y()
+
+
+def normalize_rotation(deg: float) -> float:
+    """Fold an angle into (-180, 180] so the Edit Text dialog shows the
+    short form (170°, not 530° or -190°)."""
+    r = (deg + 180.0) % 360.0 - 180.0
+    return 180.0 if r == -180.0 else r
+
+
+def mirror_text(t: TextObject, axis_x: float = 0.0,
+                horizontal: bool = False) -> TextObject:
+    """Mirror a TextObject across the same axis ``geometry.mirror_curve`` uses
+    -- but readable.
+
+    A true reflection of lettering is mirror writing, which no temple wants
+    engraved. The copy therefore keeps its glyphs unreflected and instead:
+
+    * lands on the reflected footprint (the glyph bounding box is mirrored
+      and the copy is centered on it), and
+    * has its rotation transformed so the text's "up" side follows the
+      reflection. On a temple that is the side facing the brow edge: the
+      right temple's engraving sits at rotation 180 (drawn hinge-left,
+      brow-down), the left temple's at 0, and each reads upright from the
+      outside when worn. Reading direction reverses as a consequence.
+
+    horizontal=False: vertical axis at x = axis_x (rotation -> -rotation).
+    horizontal=True : horizontal axis at y = 0 (rotation -> 180 - rotation).
+    """
+    rot = normalize_rotation(180.0 - t.rotation if horizontal else -t.rotation)
+    cx, cy = text_bbox_center(t)
+    if horizontal:
+        tx, ty = cx, -cy
+    else:
+        tx, ty = 2.0 * axis_x - cx, cy
+    probe = replace(t, rotation=rot, anchor_x=0.0, anchor_y=0.0)
+    px, py = text_bbox_center(probe)
+    return replace(t, rotation=rot, anchor_x=tx - px, anchor_y=ty - py)
 
 
 def text_to_curves(t: TextObject) -> list[Curve]:

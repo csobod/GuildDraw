@@ -126,7 +126,7 @@ def test_frame_fill_and_lens_fill_stack_without_fighting():
 # ------------------------------------------------------------------ intensity
 
 
-def test_intensity_of_one_is_the_colour_as_picked():
+def test_intensity_of_one_is_the_color_as_picked():
     assert deepen_tint("#cbeafc", 1.0).name() == "#cbeafc"
 
 
@@ -170,7 +170,7 @@ def test_alpha_survives_deepening():
     assert abs(deepen_tint(c, 3.0).alphaF() - 0.65) < 1e-3
 
 
-def test_default_slider_position_is_the_colour_as_picked():
+def test_default_slider_position_is_the_color_as_picked():
     assert intensity_from_slider(slider_from_intensity(1.0)) == pytest.approx(1.0)
 
 
@@ -205,6 +205,6 @@ def test_intensity_and_opacity_are_independent():
     scene.set_lens_fill_intensity(5.0)
     scene.set_lens_fill_visible(True)
     stops = scene._lens_fill_items[0].brush().gradient().stops()
-    # Deepening changes the colour; it must not touch how much shows through.
+    # Deepening changes the color; it must not touch how much shows through.
     assert all(abs(c.alphaF() - 0.4) < 1e-3 for _pos, c in stops)
     assert stops[0][1].name() == deepen_tint(DEFAULT_LENS_FILL_TOP, 5.0).name()

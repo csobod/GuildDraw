@@ -1,10 +1,10 @@
-"""BPI tint colour reference — a shipped name → hex table and its picker popup.
+"""BPI tint color reference — a shipped name → hex table and its picker popup.
 
 BPI (Brain Power Inc.) are the dominant supplier of optical lens dyes, so when
-a maker reaches for a lens colour they usually already have a BPI tint name in
+a maker reaches for a lens color they usually already have a BPI tint name in
 mind. This module ships an approximate on-screen hex for each tint in their
 published catalog and offers it as a swatch grid, so picking "B&L G-15" is one
-click instead of a guess in the colour wheel.
+click instead of a guess in the color wheel.
 
 Only the numbers ship: ``resources/bpi_tints.json`` holds names and hex values,
 which the popup paints as its own chips. No BPI artwork is bundled or drawn.
@@ -134,7 +134,7 @@ class TintPicker(QWidget):
         lay.addWidget(self._count)
 
         footer = QLabel(
-            "Approximate screen colours from BPI's published swatches — "
+            "Approximate screen colors from BPI's published swatches — "
             "unofficial, not a dye-lot match. Names are BPI's.")
         footer.setWordWrap(True)
         footer.setStyleSheet("color: palette(mid); font-size: 10px;")
@@ -152,7 +152,7 @@ class TintPicker(QWidget):
 
         Hiding in place would leave the filtered-out cells as holes, so the
         survivors are re-packed from the top left — a search for "gray" reads
-        as a short block of greys, not a scatter across seven rows.
+        as a short block of grays, not a scatter across seven rows.
         """
         needle  = text.strip().lower()
         shown   = 0

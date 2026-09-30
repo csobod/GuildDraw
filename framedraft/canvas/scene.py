@@ -1,36 +1,34 @@
 import math
 
-from PySide6.QtWidgets import QGraphicsScene, QGraphicsPixmapItem, QGraphicsPathItem
+from PySide6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem, QGraphicsPathItem,
+                               QStyleOptionGraphicsItem)
 from PySide6.QtCore import QRectF, Qt, QPointF, QTimer
 from PySide6.QtGui import (QBrush, QColor, QLinearGradient, QPen, QPixmap,
                           QPainterPath, QTransform)
 
-from ..document import Curve, Layer
+from ..document import Curve, Layer, MIRRORED_LAYERS
 from . import items as _items
 from .mirror import MirrorAxis
 
 _DEFAULT_RECT = QRectF(-150, -100, 300, 200)   # mm
 
-_TEXT_DRAG_THRESHOLD_PX = 4   # screen px of travel before a text drag begins
-
 
 class TextItem(QGraphicsPathItem):
-    """Rendered TextObject — selectable, draggable, double-click to re-edit.
+    """Rendered TextObject — selectable, double-click to re-edit.
 
     The glyph path is built relative to the anchor (anchor at item origin)
-    and the item is positioned AT the anchor, so Qt's move machinery maps
-    directly onto anchor_x / anchor_y.
+    and the item is positioned AT the anchor, so a plain setPos is a move.
+    Dragging goes through CanvasView's drag-to-move path — the same one
+    curves and dims use — so a mixed selection moves as one and the undo
+    snapshot, gizmo and measurements all follow. (Qt's own ItemIsMovable
+    drag moved the text alone and bypassed all of that.)
     """
 
-    def __init__(self, text_obj, on_drag_start=None, on_double_click=None):
+    def __init__(self, text_obj, on_double_click=None):
         super().__init__()
         self.text_obj = text_obj
-        self._on_drag_start   = on_drag_start
         self._on_double_click = on_double_click
-        self._press_screen    = None
-        self._drag_started    = False
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, True)
-        self.setFlag(self.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(self.GraphicsItemFlag.ItemSendsGeometryChanges, True)
         self.setZValue(10)
         self.refresh()
@@ -49,41 +47,47 @@ class TextItem(QGraphicsPathItem):
         self.setBrush(QBrush(fill))
         self.setPos(t.anchor_x, t.anchor_y)
 
+    def sync_pos(self):
+        """Move the item to the anchor without rebuilding the glyph path
+        (a drag step is a translation; the outline is anchor-relative)."""
+        t = self.text_obj
+        self.setPos(t.anchor_x, t.anchor_y)
+
     def itemChange(self, change, value):
         if change == self.GraphicsItemChange.ItemPositionHasChanged:
             self.text_obj.anchor_x = self.pos().x()
             self.text_obj.anchor_y = self.pos().y()
         return super().itemChange(change, value)
 
-    def mousePressEvent(self, event):
-        self._press_screen = event.screenPos()
-        self._drag_started = False
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        # Push the undo snapshot once, just before the first real movement
-        # (a plain click-to-select must not create an undo step).
-        if (not self._drag_started and self._press_screen is not None
-                and (event.screenPos() - self._press_screen).manhattanLength()
-                    > _TEXT_DRAG_THRESHOLD_PX):
-            self._drag_started = True
-            if self._on_drag_start:
-                self._on_drag_start()
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self._press_screen = None
-        super().mouseReleaseEvent(event)
-
     def mouseDoubleClickEvent(self, event):
-        if self._on_double_click:
+        # A locked (or hidden) layer strips the selectable flag; Qt still
+        # delivers the double-click, so the guard lives here.
+        if (self._on_double_click
+                and self.flags() & self.GraphicsItemFlag.ItemIsSelectable):
             self._on_double_click(self.text_obj)
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
 
-# Layers whose curves cast a live mirror ghost
-_GHOST_LAYERS = {Layer.LENS, Layer.HINGE, Layer.OUTLINE, Layer.SCULPT}
+    def paint(self, painter, option, widget=None):
+        # Same selection cue as a curve (halo under the glyphs) instead of
+        # Qt's dashed bounding box.
+        selected = bool(option.state & option.state.State_Selected)
+        if selected:
+            halo = QPen(_items._selection_halo_color(),
+                        self.text_obj.line_weight + 3.0)
+            halo.setCosmetic(True)
+            halo.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(halo)
+            painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            painter.drawPath(self.path())
+        plain = QStyleOptionGraphicsItem(option)
+        plain.state &= ~plain.state.State_Selected
+        super().paint(painter, plain, widget)
+
+# Layers whose curves cast a live mirror ghost: everything the DXF export
+# mirrors, plus an OPEN outline half (see _ghost_eligible).
+_GHOST_LAYERS = MIRRORED_LAYERS | {Layer.OUTLINE}
 
 # Default display size for an uncalibrated face image (mm).
 # The image is scaled to fit inside this box while preserving aspect ratio.
@@ -111,14 +115,14 @@ def _mirror_path(curve: Curve, mirror) -> QPainterPath:
 _FILL_STITCH_TOL_MM = 0.1
 
 # Frame Fill from a material swatch. The image is scaled to span the stock
-# blank's width and centred on the origin — the blank guide's own anchor — so
+# blank's width and centered on the origin — the blank guide's own anchor — so
 # the frame shows the piece of sheet it would really be cut from. Used until
 # the app tells the scene the workspace's actual blank width.
 DEFAULT_FILL_BLANK_W_MM = 170.0
 
 # Long-side cap for a loaded swatch (px). A 170 mm blank at 300 dpi is ~2000 px,
 # so this still oversamples the largest PNG export while keeping a 6000-px
-# catalogue photo from pinning ~100 MB in the scene for the session.
+# catalog photo from pinning ~100 MB in the scene for the session.
 FILL_IMAGE_MAX_PX = 4096
 
 # Lens Fill shipped defaults. A pale-over-deep blue reads as a gradient tint at
@@ -130,9 +134,9 @@ DEFAULT_LENS_FILL_OPACITY = 0.65
 
 # Tint intensity — how deeply the dye reads, independent of how much the
 # overlay covers what is behind it (that is opacity). Reference swatches,
-# BPI's included, show a dye at one modest depth over white, so a colour
+# BPI's included, show a dye at one modest depth over white, so a color
 # picked from one is usually too pale to represent the lens a maker means.
-# 1.0 is the colour exactly as picked.
+# 1.0 is the color exactly as picked.
 DEFAULT_LENS_FILL_INTENSITY = 1.0
 LENS_FILL_INTENSITY_MIN     = 0.5
 LENS_FILL_INTENSITY_MAX     = 8.0
@@ -143,12 +147,12 @@ def deepen_tint(color, intensity: float) -> QColor:
 
     Beer–Lambert: a dye's transmission falls off exponentially with depth, so
     doubling the depth squares the transmission. Working per channel on
-    transmission (the colour over white) rather than on the colour itself has
+    transmission (the color over white) rather than on the color itself has
     two properties that matter here — it can never leave the 0…1 range, so no
     channel clamps and skews the hue the way scaling distance-from-white does,
-    and it converges on the dye's own colour rather than on black.
+    and it converges on the dye's own color rather than on black.
 
-    intensity < 1 thins the tint, 1.0 is the colour as picked, > 1 deepens it.
+    intensity < 1 thins the tint, 1.0 is the color as picked, > 1 deepens it.
     Alpha is carried through untouched.
     """
     c = QColor(color)
@@ -244,6 +248,9 @@ class FrameScene(QGraphicsScene):
         self._face_items:        list[QGraphicsPixmapItem] = []
         self._face_drag_offsets: list[QPointF]            = []
         self._canvas_locked:     list[bool]               = []
+        # Last calibration applied; a photo added afterwards is shown at this
+        # scale straight away (it used to get the default fit until reload).
+        self._face_px_per_mm: float | None = None
         self._cross_items: list = []
         self._curve_items: dict = {}   # id(Curve) -> CurveItem
         self._ghost_items: dict = {}   # id(Curve) -> QGraphicsPathItem
@@ -265,7 +272,7 @@ class FrameScene(QGraphicsScene):
         self._fill_opacity: float = 0.50
         self._fill_item: QGraphicsPathItem | None = None
         # Material swatch. When a pixmap is loaded the profile is painted with
-        # it instead of the flat colour; the colour is kept so clearing the
+        # it instead of the flat color; the color is kept so clearing the
         # swatch returns to exactly what the maker had picked.
         self._fill_image_path: str = ""
         self._fill_image_pixmap: QPixmap | None = None
@@ -324,8 +331,11 @@ class FrameScene(QGraphicsScene):
         self._canvas_locked.append(True)
 
         w, h = float(pixmap.width()), float(pixmap.height())
-        default_scale = min(_DEFAULT_IMG_WIDTH_MM / w, _DEFAULT_IMG_HEIGHT_MM / h)
-        self._apply_one_face_scale(idx, default_scale)
+        if self._face_px_per_mm:
+            scale = 1.0 / self._face_px_per_mm
+        else:
+            scale = min(_DEFAULT_IMG_WIDTH_MM / w, _DEFAULT_IMG_HEIGHT_MM / h)
+        self._apply_one_face_scale(idx, scale)
 
         if idx == 0:
             self._update_scene_rect_for_face()
@@ -337,6 +347,8 @@ class FrameScene(QGraphicsScene):
         self._face_items.clear()
         self._face_drag_offsets.clear()
         self._canvas_locked.clear()
+        self._face_px_per_mm = None
+        self._update_scene_rect_for_face()   # back to the default extents
 
     def remove_face(self, index: int):
         if not (0 <= index < len(self._face_items)):
@@ -364,7 +376,12 @@ class FrameScene(QGraphicsScene):
 
     def set_face_calibration(self, px_per_mm: float):
         """Rescale all reference images to the given calibration."""
-        if px_per_mm <= 0 or not self._face_items:
+        if px_per_mm <= 0:
+            return
+        # Kept even with no photo yet: the next photo added takes this scale
+        # (a scale typed first was forgotten by the photo that followed).
+        self._face_px_per_mm = px_per_mm
+        if not self._face_items:
             return
         mm_per_px = 1.0 / px_per_mm
         for idx, item in enumerate(self._face_items):
@@ -542,7 +559,20 @@ class FrameScene(QGraphicsScene):
             if self._fill_item is not None:
                 self._fill_item.setVisible(False)
             return "ok"
+        if self._fill_shown():
+            # Already up, and every geometry edit re-stitches it on its own
+            # (_schedule_fill_rebuild): a tab switch asking again recomputed
+            # the whole profile for nothing.
+            return "ok"
         path, status = self._compute_fill()
+        if status == "empty" and not self.is_layer_visible(Layer.OUTLINE):
+            # The outline is only hidden: the fill is on, and comes back with
+            # the layer (as rebuild_fill has it). Refusing here switched it
+            # off for good on a tab round trip or a reload.
+            self._fill_visible = True
+            if self._fill_item is not None:
+                self._fill_item.setVisible(False)
+            return "ok"
         if status != "ok":
             self._fill_visible = False
             if self._fill_item is not None:
@@ -555,21 +585,44 @@ class FrameScene(QGraphicsScene):
     def set_fill_color(self, color):
         """color: QColor or '#rrggbb' string."""
         self._fill_color = QColor(color)
-        self.rebuild_fill()
+        if not self._restyle_fill():
+            self.rebuild_fill()
 
     def set_fill_opacity(self, opacity: float):
         self._fill_opacity = max(0.0, min(1.0, opacity))
-        self.rebuild_fill()
+        if not self._restyle_fill():
+            self.rebuild_fill()
 
-    def set_fill_image(self, path: str) -> bool:
-        """Paint the frame profile with a material swatch instead of a colour.
+    def _fill_shown(self) -> bool:
+        return (self._fill_visible and self._fill_item is not None
+                and self._fill_item.isVisible())
+
+    def _restyle_fill(self) -> bool:
+        """Repaint the fill on show in the current color, opacity or swatch,
+        keeping its path: the outline has not moved, so re-stitching it (tens
+        of milliseconds on a real frame) on every slider tick was waste.
+        False when nothing is on show; the caller rebuilds."""
+        if not self._fill_shown():
+            return False
+        self._fill_item.setBrush(self._fill_brush())
+        self._fill_item.setOpacity(
+            self._fill_opacity if self.has_fill_image() else 1.0)
+        return True
+
+    def set_fill_image(self, path: str, reload: bool = False) -> bool:
+        """Paint the frame profile with a material swatch instead of a color.
 
         *path* is any readable image — a supplier's acetate sample sheet is the
         case this exists for. Returns False when the file can't be read as an
-        image, leaving the colour fill untouched; an empty path clears back to
-        the colour."""
+        image, leaving the color fill untouched; an empty path clears back to
+        the color."""
         if not path:
             self.clear_fill_image()
+            return True
+        if (not reload and path == self._fill_image_path
+                and self._fill_image_pixmap is not None):
+            # Already loaded — a tab switch re-applied it and decoded the
+            # file from disk each time (a large JPEG, a tenth of a second).
             return True
         pm = QPixmap(path)
         if pm.isNull():
@@ -580,14 +633,18 @@ class FrameScene(QGraphicsScene):
                            Qt.TransformationMode.SmoothTransformation)
         self._fill_image_path = path
         self._fill_image_pixmap = pm
-        self.rebuild_fill()
+        if not self._restyle_fill():
+            self.rebuild_fill()
         return True
 
     def clear_fill_image(self):
-        """Back to the flat colour fill, keeping the colour as it was picked."""
+        """Back to the flat color fill, keeping the color as it was picked."""
+        if self._fill_image_pixmap is None and not self._fill_image_path:
+            return                               # already the color
         self._fill_image_path = ""
         self._fill_image_pixmap = None
-        self.rebuild_fill()
+        if not self._restyle_fill():
+            self.rebuild_fill()
 
     def has_fill_image(self) -> bool:
         return self._fill_image_pixmap is not None
@@ -602,7 +659,8 @@ class FrameScene(QGraphicsScene):
         if w <= 0.0 or w == self._fill_blank_w:
             return
         self._fill_blank_w = w
-        self.rebuild_fill()
+        if not self._restyle_fill():               # the swatch's scale only
+            self.rebuild_fill()
 
     def fill_blank_width(self) -> float:
         return self._fill_blank_w
@@ -636,7 +694,7 @@ class FrameScene(QGraphicsScene):
                 "brush":   self._fill_brush(),
                 # Mirrors _apply_fill_path: a texture brush has no alpha of
                 # its own, so the fading is the painter's job for a swatch and
-                # the brush's for a colour.
+                # the brush's for a color.
                 "opacity": self._fill_opacity if self.has_fill_image() else 1.0}
 
     def lens_fill_paint_spec(self) -> list:
@@ -721,7 +779,7 @@ class FrameScene(QGraphicsScene):
         self._fill_item.setBrush(self._fill_brush())
         # A texture brush has no alpha of its own, so the item does the fading
         # for a swatch — the face photo reads through it exactly as it does
-        # through a colour. Colour keeps its alpha in the brush (item opacity
+        # through a color. Color keeps its alpha in the brush (item opacity
         # 1.0) so the two paths can't compound.
         self._fill_item.setOpacity(
             self._fill_opacity if self.has_fill_image() else 1.0)
@@ -731,9 +789,9 @@ class FrameScene(QGraphicsScene):
 
     def _fill_brush(self) -> QBrush:
         """Brush for the frame profile: the material swatch when one is loaded,
-        otherwise the flat colour at its own alpha.
+        otherwise the flat color at its own alpha.
 
-        The swatch is scaled to span the blank's width and centred vertically on
+        The swatch is scaled to span the blank's width and centered vertically on
         the origin, matching how the Stock Blank guide sits — so what fills the
         frame is the part of the sheet under it. Qt tiles a texture brush, so
         geometry drawn past the blank continues the pattern instead of falling
@@ -763,6 +821,12 @@ class FrameScene(QGraphicsScene):
                 self._fill_item.setVisible(False)
             return
         path, status = self._compute_fill()
+        if status == "empty" and not self.is_layer_visible(Layer.OUTLINE):
+            # The outline is merely hidden, not broken: hide the fill with it
+            # and let it come back when the layer does.
+            if self._fill_item is not None:
+                self._fill_item.setVisible(False)
+            return
         if status != "ok":
             self._fill_visible = False
             if self._fill_item is not None:
@@ -785,7 +849,13 @@ class FrameScene(QGraphicsScene):
             self._lens_fill_visible = False
             self._clear_lens_fill_items()
             return "ok"
+        if self._lens_fill_visible and self._lens_fill_items:
+            return "ok"                          # already up (see set_fill_visible)
         paths, status = self._compute_lens_fill()
+        if status == "empty" and not self.is_layer_visible(Layer.LENS):
+            self._lens_fill_visible = True       # hidden with its layer (above)
+            self._clear_lens_fill_items()
+            return "ok"
         if status != "ok":
             self._lens_fill_visible = False
             self._clear_lens_fill_items()
@@ -798,17 +868,29 @@ class FrameScene(QGraphicsScene):
         """top/bottom: QColor or '#rrggbb'. Bottom is the lower gradient stop."""
         self._lens_fill_top    = QColor(top)
         self._lens_fill_bottom = QColor(bottom)
-        self.rebuild_lens_fill()
+        if not self._restyle_lens_fill():
+            self.rebuild_lens_fill()
 
     def set_lens_fill_opacity(self, opacity: float):
         self._lens_fill_opacity = max(0.0, min(1.0, opacity))
-        self.rebuild_lens_fill()
+        if not self._restyle_lens_fill():
+            self.rebuild_lens_fill()
 
     def set_lens_fill_intensity(self, intensity: float):
         self._lens_fill_intensity = max(
             LENS_FILL_INTENSITY_MIN,
             min(LENS_FILL_INTENSITY_MAX, float(intensity)))
-        self.rebuild_lens_fill()
+        if not self._restyle_lens_fill():
+            self.rebuild_lens_fill()
+
+    def _restyle_lens_fill(self) -> bool:
+        """New gradients on the lens items already shown, keeping their paths
+        (see _restyle_fill). False when none are on show."""
+        if not (self._lens_fill_visible and self._lens_fill_items):
+            return False
+        for it in self._lens_fill_items:
+            it.setBrush(QBrush(self._lens_gradient(it.path().boundingRect())))
+        return True
 
     def lens_fill_state(self) -> dict:
         return {"visible":   self._lens_fill_visible,
@@ -816,11 +898,6 @@ class FrameScene(QGraphicsScene):
                 "bottom":    self._lens_fill_bottom.name(),
                 "opacity":   self._lens_fill_opacity,
                 "intensity": self._lens_fill_intensity}
-
-    def lens_fill_status(self) -> str:
-        """Readiness of the LENS apertures for filling, without drawing
-        anything: ``"ok"`` / ``"leak"`` / ``"empty"`` (see set_lens_fill_visible)."""
-        return self._compute_lens_fill()[1]
 
     def _compute_lens_fill(self):
         """Resolve one fill region per lens. Returns ``(list[QPainterPath] |
@@ -882,6 +959,9 @@ class FrameScene(QGraphicsScene):
             self._clear_lens_fill_items()
             return
         paths, status = self._compute_lens_fill()
+        if status == "empty" and not self.is_layer_visible(Layer.LENS):
+            self._clear_lens_fill_items()      # hidden with its layer, not off
+            return
         if status != "ok":
             self._lens_fill_visible = False
             self._clear_lens_fill_items()
@@ -993,9 +1073,7 @@ class FrameScene(QGraphicsScene):
         self._text_edit_cb = cb
 
     def add_text(self, text_obj):
-        item = TextItem(text_obj,
-                        on_drag_start=self._dim_drag_cb,
-                        on_double_click=self._text_edit_cb)
+        item = TextItem(text_obj, on_double_click=self._text_edit_cb)
         self.addItem(item)
         self._text_items[id(text_obj)] = item
         self._apply_layer_state_to_text(item)
@@ -1007,9 +1085,16 @@ class FrameScene(QGraphicsScene):
             self.removeItem(item)
 
     def refresh_text(self, text_obj):
+        """Rebuild the glyph outline (text, font, size, rotation changed)."""
         item = self._text_items.get(id(text_obj))
         if item:
             item.refresh()
+
+    def move_text(self, text_obj):
+        """Follow a changed anchor only — no glyph rebuild (drag hot path)."""
+        item = self._text_items.get(id(text_obj))
+        if item:
+            item.sync_pos()
 
     def _apply_layer_state_to_text(self, item):
         layer   = item.text_obj.layer
@@ -1017,7 +1102,6 @@ class FrameScene(QGraphicsScene):
         item.setVisible(visible)
         interactable = visible and not self.is_layer_locked(layer)
         item.setFlag(item.GraphicsItemFlag.ItemIsSelectable, interactable)
-        item.setFlag(item.GraphicsItemFlag.ItemIsMovable,    interactable)
         if not interactable:
             item.setSelected(False)
 
@@ -1042,32 +1126,37 @@ class FrameScene(QGraphicsScene):
             self.removeItem(item)
 
     # ------------------------------------------------------------------
-    # Printing support (M8 — 1:1 print / PDF)
+    # Selection
+    # ------------------------------------------------------------------
+
+    def select_items(self, items, clear: bool = True) -> None:
+        """Select *items* with ONE selectionChanged pass instead of one per
+        item. Every pass rebuilds the edit-tool dots and the app's selection
+        UI, so a 300-curve select-all used to cost seconds."""
+        self.blockSignals(True)
+        try:
+            if clear:
+                self.clearSelection()
+            for it in items:
+                it.setSelected(True)
+        finally:
+            self.blockSignals(False)
+        self.selectionChanged.emit()
+
+    # ------------------------------------------------------------------
+    # Content extents
     # ------------------------------------------------------------------
 
     def geometry_rect(self) -> QRectF:
         """Scene-mm bbox of visible curves, mirror ghosts, and texts.
-        Excludes guides, face photos, and the origin cross — this is the
-        extent that matters for a 1:1 paper test fit."""
+        Excludes guides, face photos, and the origin cross — what Zoom to
+        Fit frames."""
         rect = QRectF()
         for items in (self._curve_items, self._ghost_items, self._text_items):
             for it in items.values():
                 if it.isVisible():
                     rect = rect.united(it.sceneBoundingRect())
         return rect
-
-    def begin_print(self) -> list:
-        """Hide screen-only chrome (face photos, origin cross) for a print
-        render. Returns the hidden items for end_print."""
-        hidden = [it for it in (self._face_items + self._cross_items)
-                  if it.isVisible()]
-        for it in hidden:
-            it.setVisible(False)
-        return hidden
-
-    def end_print(self, hidden: list):
-        for it in hidden:
-            it.setVisible(True)
 
     # ------------------------------------------------------------------
     # Origin cross

@@ -5,13 +5,18 @@ design. Draw a frame front, temples, and hinge pockets; verify them against a
 calibrated face photo; export clean DXF for CNC machining (GuildModel) — and
 nothing else.
 
-Built with Python + PySide6 (Qt 6). Scene units are true millimetres (1 scene
+Built with Python + PySide6 (Qt 6). Scene units are true millimeters (1 scene
 unit = 1 mm) end to end: what you draw is what gets cut.
 
-**Status: v1.2.0 — stable.** All drafting features are complete and tested
-(511-test suite), and the full hardware round-trip is proven: physical frames
-have been cut on GuildModel from GuildDraw-exported DXF. The 1.2 round is about
-seeing the frame before it is cut: lens tints with a BPI colour reference, the
+**Status: v1.3.0 — stable.** All drafting features are complete and tested
+(691-test suite), and the full hardware round-trip is proven: physical frames
+have been cut on GuildModel from GuildDraw-exported DXF. The 1.3 round serves
+the hand-made workflow and finishes engraving text as a first-class object:
+*Print Front + Temples* lays the three pieces out at 1:1 on your own paper as
+cutting templates, engraving text now copies, pastes, transforms and travels
+with Mirror Copy (readable, not mirror-written), and Delete works from the
+Layers panel (see *New in 1.3*). The 1.2 round is about
+seeing the frame before it is cut: lens tints with a BPI color reference, the
 frame profile filled with a real material swatch, and both of those printable
 on the catalog sheet (see *New in 1.2*). The 1.1 round taught the outline layer
 to carry decorative openings — an aviator's bridge keyhole, a cut-out temple —
@@ -29,7 +34,7 @@ files (see *New in 1.0*).
   `.gdraw` project file, each with its own layers, guides, and undo history.
 - **Drawing tools**: line, spline (centripetal Catmull-Rom), circle, arc, with
   node/handle editing, trim, split, offset, join/explode, and a Transform
-  dialog (scale/rotate about selection centre or origin).
+  dialog (scale/rotate about selection center or origin).
 - **Mirror system**: live ghost preview across the bridge axis, one-click bake,
   mirror-close, and Mirror Copy between temple workspaces.
 - **Snapping**: nodes, handles, midpoints, quadrants, on-curve nearest point,
@@ -42,17 +47,250 @@ files (see *New in 1.0*).
 - **ENGRAVING text**: re-editable text objects on temples, converted to
   outline splines only at DXF export time.
 - **Visualization**: frame fill overlay (outline minus lenses, over the photo),
-  lens tint overlay with a two-colour vertical gradient and a BPI tint colour
+  lens tint overlay with a two-color vertical gradient and a BPI tint color
   reference, print/PDF at exact 1:1 scale with a 50 mm verification ruler for
   paper test-fits.
+- **Cutting templates**: *Print Front + Temples* lays the frame front and both
+  temples out at true size on US Letter, Legal, Tabloid, A3, A4, A5 or Half
+  Letter, as vectors with a tick-marked ruler on every page — print, glue to
+  the blank, saw to the line.
 - **Clean DXF out**: R2000 SPLINE entities (exact Bézier → B-spline, never
   flattened), strict layer vocabulary, per-workspace validation, and batch
   export of all four workspaces in one go.
 
+## New in 1.3
+
+- **Print Front + Temples** — File ▸ *Print Front + Temples (1:1 Templates)…*
+  and File ▸ Export ▸ *PDF Front + Temples…* lay the frame front and both
+  temples out at exactly 1 mm = 1 mm, stacked and named on the paper you
+  choose, as crisp vectors in each layer's print ink. A piece that will not fit
+  under the previous one starts a new page, and every page carries a
+  tick-marked 100 mm ruler (50 mm on small sheets) and a page counter, so a
+  scaled print is caught before anything is cut. Each workspace prints what it
+  shows — its visible layers, the mirror ghost (a half-drawn front prints
+  whole) and its engraving text. Paper size (US Letter, Legal, Tabloid, A3, A4,
+  A5, Half Letter), orientation (automatic picks the fewest pages), line weight
+  and the piece labels live in *Preferences ▸ Print & PDF*. Requested by a maker who
+  glues the drawing to the blank and cuts the frame by hand.
+- **Engraving text is a first-class object.** Copy, Paste and Duplicate carry
+  text objects (with the +5 mm offset and across workspaces, landing on REF
+  where ENGRAVING does not exist); Transform scales a text's size and turns its
+  rotation along with the anchor; a drag or a gizmo move on a mixed selection
+  takes the text along; "select all on layer" and Alt+click cycling see text
+  too. Previously a text object could only be moved on its own and re-typed.
+- **Mirror Copy carries the engraving, readable.** Copying Temple R to L (or
+  back) now brings the text with it, on the reflected footprint but *not*
+  mirror-written: the rotation is transformed so the side of the lettering
+  that faces the brow edge follows the temple, which is what puts an upright,
+  outward-facing engraving on both arms. Change the words on the copy and the
+  placement and style stay identical.
+- **Delete works from the Layers panel.** Select one or several object rows in
+  the tree (Ctrl/Shift-click) and press Delete or Backspace. Focus used to sit
+  in the tree after a click, where the canvas's Delete never saw the key.
+- **1:1 print and PDF draw the engraving.** The current-view print rendered
+  the curves but skipped text objects; a temple with only text reported
+  "nothing to print".
+- **Tooltips wrap, and the ? switches them off.** Carried over from
+  GuildModel so the two apps read alike: a tooltip is laid out in balanced
+  lines of about fifty-six characters instead of one ribbon across the
+  screen, and the **?** at the foot of the toolbar turns tooltips off
+  everywhere and back on. The choice is remembered, and the button's own tip
+  always shows. Each tool's tooltip now names its current hotkey, so a
+  rebound tool no longer advertises its old key.
+- **Preferences, tidied.** Every tab scrolls; the window opens at the size of
+  its content within the screen and remembers the size you leave it at; the
+  guidance under each group is one short line in a readable muted style,
+  with the detail in tooltips. General groups the startup toggles in two
+  columns and the Frame Front guide sizes as width × height rows; Toolbar
+  groups its buttons as the toolbar does (and gains the missing Text
+  button); Hotkeys lists every fixed shortcut; the PDF tab is now *Print &
+  PDF*, with one group per export saying which menu item it drives.
+
+### Interface review in 1.3
+
+Three read-only reviews of the interface (the window chrome, the Properties
+panel, the canvas tools), with a regression test for each confirmed item in
+`tests/test_ui_review.py` and `tests/test_ui_review_canvas.py`.
+
+**Changes in behavior**
+
+- **Transform turns counter-clockwise for a positive angle**, as the Text
+  dialog always has; it used to turn clockwise. Selected dimensions now move
+  with the drawing instead of staying where they were.
+- **Library ▸ Holes reads Y upward and X toward the nose**, on either lens,
+  as the OMA datum it refers to does; a typed +3 mm used to land 3 mm below
+  the lens center. A pattern now lands the same way on a frame drawn on
+  either side of the mirror; one saved on the right-hand lens used to land
+  nasal-for-temporal on a frame drawn on the left. Patterns saved before 1.3
+  are placed as they were drawn.
+- **OK in Preferences applies only what you changed.** It re-applied every
+  startup value, so switching dark mode turned Snap back on and reset the
+  stock and boxing sizes on the Frame Front. The Ghost setting now applies to
+  the next document only; it no longer flips the open design's mirror.
+- **Standard shortcuts**: Ctrl+N, Ctrl+O, Ctrl+Q, Ctrl++ / Ctrl+-, and
+  Ctrl+0 for Fit. A hotkey can no longer take one of these, or a key the
+  tools read while you type a value (digits, the decimal point, Enter, Tab).
+- **The window remembers its size and place**; the first launch fits it to
+  the screen instead of opening at 1440 × 860 on a smaller laptop panel.
+
+**Data safety**
+
+- **Double-clicking a file after a crash** asks about the recovered work
+  first. The file used to open before the recovery offer, and opening it
+  deleted the recovery file. The offer's answers are Restore, Later (keep it
+  for the next launch) and Discard; No used to delete the work.
+- **Each running copy keeps its own recovery file.** A second copy used to
+  offer the first copy's live work, and answering No deleted it.
+- **Saving a .svg while a temple or the hinge has work asks first**: save a
+  .gdraw project instead, save the front alone (the design stays marked
+  unsaved), or cancel. Ctrl+S on a .svg used to drop that work silently.
+- **A failed Save As keeps the old file name**; every later Ctrl+S used to
+  target the file that failed.
+- **PDF and print exports report a failure** (an unwritable folder, a PDF
+  open in another program) instead of announcing a file that was never
+  written.
+
+**Fixes**
+
+- The trim, split, fillet, offset and rebuild tools act on the curve nearest
+  the click; they took the topmost curve within a few pixels, so drawing
+  order decided which curve was cut. Split's crossing-curve cut leaves locked
+  layers and parallel neighbors alone.
+- Undo during Fillet, Rebuild, Offset or Point Move ends the tool first;
+  finishing the operation afterwards duplicated curves or reported a move
+  that never happened. Ctrl+Z with the Line tool idle undoes the document.
+- A right-click no longer acts like a left-click in the tools. Double-click
+  no longer adds a node to a curve on a locked layer or a locked lens. Text
+  can no longer be dragged by Qt on its own after a tool switch (it moved
+  with no undo step). Calibration ends when you pick another tool.
+- The pointer coordinates have their own place in the status bar; they used
+  to replace each tool's instructions on the first mouse move. Refusals and
+  "canceled" messages stay on show, and the autosave note hands the bar back.
+- The mouse wheel scrolls the Properties panel and Preferences; it changed a
+  field under the pointer, which with a locked lens resized it one undo step
+  per notch. DBL, like A and B, applies when you finish typing.
+- The Measurements update after every change, so their Refresh button is
+  gone; moving a lens to another layer now updates them (and the fills),
+  which it did not. Clicking away from the image scale field no longer
+  applies its 1.0 placeholder (a large photo became meters wide). Frame
+  height reads an outline joined across the mirror axis. The readiness dot follows node
+  drags. Snapping the boxing guide no longer marks the design unsaved.
+- Explode, Split and Snap Node follow the selection of the tab you switch
+  to; New and Open end a half-drawn line and keep the panel's settings;
+  hiding the Ghost button keeps its View menu entry.
+- The pinned ⋯ pop-out no longer collapses to an empty box, and its ⋯
+  button and the dock's tab arrows draw their glyphs. The dock is wide enough
+  for its five tabs. Disabled controls look disabled, and checkboxes are
+  drawn in the app's own colors, so an unchecked box is clear in dark mode
+  (GuildModel 1.8 carries the same rules).
+- The fill sliders repaint the fill instead of recomputing it (about 35 ms a
+  tick on a real frame), and switching tabs no longer re-reads a material
+  swatch from disk. Snapping near dense imported traces is fast again.
+- Edit Text with no changes keeps every value exactly and adds no undo step.
+- Dragging a reference photo marks the design unsaved (its place is saved
+  with it). Temple Endpiece width reads a one-piece outline. The 1:1 print
+  and the templates mirror only the layers the canvas ghosts (a REF line
+  printed twice). Dragging a red node keeps it red, so Delete still removes
+  the node. The overflow pop-out stays below the menus, and the window can be
+  made as short as a small laptop panel needs. Restoring a bookmark mid-tool
+  no longer duplicates curves, and the wheel scrolls every list and panel.
+- American spelling throughout: the interface, the documentation and the
+  code (color, center, canceled).
+
+### Bug-hunt fixes in 1.3
+
+A source-wide review before this release, with a regression test for each
+of the confirmed items. The ones a maker could have met:
+
+- **Trim and Split cut where you click.** The cut parameter was the nearest
+  of 32 samples per segment and never refined, so a trim on a 100 mm line
+  could end up to 0.7 mm short of the cutting edge, and the pieces of an
+  intersection split did not always meet at one point. The parameter is now
+  solved to well below machining tolerance. Splitting a closed curve opens
+  it at the click as one curve instead of two pieces with a hidden second cut
+  at the seam, and a split-off piece no longer carries a stray handle at its
+  ends.
+- **DXF import no longer aborts on a periodic spline** (how Rhino and
+  AutoCAD write a closed spline); it is sampled instead. Entities written in
+  a mirrored coordinate system (AutoCAD's MIRROR command) land where the CAD
+  file shows them rather than x-mirrored, block references (INSERT) are
+  expanded with their transform, and 3D polylines are reported as skipped
+  instead of vanishing.
+- **Deleting one of two identical curves** (a double paste, a duplicate DXF
+  entity) removed the *other* one from the document while the scene kept it:
+  the survivor on screen was no longer saved or exported. Removal is by
+  identity now.
+- **DRILL holes ghost on canvas** the way they mirror in the DXF; the three
+  places that listed the mirrored layers were unified.
+- **Select-all and box-select are instant** on large drawings. Every
+  selection change (and every wheel tick) re-ran the export validator, so
+  selecting a few hundred curves took seconds.
+- **Escape from Line, Spline, Circle, Arc or Dimension** returns the canvas to
+  Select mode; it used to leave the view routed to the dead tool with nothing
+  selectable until the Select button was clicked. Escape before a circle's
+  center is placed now cancels, a double-click that ends a line keeps the
+  point under it, and a double-click while dimensioning no longer inserts a
+  node in the curve underneath.
+- **Opening a plain .svg** clears the temple and hinge workspaces (the previous
+  project's were riding along into the next save), a `.svg` document always
+  saves the Frame Front whatever tab is showing, Save As adds the `.gdraw`
+  suffix when the dialog hands back a bare name, and every export adds its
+  own suffix.
+- **Crash recovery** no longer restores the original file's path when part of
+  the recovery file failed to load (Ctrl+S could overwrite the original with
+  an empty tab), an unreadable recovery file is kept under another name
+  instead of being offered and failing on every launch, and opening a file
+  clears the previous document's recovery slot.
+- **Opening a file resets session state**: the boxing snap, the lens and
+  outline locks and a custom bevel from the previous document no longer leak
+  into the next one.
+- **Clicking a node or handle** no longer adds an undo step and marks the
+  document unsaved; the snapshot is taken on the first real movement.
+- **Hiding the OUTLINE (or LENS) layer** pauses the Frame Fill (Lens Fill)
+  instead of switching it off for good.
+- **Mirror-axis snapping** no longer steals an endpoint that sits on the axis
+  (the projection is a zero-distance hit), which left a gap the perimeter
+  could not close. Snap distances are measured to the sub-pixel, and the
+  on-curve/intersection snaps no longer miss the bulge of a wide lens.
+- **Curves are as easy to click at 25 % zoom as at 400 %**: hit-testing uses
+  a screen-pixel tolerance instead of a fixed 2 mm stroke.
+- **A move with the gizmo** keeps the node dots on the moved curve;
+  Preferences no longer rewrites the selected curve's line weight or resizes
+  a locked lens to the startup A/B; the Undo/Redo menu follows the tab; a
+  reference photo added after calibration takes that scale straight away.
+- **Temple Copy** refuses an empty source instead of offering to wipe the
+  other temple, keeps grouped hinges grouped, and puts dimensions on the
+  correct side. Mirror bake keeps groups too. Explode leaves circles and arcs
+  whole (it deleted an arc and left a radius-less ghost of a circle).
+- **Layers panel**: rows on a locked layer can no longer be dragged to another
+  layer, text rows can be, a layer you expanded or collapsed stays that way
+  across rebuilds, and clicking a row while a drawing tool is active switches
+  to Select instead of silently selecting nothing.
+- **A hotkey bound to a fixed shortcut** (Ctrl+Z, Ctrl+S…) is flagged in
+  Preferences; Qt treated the pair as ambiguous and fired neither, so Undo
+  simply died.
+- **Rebuild on a dense imported polyline** fits the vertices themselves
+  instead of 24 samples per segment (a 500-vertex outline took over a second
+  per keystroke); the confirmed fit is reused instead of recomputed.
+- **Offsetting an arc inward by more than its radius** is refused instead of
+  producing an invisible zero-radius curve; a retracted spline handle no
+  longer sends the offset endpoint along the wrong normal.
+- **The catalog sheet and the Measurements panel** use the drawn extent, not
+  the Bézier control polygon (a hand-tuned lens measured a third taller than
+  it draws and centered several millimeters off).
+- **A shared `.gdraw` that inflates to hundreds of megabytes** is refused
+  from the archive directory, before anything is decompressed; an unwritable
+  image cache falls back to a temp folder and never strips the photos from
+  the next save.
+- Also: OMA lab request files with an empty trace record open; the PNG crop
+  includes engraving text; icons render sharp on HiDPI screens; a prefs file
+  with a malformed theme block no longer stops the app starting; and a fresh
+  install no longer mutates the shipped defaults in memory.
+
 ## New in 1.2
 
 - **Lens Fill** — tint the lenses, not just the frame. Guides ▸ Lens Fill paints
-  each LENS aperture with a vertical two-colour gradient the way a dyed lens
+  each LENS aperture with a vertical two-color gradient the way a dyed lens
   runs, so a design reads as finished eyewear over the face photo. The chain
   button links the two stops for a flat tint. Two sliders separate the two
   things people mean by "stronger": **Intensity** is how deeply the dye reads,
@@ -60,23 +298,23 @@ files (see *New in 1.0*).
   set in Preferences ▸ General. Display-only — never exported to DXF/SVG
   geometry, and saved with the design.
 - **Frame Fill from a material swatch** — Guides ▸ Frame Fill gains a **Style**
-  choice: the flat colour it has always had, or an image. Point it at a
+  choice: the flat color it has always had, or an image. Point it at a
   supplier's acetate sample sheet and the frame shows the pattern it would
-  really be cut from — the thing a flat colour can't do for a laminate or a
-  tortoise. The swatch is scaled to span your Stock Blank width and centred on
+  really be cut from — the thing a flat color can't do for a laminate or a
+  tortoise. The swatch is scaled to span your Stock Blank width and centered on
   the origin, so it lands on the drawing exactly as the sheet would sit under
   it; change the stock width and the material rescales with it. Saved `.gdraw`
   files embed the swatch the way they embed a face photo, so a shared project
   shows the material on the recipient's machine.
-- **BPI tint reference** — the **BPI** button beside each colour opens a
-  searchable grid of approximate screen colours for BPI's published tint
+- **BPI tint reference** — the **BPI** button beside each color opens a
+  searchable grid of approximate screen colors for BPI's published tint
   catalog; click one to drop its hex into that gradient stop. The table ships
   as plain name/hex data (`framedraft/resources/bpi_tints.json`, regenerated by
   `scripts/scrape_bpi_tints.py`) — no artwork is bundled. Approximate and
   unofficial: not a dye-lot match, and GuildDraw is not affiliated with BPI.
   Those swatches are published as a light tint over white, so expect to raise
   Intensity after picking one.
-- **Frame and lens colour on the catalog sheet** — File ▸ Export ▸ PDF for
+- **Frame and lens color on the catalog sheet** — File ▸ Export ▸ PDF for
   Catalog can now print the Frame Fill and Lens Fill overlays under the line
   work, per workspace, exactly as the canvas shows them: the material swatch
   or tint in the frame profile and the gradient in each aperture. Off by
@@ -117,7 +355,7 @@ files (see *New in 1.0*).
 - **Frame Fill understands openings and Ghost mode** — the fill preview punches
   those openings through the frame body, and it finally works while you mirror:
   draw one half of a frame against the mirror line and the fill closes it with
-  the live ghost. It recognises endpoints snapped together (so an unjoined half
+  the live ghost. It recognizes endpoints snapped together (so an unjoined half
   still reads as closed), warns if the perimeter has a leak when you switch it
   on, and quietly turns itself off if you break the perimeter while it's showing
   — rather than painting something wrong.
@@ -132,7 +370,7 @@ files (see *New in 1.0*).
   a two-node lens outline offsets to ~8 clean nodes instead of collapsing or
   ballooning. Fixes the community-reported offset failures (#5, #6).
 - **Rebuild tool** (`R`) — refit any spline or polyline to a target node
-  count or a millimetre tolerance, with a live achieved-deviation readout.
+  count or a millimeter tolerance, with a live achieved-deviation readout.
   Turns a 400-point imported DXF outline into a clean editable spline in one
   step.
 - **Rock-solid node drags** — node and handle drags no longer "fly away" when
@@ -163,7 +401,7 @@ no Python needed:
 - **Windows** — `-setup.exe` installer (recommended; per-user, no admin,
   upgrades in place), or the portable `-win64.zip` / single-file `.exe`.
 - **macOS** — `.dmg` (drag to Applications) or `.zip`, in **arm64**
-  (Apple Silicon) and **x86_64** (Intel) flavours.
+  (Apple Silicon) and **x86_64** (Intel) flavors.
 
 First launch: the builds are unsigned (see [IT notes](docs/IT-NOTES.md)) — on
 Windows, SmartScreen wants *More info ▸ Run anyway* once; on macOS,
@@ -314,10 +552,11 @@ against the host's system libraries.
 - DXF R2000 (AC1015), SPLINE entities — exact cubic Bézier → B-spline.
 - Units: true mm at 1:1 (`$INSUNITS = 4` by convention).
 - Closed contours: endpoints within 0.1 mm auto-close.
-- Strict layers: `OUTLINE` ×1, `LENS` ≥1 (at least one lens is required; a
-  classic pair is two, but aviators and other shapes may carry more),
-  `BRIDGE`/`HINGE` optional, `REF` ignored, `SCULPT` (back-surface),
-  `ENGRAVING` (temples).
+- Strict layers: `OUTLINE` ≥1 (the largest contour is the profile; closed
+  contours inside it are decorative openings), `LENS` ≥1 (at least one lens
+  is required; a classic pair is two, but aviators and other shapes may carry
+  more), `BRIDGE`/`HINGE` optional, `DRILL` (mirrors with the lens), `REF`
+  ignored, `SCULPT` (back-surface), `ENGRAVING` (temples).
 - Scene is Y-down; DXF is Y-up — Y is negated on export.
 
 ## License

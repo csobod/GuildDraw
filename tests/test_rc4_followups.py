@@ -1,5 +1,5 @@
 """RC4 follow-up round — □-hotkey event-filter matching, the Radius/Diameter
-chip anchoring near the circle centre, and grid appearance settings."""
+chip anchoring near the circle center, and grid appearance settings."""
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QKeySequence

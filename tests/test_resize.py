@@ -26,7 +26,7 @@ def test_scale_nonuniform_circle_becomes_spline():
 
 def test_size_to_finished_ab_hits_targets_including_bevel():
     # bare circle 40x40; with depth 1 finished target 52x44 -> resize.
-    lens = circle(-30, 0, 20)        # OD side (centre x < axis 0)
+    lens = circle(-30, 0, 20)        # OD side (center x < axis 0)
     out = size_to_finished_ab(lens, target_a=52.0, target_b=44.0,
                               bevel_depth=1.0, axis_x=0.0)
     fb = _fin(out, 1.0)

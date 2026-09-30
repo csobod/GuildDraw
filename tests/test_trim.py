@@ -29,7 +29,7 @@ def test_arc_crossed_by_line():
 
 def test_arc_crossed_by_circle():
     a = arc(0, 0, 10, 0, 180)
-    other = circle(15, 0, 10)     # centres 15 apart, equal r -> cross at x=7.5
+    other = circle(15, 0, 10)     # centers 15 apart, equal r -> cross at x=7.5
     ts = dedup_ts_mm(a, intersect_curve_params(a, other))
     assert len(ts) >= 1
     for t in ts:

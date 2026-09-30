@@ -39,7 +39,12 @@ class EditTool(QObject):
     # ------------------------------------------------------------------
 
     def clear(self):
+        had_selected = self._selected_dot is not None
         self._remove_all()
+        if had_selected:
+            # Say so: Snap Node (and E) listen for this, and stayed lit after
+            # an undo, New or Open had dropped the red node.
+            self.node_selection_changed.emit(False)
 
     def set_smooth_mode(self, smooth: bool):
         self._smooth_mode = smooth
@@ -47,7 +52,7 @@ class EditTool(QObject):
             hdot.set_smooth(smooth)
 
     def refresh_theme(self):
-        """Re-apply current theme colours to all active dots and connector lines."""
+        """Re-apply current theme colors to all active dots and connector lines."""
         pen = make_handle_line_pen()
         for line in self._lines:
             line.setPen(pen)
@@ -102,14 +107,15 @@ class EditTool(QObject):
         curve.nodes.pop(idx)
         self._selected_dot = None
         self._remove_all()
+        self.node_selection_changed.emit(False)
         return curve
 
     def insert_node_at(self, curve: Curve, scene_pos: QPointF) -> bool:
         """Insert a new node on *curve* at the point nearest to *scene_pos*.
 
-        Returns True if a node was inserted (caller should undo-snapshot +
-        refresh the scene before calling this, or snapshot first and call this
-        after — follow the existing pattern: snapshot BEFORE mutation).
+        Returns True if a node was inserted. The caller takes the undo
+        snapshot BEFORE calling and pushes it only on True, then refreshes
+        the scene (see MainWindow._insert_node).
         """
         if curve.kind in ("circle", "arc"):
             return False   # circles/arcs don't support node insertion
@@ -237,7 +243,7 @@ class EditTool(QObject):
         being dragged. *is_open_endpoint* is True only for the first/last node
         of an OPEN curve; the mirror-axis magnet is scoped to those so dragging
         an interior node of a closed eyewire near the bridge no longer yanks it
-        to dead-centre (M32 H2)."""
+        to dead-center (M32 H2)."""
         def ep_snap(pos: QPointF) -> QPointF:
             # Respect global snap toggle and Ctrl-key suspend
             if (self._ep_view is None

@@ -1,7 +1,7 @@
 """Frame Fill from a material swatch — an acetate sample sheet in place of the
-flat colour.
+flat color.
 
-The swatch is scaled to span the Stock Blank width and centred vertically on
+The swatch is scaled to span the Stock Blank width and centered vertically on
 the origin, so the frame shows the piece of sheet it would be cut from. These
 run against a real FrameScene (the fill is Qt boolean path ops + a texture
 brush); conftest provides the shared QApplication.
@@ -43,15 +43,15 @@ def _filled_scene(image=None, blank_w=170.0):
 
 # ------------------------------------------------------------------ scene
 
-def test_swatch_replaces_the_colour_brush(tmp_path):
+def test_swatch_replaces_the_color_brush(tmp_path):
     scene = _filled_scene(_swatch(tmp_path / "acetate.png"))
     brush = scene._fill_item.brush()
     assert brush.style() == Qt.BrushStyle.TexturePattern
     assert not brush.texture().isNull()
 
 
-def test_swatch_spans_the_blank_width_centred_vertically(tmp_path):
-    # 200x100 px onto a 170 mm blank -> 170 x 85 mm, centred on the origin.
+def test_swatch_spans_the_blank_width_centered_vertically(tmp_path):
+    # 200x100 px onto a 170 mm blank -> 170 x 85 mm, centered on the origin.
     scene = _filled_scene(_swatch(tmp_path / "acetate.png", 200, 100),
                           blank_w=170.0)
     t = scene._fill_item.brush().transform()
@@ -85,7 +85,7 @@ def test_opacity_fades_the_swatch_through_the_item(tmp_path):
     assert scene._fill_item.brush().color().alphaF() == pytest.approx(0.4)
 
 
-def test_clearing_the_swatch_restores_the_picked_colour(tmp_path):
+def test_clearing_the_swatch_restores_the_picked_color(tmp_path):
     scene = _filled_scene(_swatch(tmp_path / "acetate.png"))
     scene.set_fill_color(QColor("#227744"))
     scene.clear_fill_image()
@@ -94,7 +94,7 @@ def test_clearing_the_swatch_restores_the_picked_colour(tmp_path):
     assert scene._fill_item.brush().color().name() == "#227744"
 
 
-def test_unreadable_swatch_is_refused_and_leaves_the_colour(tmp_path):
+def test_unreadable_swatch_is_refused_and_leaves_the_color(tmp_path):
     bogus = tmp_path / "not-an-image.png"
     bogus.write_text("this is not a PNG")
     scene = _filled_scene()
@@ -119,11 +119,11 @@ def test_lens_apertures_stay_open_under_a_swatch(tmp_path):
     # Both scenes stay referenced: dropping one deletes its C++ items, and the
     # QPainterPath taken from a deleted item is a dangling read.
     plain, textured = _filled_scene(), _filled_scene(_swatch(tmp_path / "acetate.png"))
-    colour_path = plain._fill_item.path()
+    color_path = plain._fill_item.path()
     image_path  = textured._fill_item.path()
     assert image_path.contains(QPointF(0, -30))
     assert not image_path.contains(QPointF(-15, 0))     # lens aperture
-    assert image_path.boundingRect() == colour_path.boundingRect()
+    assert image_path.boundingRect() == color_path.boundingRect()
 
 
 def test_fill_state_reports_the_swatch(tmp_path):
@@ -136,7 +136,7 @@ def test_fill_state_reports_the_swatch(tmp_path):
 
 def test_swatch_survives_a_geometry_edit(tmp_path):
     """The coalesced rebuild repaints the fill; the material must come back
-    with it rather than reverting to the colour mid-edit."""
+    with it rather than reverting to the color mid-edit."""
     scene = _filled_scene(_swatch(tmp_path / "acetate.png"))
     scene.add_curve(circle(0, 25, 4))
     scene.rebuild_fill()
@@ -192,7 +192,7 @@ def test_gdraw_round_trip_restores_a_usable_swatch(tmp_path, cache_root):
     assert scene.set_fill_image(fill["image"]) is True
 
 
-def test_damaged_archive_degrades_to_the_colour(tmp_path, cache_root):
+def test_damaged_archive_degrades_to_the_color(tmp_path, cache_root):
     """Metadata naming a member the zip doesn't hold must not break the open."""
     img = _swatch(tmp_path / "UB-0614.png")
     doc = tmp_path / "frame.gdraw"
@@ -238,7 +238,7 @@ def test_swatch_outside_the_document_folder_keeps_only_its_name(tmp_path):
     assert out["image"] == "UB-0614.png"
 
 
-def test_pre_1_2_fill_block_loads_as_a_colour(tmp_path):
+def test_pre_1_2_fill_block_loads_as_a_color(tmp_path):
     """A file written before the swatch existed carries no style/image keys."""
     from framedraft.document import (Calibration, FormingMetadata,
                                      MachinedBridge, MirrorAxis)
@@ -295,7 +295,7 @@ def test_choosing_a_swatch_switches_style_and_marks_dirty(fresh, tmp_path,
     assert fresh._dirty
 
 
-def test_style_back_to_colour_keeps_the_swatch_attached(fresh, tmp_path,
+def test_style_back_to_color_keeps_the_swatch_attached(fresh, tmp_path,
                                                         monkeypatch):
     img = _swatch(tmp_path / "UB-0614.png")
     _pick(monkeypatch, img)
@@ -305,7 +305,7 @@ def test_style_back_to_colour_keeps_the_swatch_attached(fresh, tmp_path,
         fresh._fill_style_combo.findData("color"))
     ws = fresh._active_ws
     assert ws.fill_style == "color"
-    assert not ws.scene.has_fill_image()      # the colour is showing…
+    assert not ws.scene.has_fill_image()      # the color is showing…
     assert ws.fill_image == img               # …but the swatch is still there
 
     fresh._fill_style_combo.setCurrentIndex(
@@ -325,7 +325,7 @@ def test_clearing_forgets_the_swatch(fresh, tmp_path, monkeypatch):
     assert fresh._fill_image_btn.text() == "Choose…"
 
 
-def test_cancelling_the_auto_opened_picker_falls_back_to_colour(fresh,
+def test_canceling_the_auto_opened_picker_falls_back_to_color(fresh,
                                                                 monkeypatch):
     """Switching to Image opens the picker; backing out of it must not leave
     the combo on a style with nothing behind it."""
@@ -373,7 +373,7 @@ def test_swatch_survives_a_gdraw_round_trip(fresh, tmp_path, monkeypatch,
     assert fresh._fill_style_combo.currentData() == "image"
 
 
-def test_load_with_a_missing_swatch_shows_the_colour(fresh, tmp_path):
+def test_load_with_a_missing_swatch_shows_the_color(fresh, tmp_path):
     ws = fresh._active_ws
     fresh._load_ws_data(ws, {"fill": {"visible": False, "color": "#227744",
                                       "opacity": 0.5, "style": "image",
@@ -382,7 +382,7 @@ def test_load_with_a_missing_swatch_shows_the_colour(fresh, tmp_path):
     assert not ws.scene.has_fill_image()
 
 
-def test_unknown_style_degrades_to_colour(fresh):
+def test_unknown_style_degrades_to_color(fresh):
     ws = fresh._active_ws
     fresh._load_ws_data(ws, {"fill": {"style": "hologram", "image": ""}})
     assert ws.fill_style == "color"
@@ -396,8 +396,8 @@ def test_pre_1_2_document_loads_with_no_swatch(fresh):
     assert ws.fill_image == ""
 
 
-def test_image_style_with_no_swatch_normalises_to_colour(fresh):
-    """A file claiming Image with nothing behind it would show the colour under
+def test_image_style_with_no_swatch_normalises_to_color(fresh):
+    """A file claiming Image with nothing behind it would show the color under
     a combo saying otherwise."""
     ws = fresh._active_ws
     fresh._load_ws_data(ws, {"fill": {"style": "image", "image": ""}})

@@ -17,6 +17,13 @@ logic is unit-testable without a QApplication.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+# The check mark a checked box shows: one file per mode, in that mode's
+# chrome.checked_ink (a stylesheet can only take an image by file).
+_CHECK_GLYPH = {False: Path(__file__).parent / "resources" / "icons" / "check-light.svg",
+                True:  Path(__file__).parent / "resources" / "icons" / "check-dark.svg"}
+
 # token -> (light, dark)
 _TOKENS: dict[str, tuple[str, str]] = {
     # ── UI chrome (drives the QSS template) ──────────────────────────────
@@ -28,6 +35,16 @@ _TOKENS: dict[str, tuple[str, str]] = {
     "chrome.checked_bg":   ("#1f1f1f", "#d4cfc0"),
     "chrome.checked_ink":  ("#ffd580", "#1a1a1a"),
     "chrome.slider_hover": ("#555555", "#e8e0d0"),
+    # Secondary text — the hints under a Preferences group, a dialog's small
+    # print. Chosen for contrast on chrome.bg (about 5:1 in both modes); the
+    # gray #888 it replaces read at 2.5:1 on the light chrome.
+    "chrome.muted":        ("#6e5520", "#9a917f"),
+    # Disabled controls — GuildModel's values, so an inert button reads the
+    # same in both apps. Before these, a disabled control here looked exactly
+    # like an enabled one.
+    "chrome.disabled_bg":     ("#f4dfae", "#222222"),
+    "chrome.disabled_border": ("#b89c5e", "#3a3328"),
+    "chrome.disabled_ink":    ("#a08c58", "#6a6558"),
     # ── Canvas / viewport ────────────────────────────────────────────────
     "canvas.bg":             ("#faf6ee", "#1e1e1e"),
     "canvas.cross":          ("#ccbbaa", "#554433"),
@@ -112,11 +129,14 @@ def set_overrides(theme_prefs: dict | None) -> None:
     """Install user overrides from ``prefs["theme"]`` (replaces the current
     set). Unknown tokens are kept — a future version may define them."""
     global _overrides
-    theme_prefs = theme_prefs or {}
-    _overrides = {
-        "light": dict(theme_prefs.get("light") or {}),
-        "dark":  dict(theme_prefs.get("dark") or {}),
-    }
+    theme_prefs = theme_prefs if isinstance(theme_prefs, dict) else {}
+
+    def _mode(key):
+        v = theme_prefs.get(key)
+        # A hand-edited prefs file with the wrong shape must not stop the app
+        # from starting; anything that isn't a mapping is simply no override.
+        return dict(v) if isinstance(v, dict) else {}
+    _overrides = {"light": _mode("light"), "dark": _mode("dark")}
 
 
 def set_override(token: str, value: str | None, dark: bool | None = None) -> None:
@@ -207,8 +227,8 @@ VIEWPORT_PRESETS: dict[str, dict[str, str]] = {
 
 
 def _rgb(hex_color: str) -> tuple[int, int, int]:
-    """(r, g, b) from #rrggbb / #AARRGGBB. Falls back to mid-grey on a
-    malformed value so a hand-corrupted prefs colour can't crash startup
+    """(r, g, b) from #rrggbb / #AARRGGBB. Falls back to mid-gray on a
+    malformed value so a hand-corrupted prefs color can't crash startup
     (apply_viewport runs during MainWindow.__init__)."""
     try:
         h = hex_color.lstrip("#")
@@ -314,7 +334,21 @@ QToolButton { padding: %(tb_pad)s; min-width: %(tb_minw)s; }
 QPushButton { padding: 4px 10px; min-width: 54px; }
 QToolButton:hover, QPushButton:hover { background-color: %(hover)s; }
 QToolButton:checked, QPushButton:checked { background-color: %(checked_bg)s; color: %(checked_ink)s; }
+QToolButton:disabled, QPushButton:disabled {
+    background-color: %(disabled_bg)s; border-color: %(disabled_border)s;
+    color: %(disabled_ink)s;
+}
+QLabel:disabled, QCheckBox:disabled, QRadioButton:disabled, QGroupBox:disabled,
+QDoubleSpinBox:disabled, QSpinBox:disabled, QLineEdit:disabled,
+QComboBox:disabled { color: %(disabled_ink)s; }
 QToolBar::separator { background: %(border)s; width: 1px; margin: 4px 3px; }
+/* The overflow ⋯ is only PM_ToolBarExtensionExtent (12 px) deep: the button
+   padding above left it no room, and it drew as an empty pill. */
+QToolButton#qt_toolbar_ext_button {
+    padding: 0px; min-width: 0px; min-height: 0px;
+    border: none; background: transparent;
+}
+QToolButton#qt_toolbar_ext_button:hover { background-color: %(hover)s; }
 QStatusBar {
     background-color: %(bg)s;
     border-top: 1px solid %(border)s;
@@ -383,6 +417,42 @@ QTabBar::tab {
 }
 QTabBar::tab:selected { background: %(bg)s; font-weight: bold; }
 QTabBar::tab:hover:!selected { background: %(hover)s; }
+/* The scroll arrows of a tab bar too narrow for its tabs: the button padding
+   above left them no room, and they drew as blank boxes. */
+QTabBar QToolButton { padding: 0px; min-width: 0px; }
+/* The Properties dock's five tabs, a little tighter so the dock stays narrow. */
+QTabBar#sideTabs::tab { padding: 5px 6px; }
+QToolTip {
+    background-color: %(panel)s;
+    color: %(ink)s;
+    border: 1px solid %(btn_border)s;
+    padding: 4px 6px;
+}
+QLabel#hintLabel { color: %(muted)s; font-size: 12px; background: transparent; }
+/* Checkboxes drawn here, not by the platform style: the platform's box took
+   its outline from the chrome background, and on the dark chrome an unchecked
+   box all but vanished. On: filled with the ink and ticked, like a checked
+   toolbar button. GuildModel's stylesheet carries the same rules. */
+QCheckBox::indicator, QAbstractItemView::indicator {
+    width: 14px; height: 14px;
+    border: 1px solid %(check_border)s;
+    border-radius: 3px;
+    background-color: %(panel)s;
+}
+QCheckBox::indicator:hover { border-color: %(ink)s; }
+QCheckBox::indicator:checked, QAbstractItemView::indicator:checked {
+    background-color: %(checked_bg)s;
+    border-color: %(checked_bg)s;
+    image: url("%(check_img)s");
+}
+QCheckBox::indicator:disabled {
+    background-color: %(disabled_bg)s;
+    border-color: %(disabled_border)s;
+}
+QCheckBox::indicator:checked:disabled {
+    background-color: %(disabled_ink)s;
+    border-color: %(disabled_ink)s;
+}
 """
 
 
@@ -428,6 +498,14 @@ def build_qss() -> str:
         "checked_bg":   color("chrome.checked_bg"),
         "checked_ink":  color("chrome.checked_ink"),
         "slider_hover": color("chrome.slider_hover"),
+        "muted":        color("chrome.muted"),
+        "disabled_bg":     color("chrome.disabled_bg"),
+        "disabled_border": color("chrome.disabled_border"),
+        "disabled_ink":    color("chrome.disabled_ink"),
+        # Ink in light mode, as the button borders are; the muted token in
+        # dark, where the border token is too close to the background.
+        "check_border":    color("chrome.muted") if dark else ink,
+        "check_img":       _CHECK_GLYPH[dark].as_posix(),
         "btn_border":   border if dark else ink,
         "menu_border":  border if dark else ink,
         "focus_border": ink,

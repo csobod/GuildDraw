@@ -42,13 +42,13 @@ for GuildModel — and nothing else.
 | Undo / Redo | Snapshot-based (deep copy of curve list); 100-step stacks; Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z |
 | Revision Timeline | Named bookmark History tab in sidebar; Bookmark / Restore / Rename / Delete; persisted in SVG metadata; View → Revision History jumps straight to the tab |
 | Icon toolbar | All 20 toolbar actions use `currentColor` SVGs rendered per-theme (`_make_icon`); `ToolButtonIconOnly` style; compact 30 px buttons; styled amber/dark separators; icons re-rendered when dark mode is toggled |
-| Tabbed sidebar | Right sidebar reorganised into 4 tabs — **Properties** (layer + weight), **Guides** (construction/forming, boxing, stock, pad), **Canvas** (face image + calibration), **History** (revision bookmarks, with live count badge) |
+| Tabbed sidebar | Right sidebar reorganized into 4 tabs — **Properties** (layer + weight), **Guides** (construction/forming, boxing, stock, pad), **Canvas** (face image + calibration), **History** (revision bookmarks, with live count badge) |
 | Status bar indicator | Permanent right-side label showing `LAYER \| ZOOM%`; updates on layer change, curve selection, wheel zoom, and Fit |
 | SVG save / load | Native format; full round-trip including bookmarks, dims, forming metadata, calibration, face image reference |
 | Trim tool | Cursor tool: hover to highlight (amber), click a curve to remove the segment between its nearest intersections with all other curves; works on open, closed, circle, and arc curves; stays active for successive trims; Esc returns to Select |
 | Split tool | Cursor tool: click anywhere on a curve to split it into two open curves; snaps to intersections within 1.5 mm and splits both curves simultaneously; stays active; Esc to exit |
 | Offset tool | Cursor tool (O): select a curve, type offset distance (mm), live amber preview, Enter confirms; miter join for lines (bevel fallback), averaged-normal + Catmull-Rom recompute for splines, analytical radius ± d for circles/arcs; Esc cancels |
-| Move gizmo | Hotkey M: four-arrow gizmo at selection centre; drag arrow to translate along that axis; click arrow to type exact distance; Esc or M dismisses |
+| Move gizmo | Hotkey M: four-arrow gizmo at selection center; drag arrow to translate along that axis; click arrow to type exact distance; Esc or M dismisses |
 | Point Move tool | Hotkey G: two-click precise translate — click grab point (snapped), then click destination or type X/Y in HUD; selection moves so grab lands on destination; Esc cancels |
 | Mirror (bake) | Toolbar action: creates real mirrored copies of selected curves opposite the mirror axis; turns off live ghost so export does not double-mirror; use Join or Mirror-Close afterward to close shapes |
 | Tabbed workspaces | Three independent canvases: Frame Front, Temple, Hinge Pocket; each has its own scene, document, undo/redo stack, snap engine, and tool instances; sidebar reconfigures on tab switch (layer list, guide sections, library buttons) |
@@ -86,7 +86,7 @@ for GuildModel — and nothing else.
   rubber-band to that radius; typing an angle constrains it to that direction ray; both
   locks together fully determine the next node's position. **Enter** with any lock active
   places one node at the constrained point and clears locks (continuing the curve); Enter
-  with no locks finishes the curve (existing behaviour). **Escape** clears the active field
+  with no locks finishes the curve (existing behavior). **Escape** clears the active field
   first, then the other, then cancels drawing. Circle/Arc gained matching inline keyboard
   radius input (digits → floating HUD + locked preview → Enter). `CanvasView` now overrides
   `focusNextPrevChild()` to return `False` during drawing so Tab routes to the tool's
@@ -152,7 +152,7 @@ for GuildModel — and nothing else.
 ### Fixed issues (resolved 2026-06-07) — Phase 13 + DXF + Mirror
 
 - **Phase 13 complete — Trim and Split tools** — `framedraft/geometry.py` added with shared
-  parameterisation helpers (de Casteljau split, Shapely intersection, segment extraction for
+  parameterization helpers (de Casteljau split, Shapely intersection, segment extraction for
   open/closed/circle/arc curves). `TrimTool` and `SplitTool` added in `framedraft/tools/`.
   Both wired into `app.py` with toolbar actions, amber hover highlighting, undo/redo, and
   status bar messages. A sampling bug in `t_nearest` (lines only sampled endpoints) and a
@@ -185,7 +185,7 @@ for GuildModel — and nothing else.
   which keeps `padding: 4px 10px; min-width: 54px`). Toolbar separators styled as
   1 px amber/dark lines. All 20 actions gained or improved tooltips.
 
-- **Sidebar tab reorganisation** — single-scroll right panel replaced with a
+- **Sidebar tab reorganization** — single-scroll right panel replaced with a
   `QTabWidget` (4 tabs): **Properties** (layer + line weight), **Guides** (all
   construction/boxing/stock/pad spinboxes in a scroll area), **Canvas** (face image
   + calibration in a scroll area), **History** (revision bookmarks). Title bar hidden
@@ -1151,7 +1151,7 @@ on the node-selection infrastructure added in Phase 10.
 
 **Workflow**:
 1. Select a curve so its NodeDots are visible.
-2. Click a NodeDot to select it (it turns red — existing Phase 10 behaviour).
+2. Click a NodeDot to select it (it turns red — existing Phase 10 behavior).
 3. Click a **Split** toolbar button (or shortcut), or a context menu item.
 4. The curve is replaced by two open curves that share the split node as an endpoint.
 
@@ -1230,7 +1230,7 @@ No new geometry or document-model changes.
 
 - **"Duplicate Mirror" → "Mirror"** — the bake-mirror operation is the primary
   meaning of "mirror" in day-to-day use; rename the toolbar action label and tooltip.
-  The live ghost toggle already labelled "Mirror" should be distinguished; consider
+  The live ghost toggle already labeled "Mirror" should be distinguished; consider
   renaming it **"Ghost"** or **"Preview"** to avoid confusion now that "Mirror" is an
   action rather than a toggle.
 - **Mirror-Close hidden by default** — a specialty operation used rarely; not shown
@@ -1464,7 +1464,7 @@ where visual interactive handles would be imprecise.
 - Scale X (%) — default 100
 - Scale Y (%) — default 100; checkbox "Lock aspect ratio" (ties X to Y)
 - Rotation (°) — positive = CCW in screen space (matches scene Y-down convention)
-- Pivot — radio: "Bounding-box centre" (default) | "Scene origin (0, 0)"
+- Pivot — radio: "Bounding-box center" (default) | "Scene origin (0, 0)"
 
 **Apply math** (all nodes + control points):
 

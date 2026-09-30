@@ -34,6 +34,7 @@ _HIDDEN_FRAMEDRAFT = [
     "framedraft.library",
     "framedraft.fontpicker",
     "framedraft.textpath",
+    "framedraft.tooltips",
     "framedraft.canvas.items",
     "framedraft.canvas.mirror",
     "framedraft.canvas.scene",
@@ -62,6 +63,7 @@ _HIDDEN_FRAMEDRAFT = [
     "framedraft.export.oma",
     "framedraft.export.batch",
     "framedraft.export.catalog_pdf",
+    "framedraft.export.template_print",
 ]
 
 # Qt modules this app never touches — excluded to keep the bundle lean.

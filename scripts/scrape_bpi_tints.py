@@ -3,15 +3,15 @@
 
 BPI (Brain Power Inc.) publish a swatch image for every tint they sell — a
 rendered lens disc in that dye, captioned with the tint name and part numbers.
-Those discs are the only public, per-tint colour reference there is, so this
+Those discs are the only public, per-tint color reference there is, so this
 script walks the store's Tints categories, samples the middle of each disc, and
 writes a name → approximate hex table that GuildDraw ships as the Lens Fill
-colour reference.
+color reference.
 
 The result is APPROXIMATE and unofficial: a JPEG of a rendered lens at BPI's
 own display density is not a colorimetric measurement, and real tint depth
 depends on dye time, lens material, and base curve. It is a starting point for
-picking a plausible lens colour on screen, nothing more. GuildDraw is not
+picking a plausible lens color on screen, nothing more. GuildDraw is not
 affiliated with BPI; tint names are theirs.
 
 Run:  python scripts/scrape_bpi_tints.py [-o OUT.json] [--cache DIR]
@@ -38,7 +38,7 @@ _STORE = "https://callbpi.com/golf/index.php"
 _UA    = "GuildDrawTintScraper/1.0 (+https://github.com/gasm-cnc/GuildDraw)"
 
 # Tint categories worth sampling, as (store path, family label). The packaging
-# categories (Quarts, The Pill) are deliberately absent: they re-list colours
+# categories (Quarts, The Pill) are deliberately absent: they re-list colors
 # that already appear above, and dedup keys on the swatch image anyway.
 _CATEGORIES = [
     ("65_66",  "Standard"),
@@ -92,22 +92,22 @@ def _clean_name(raw: str) -> str:
 
 
 def _swatch_key(img_url: str) -> str:
-    """'…/catalog/tints2/aprc_b-228x228.jpg' -> 'aprc_b' — the colour identity.
+    """'…/catalog/tints2/aprc_b-228x228.jpg' -> 'aprc_b' — the color identity.
     The same dye sold as a bottle, a quart and a pill reuses one swatch."""
     return re.sub(r"-\d+x\d+\.jpg$", "", img_url.rsplit("/", 1)[-1])
 
 
 # A tint's swatch is a rendered lens disc; a few catalog entries (kits, dye
 # concentrate, UV bottles) illustrate the *packaging* instead, and sampling
-# those yields the colour of a bottle label rather than of any lens. Gate on the
-# non-white blob being a centred, near-square disc of the expected size.
+# those yields the color of a bottle label rather than of any lens. Gate on the
+# non-white blob being a centered, near-square disc of the expected size.
 _DISC_ASPECT   = (0.90, 1.11)    # bbox width / height
 _DISC_EXTENT   = (0.45, 0.78)    # bbox width as a fraction of image width
-_DISC_OFFCENTRE = 0.10           # max centre drift, as a fraction of image width
+_DISC_OFFCENTER = 0.10           # max center drift, as a fraction of image width
 
 
 def _disc_hex(blob: bytes) -> str | None:
-    """Median colour of the middle of the rendered lens disc, or None if the
+    """Median color of the middle of the rendered lens disc, or None if the
     image isn't a lens disc at all.
 
     The disc is drawn as a soft light-to-dark gradient on white, with the
@@ -144,7 +144,7 @@ def _disc_hex(blob: bytes) -> str | None:
         return None
     if not (_DISC_EXTENT[0] <= bw / w <= _DISC_EXTENT[1]):
         return None
-    if abs(cx - w / 2.0) > _DISC_OFFCENTRE * w:
+    if abs(cx - w / 2.0) > _DISC_OFFCENTER * w:
         return None
     if r < 10:
         return None
@@ -228,7 +228,7 @@ def main() -> int:
             "source": "https://callbpi.com/golf/index.php?route=product/category&path=65",
             "scraped": time.strftime("%Y-%m-%d"),
             "disclaimer": (
-                "Approximate on-screen colours sampled from BPI's own product "
+                "Approximate on-screen colors sampled from BPI's own product "
                 "swatch images. Unofficial and not colorimetric; GuildDraw is "
                 "not affiliated with Brain Power Inc. Tint names are BPI's."
             ),

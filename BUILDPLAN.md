@@ -319,17 +319,17 @@ Scope (all landed 2026-06-10):
      Qt-free modules can build splines (draw.py re-exports it).
    - `curve_to_trace(curve, n=400) -> radii` + `boxing_center(curve)` —
      θ-unwrap + winding/monotonicity checks reject non-star-shaped contours
-     with a clear message; equal-angle resample about the bbox centre.
+     with a clear message; equal-angle resample about the bbox center.
    - `build_oma(job) -> text` — CRLF, R records in 10-value chunks, preserved
      records first.
 2. ✅ **Import UI** — File → Import → OMA Lens Trace…: lenses land in Frame
-   Front (auto tab-switch) on the LENS layer, boxing centres on y=0, nasal
+   Front (auto tab-switch) on the LENS layer, boxing centers on y=0, nasal
    edges at DBL from the file (else boxing-guide DBL), side R/OD at negative x;
    undo-safe + dirty; single-side files note that the mirror ghost previews
    the other side.
 3. ✅ **Export UI** — File → Export → OMA Trace… (Frame Front only): exactly
    2 LENS contours after mirror doubling, 0.1 mm closure rule, OD/OS assigned
-   by boxing-centre x; emits HBOX/VBOX/DBL/FED computed from the geometry.
+   by boxing-center x; emits HBOX/VBOX/DBL/FED computed from the geometry.
 4. ✅ **Tests** — 16 in `tests/test_oma.py` (suite: 81): golden-file parse,
    tolerance cases, error cases, build chunking, circle fidelity both ways,
    invalid-point skipping, non-star rejection, and the release criterion
@@ -347,7 +347,7 @@ Scope (all landed 2026-06-10):
    hidden layers excluded; rebuilt from `add/remove/refresh_curve`,
    `set_mirror_display`, and `set_layer_visible` (no-op while hidden so
    boolean path ops never run during normal editing). "Frame Fill" group in
-   the Guides panel (front + temple): show checkbox, colour swatch button,
+   the Guides panel (front + temple): show checkbox, color swatch button,
    opacity slider. Per-workspace state persists in SVG/.gdraw under `"fill"`;
    resets on File > New. Display-only — never exported.
 2. ✅ **Text insertion (ENGRAVING)** *(archive §26)* — `TextObject` dataclass
@@ -365,7 +365,7 @@ Scope (all landed 2026-06-10):
 3. ✅ **Print / PDF at 1:1 scale** — File > Print at 1:1 Scale… (QPrintDialog;
    "Microsoft Print to PDF" works) and File > Export > PDF (1:1 scale)….
    Renders `scene.geometry_rect()` (curves + ghosts + texts; guides stay if
-   toggled on, face photos and origin cross auto-hidden) centred on the page
+   toggled on, face photos and origin cross auto-hidden) centered on the page
    at exactly printer-px-per-mm, cropped 1:1 with a warning if larger than
    the printable area, plus a printed **50 mm verification ruler** so the
    maker can catch a driver's silent fit-to-page.
@@ -419,7 +419,7 @@ and aren't copied by Ctrl+C/V — revisit on demand.
    *(2026-06-15)*. Shipped the readiness dot plus a maker-reported drafting
    batch:
    - **Readiness dot** — `framedraft/canvas/readiness_dot.py`: a status-bar
-     traffic light (grey/amber/green) driven by `readiness_state()`, which
+     traffic light (gray/amber/green) driven by `readiness_state()`, which
      reuses the export validator (`export/validate.py`) so the dot and the
      export gate never disagree. Per-workspace, dark-mode aware, non-blocking;
      tooltip names the gap. Tests in `tests/test_readiness.py`. *(The SCULPT
@@ -445,7 +445,7 @@ and aren't copied by Ctrl+C/V — revisit on demand.
      read clearly without relying on node dots.
    - **Join arcs to lines** — `_join_selected_curves` converts arcs to splines
      (real endpoints) before chaining; closed circles are skipped with a note.
-   - **New tools** — Start-End-Center arc (`CircleTool` "arc_sec" mode; centre
+   - **New tools** — Start-End-Center arc (`CircleTool` "arc_sec" mode; center
      snaps to the chord bisector for a true circular arc) and a Fillet tool
      (`tools/fillet.py`; tangent arc via `geometry.fillet_lines`, legs trimmed).
    - **Bookmark hotkey** — Ctrl+B → "Bookmark Current State…" (remappable in
@@ -494,7 +494,7 @@ and aren't copied by Ctrl+C/V — revisit on demand.
 > **2026-06-21 replan.** Maker feedback after rc1c converges on getting *real
 > measurement data* and *real existing work* in and out of the app. Five
 > milestones, each ending in a working app + version bump. Full detail and the
-> confirmed design decisions live in the approved plan; summarised here.
+> confirmed design decisions live in the approved plan; summarized here.
 
 ## M10 — Generic DXF import — ✅ DONE (2026-06-21)
 
@@ -505,7 +505,7 @@ Y-negation undone, arc angles swapped+negated back, cubic SPLINE rebuilt exactly
 via `bezier_decomposition` (rational/non-cubic splines + ELLIPSE fall back to
 flatten→Catmull-Rom). LINE/LWPOLYLINE/POLYLINE → line curves (bulged polylines
 expanded via `virtual_entities`); CIRCLE/ARC native. **Layer policy:** a DXF
-layer name that is a recognised GuildDraw layer *valid for the target workspace*
+layer name that is a recognized GuildDraw layer *valid for the target workspace*
 is kept; everything else lands on the active layer (ungrouped, so each path can
 be re-filed by dragging Layers-panel rows) and is reported in the status note.
 `File ▸ Import ▸ DXF…` wired in `app.py` (`_import_dxf`); undo-safe, selected,
@@ -520,7 +520,7 @@ depth). New Qt-free `framedraft/boxing.py`: `curve_bbox`, `finished_box`
 (bare bbox grown by depth), `bevel_outline` (`offset_curve` outward, sign-robust
 to winding), `finished_ab`/`finished_dbl`. `BoxingGuide` (construction.py) gains
 `set_locked`/`set_lens_provider`/`set_bevel_depth`/`refresh`: in locked mode it
-boxes the real LENS curves (+ mirror) at their finished bbox with a centre cross
+boxes the real LENS curves (+ mirror) at their finished bbox with a center cross
 and draws the bevel-offset "full lens depth" outline. Front guides panel adds
 **Lock to lens** + **Bevel** combo + **Bevel depth** spin (depth editable only
 for Custom); locking disables the A/B/DBL inputs and the Measurements panel
@@ -574,20 +574,20 @@ Suite: 151.
 dxf `_MIRROR_LAYERS` so holes mirror with the lens). A drill hole = a `circle`
 Curve on DRILL → exports as a DXF `CIRCLE` for free. `DrillLibrary`
 (`framedraft/library.py`, JSON patterns of `{dx,dy,dia}` offsets from the lens
-**boxing centre** = the OMA datum; per-hole diameter). The Library sidebar tab is
+**boxing center** = the OMA datum; per-hole diameter). The Library sidebar tab is
 now a **Pockets / Holes** `QTabWidget`: Holes page = coordinate entry (X/Y from
-centre + Ø → Add Hole) + saved-pattern list (Import re-centres the pattern on the
+center + Ø → Add Hole) + saved-pattern list (Import re-centers the pattern on the
 current lens; Save/Rename/Delete). Tests: `tests/test_drill.py` (5). Suite: 156.
-Verified: place-by-coords, save, import onto a repositioned lens (re-centres),
+Verified: place-by-coords, save, import onto a repositioned lens (re-centers),
 DXF mirror-doubles holes.
 
 **Datum decision:** user said base it on OMA → OMA locates holes in cartesian mm
-from the binocular frame centre, so the library stores boxing-centre offsets.
+from the binocular frame center, so the library stores boxing-center offsets.
 
 **OMA `DRILLE` export/import ✅ DONE** — format reverse-engineered from a real
 Silhouette drilled file (`HEART_54_0.OMA`):
 `DRILLE=<eye B/R/L>;<type C>;x;y;dia;x2;y2;angle;n;flag` — one record per hole,
-decimal **mm**, y-UP, origin = binocular frame centre (between the lenses); for a
+decimal **mm**, y-UP, origin = binocular frame center (between the lenses); for a
 simple round through-hole point 2 == point 1, e.g.
 `DRILLE=B;C;-25.00;9.00;1.40;-25.00;9.00;0;1;F`. `oma.py`: `OmaDrill` +
 `OmaJob.drills`; `parse_oma` reads populated DRILLE (≥5 fields) while preserving a
@@ -599,7 +599,7 @@ Suite: 161.
 
 ## M14 — rc2 release engineering — ✅ DONE (2026-06-21, except tag/commit)
 
-- ✅ **Validator/readiness recognise DRILL** — `Layer.DRILL` is in the enum +
+- ✅ **Validator/readiness recognize DRILL** — `Layer.DRILL` is in the enum +
   `MACHINED_LAYERS`, so `validate()` (and the readiness dot, which reuses it)
   accept optional DRILL holes on the front with no error/warning (DRILL circles
   are closed). Test in `tests/test_validate.py`.
@@ -691,7 +691,7 @@ New **Appearance** tab in Preferences (dark-mode checkbox moves here):
   set of theme-token overrides (canvas.bg, geometry.ink, canvas.cross), so
   e.g. Blueprint = deep blue canvas + light ink under either UI mode.
 - **Vignette** with an intensity slider (0–100): `CanvasView.drawForeground`
-  paints a radial gradient (transparent centre → tinted edges); gradient
+  paints a radial gradient (transparent center → tinted edges); gradient
   cached per resize so it's one blit per paint. Intensity = edge alpha.
 - **Node/handle dot size** slider (3–8 px) → theme dot radius (applies on next
   selection rebuild).
@@ -741,7 +741,7 @@ Drawing-context snaps: the snap point depends on the segment being drawn
 (anchor = last placed node, already passed into `snap()` via
 `drawing_nodes`). For circles/arcs near the cursor, compute tangent (or
 perpendicular-foot) points from the anchor; snap within radius; distinct
-indicator glyphs. Only active mid-draw; palette toggles grey out otherwise.
+indicator glyphs. Only active mid-draw; palette toggles gray out otherwise.
 If it slips, RC3a ships without it and it heads RC4.
 
 ## M21 — Grid overlay + grid snap — ✅ DONE (2026-07-04)
@@ -759,7 +759,7 @@ as a whole. Deliverables: findings report, fixes each as its own tested
 commit, regression tests. Fold in the customization-backlog quick wins if they
 surface naturally. Run this LAST, so the release ships audited.
 
-**Outcome (2026-07-04):** RC3a code was clean — no correctness bugs. Removed dead code (`theme.overrides`, `SnapEngine.type_enabled`/`set_type_enabled`/`radius_px`, an unused `dark` local in `_refresh_mirror_icons`). Robustness: `theme._rgb` now tolerates a malformed colour so a hand-corrupted `custom_bg` can't crash startup. Refactored the tangent/perp loop-variable closures to module helpers (`_angle_on_arc`/`_perp_dot`) — ruff clean package-wide. 215 tests green.
+**Outcome (2026-07-04):** RC3a code was clean — no correctness bugs. Removed dead code (`theme.overrides`, `SnapEngine.type_enabled`/`set_type_enabled`/`radius_px`, an unused `dark` local in `_refresh_mirror_icons`). Robustness: `theme._rgb` now tolerates a malformed color so a hand-corrupted `custom_bg` can't crash startup. Refactored the tangent/perp loop-variable closures to module helpers (`_angle_on_arc`/`_perp_dot`) — ruff clean package-wide. 215 tests green.
 
 ### Customization backlog (agreed candidates beyond M16–M21)
 
@@ -908,7 +908,7 @@ references when the release ships.
   light-mode canvas dimmer than Parchment (#faf6ee) but light enough that the
   standard light-mode line palette (layer inks, guide + snap colors) keeps
   working. One `VIEWPORT_PRESETS` entry ([theme.py:178](framedraft/theme.py#L178),
-  warm grey ≈ `#d8d1c3`, ink `#1f1f1f`, cross via `_mix`) + one row in the
+  warm gray ≈ `#d8d1c3`, ink `#1f1f1f`, cross via `_mix`) + one row in the
   Preferences combo ([app.py:1135](framedraft/app.py#L1135)). Tune the exact
   value with a contrast check against every light-mode token (target ≥ 3:1
   for geometry/guide/snap inks); USER-GUIDE appearance section gets the row.
@@ -1000,8 +1000,8 @@ from this planning investigation:
 - [x] M23–M27 implemented + user-verified on-screen 2026-07-10 (258 tests,
       ruff clean). Follow-up round from verification: □ hotkey moved to a
       QApplication event filter (app-context QShortcuts are suppressed under
-      modal dialogs), Radius/Diameter chip floats at the circle/arc centre,
-      grid minor/major colours + major width in Preferences, hotkey-capture
+      modal dialogs), Radius/Diameter chip floats at the circle/arc center,
+      grid minor/major colors + major width in Preferences, hotkey-capture
       field fixed (int(modifiers()) TypeError on current PySide6).
       Commits still HELD for the user.
 - [x] Version stamp `1.0.0-rc4` (framedraft/__init__.py + .iss fallback)
@@ -1064,8 +1064,8 @@ from this planning investigation:
 ## M30 — Shared cubic-fitting engine (research → build) — ✅ DONE 2026-07-12 (held)
 
 **Built:** `framedraft/fitting.py` (Qt-free) — Schneider least-squares core
-(chord-length parameterisation, prescribed-end-tangent control-point solve,
-Newton–Raphson reparameterisation, recursive split at max-error) behind
+(chord-length parameterization, prescribed-end-tangent control-point solve,
+Newton–Raphson reparameterization, recursive split at max-error) behind
 `fit_curve(points, *, tol_mm | n_nodes, closed, corner_angle_deg=30, layer,
 line_weight) -> FitResult(curve, max_deviation_mm)`. Tolerance mode does corner
 detection (tangent-angle jump) → sharp nodes, G1 everywhere else incl. the
@@ -1162,7 +1162,7 @@ Full wiring: per-workspace instance, `focusNextPrevChild`-friendly Tab, hotkey
 `R` (was free), Settings Toolbar+Hotkeys rows (DEFS-driven), `_deactivate_
 cursor_tools`. **Decision — REPLACE, not keep-original** (the plan said "original
 untouched", but for the headline use — swap a dense imported DXF for a clean
-curve — replacing in place is the expected behaviour; it's undoable, so Ctrl+Z
+curve — replacing in place is the expected behavior; it's undoable, so Ctrl+Z
 restores). 10 tool tests + engine tests; 308 total green, ruff clean.
 Verified end-to-end in the real MainWindow (40-node polyline → 6-node spline,
 original replaced, undo restores). **Toolbar icon** `resources/icons/
@@ -1219,7 +1219,7 @@ reflection preserved (setPos still fires `itemChange`). **M32.2:** the
 mirror-axis magnet ([tools/edit.py](framedraft/tools/edit.py)
 `_make_ep_snap_fn`) is now scoped to open-curve end nodes only
 (`is_open_endpoint`), so an interior node of a closed eyewire near the bridge
-no longer snaps to dead-centre (the milder H2 flavour). **M32.3:** a
+no longer snaps to dead-center (the milder H2 flavor). **M32.3:** a
 `GUILDDRAW_DRAG_LOG=1` flight recorder (ships disabled) logs each drag step and
 dumps context (view scale, scrollbars) on any single-event jump >40 px, so a
 residual report stays diagnosable. **Verify:** 9 new tests in
@@ -1387,21 +1387,21 @@ makes a rendering look wrong at a glance.
   `lens_fill_auto_disabled` fires when an edit opens every aperture, and both
   overlays share the coalescing rebuild timer (`_rebuild_overlays`). Lens items
   sit at z −495, just above the frame fill (−500) whose lens holes they fill.
-- **Link button**: holds both stops equal (a flat tint), the colour analogue of
+- **Link button**: holds both stops equal (a flat tint), the color analog of
   the A/B chain. Editing either stop while linked moves both.
 - **Two sliders, deliberately separate.** *Opacity* is coverage (alpha over
   whatever is behind); *Intensity* is dye depth. Conflating them is what makes a
   tint preview look wrong — the maker wants a deeper dye and gets a more opaque
   wash over the face photo instead.
 - **Intensity model — Beer–Lambert on transmission** (`scene.deepen_tint`):
-  `channel' = channel ** k`, working on the colour *as transmission over white*.
+  `channel' = channel ** k`, working on the color *as transmission over white*.
   Chosen over the obvious "scale distance from white" (`255 - (255-c)*k`)
   because that one clamps: for a mid tint like BPI Lavender `#b0a0cd`, k=3
   drives green negative, it pins at 0, and the hue visibly skews. The
   exponential form cannot leave 0…1, so no channel clamps, and it converges on
-  the dye's own colour rather than on black.
+  the dye's own color rather than on black.
   - The slider is **geometric**, not linear: `k = 0.5 · 16^(pos/100)`, so
-    position 25 lands exactly on 1.0 (the colour as picked), 0 → 0.5×,
+    position 25 lands exactly on 1.0 (the color as picked), 0 → 0.5×,
     100 → 8×. A pale tint needs a far larger exponent than a deep one for the
     same visible change — `#e4f5fd` is still recognisably pale at k=4 while
     `#aaab9f` is nearly black — and a linear scale spends most of its travel
@@ -1409,48 +1409,48 @@ makes a rendering look wrong at a glance.
     too: most of the travel is "deepen", which is the direction makers need.
   - Intensity is applied **at render time**; the stored stop keeps the picked
     hex, so winding the slider back recovers exactly what was chosen. The
-    swatch buttons preview the deepened colour (that is what is being judged)
-    while the picker opens on the base colour; the tooltip names both.
+    swatch buttons preview the deepened color (that is what is being judged)
+    while the picker opens on the base color; the tooltip names both.
 - **Opacity** defaults to 65% and **intensity** to 1.0, both overridable in
   Preferences ▸ General (`lens_fill_opacity_pct`, `lens_fill_intensity`).
-  Colours, link state, opacity and intensity persist per workspace under a
+  Colors, link state, opacity and intensity persist per workspace under a
   `"lens_fill"` key in SVG/.gdraw metadata (the `"fill"` precedent from M8);
-  pre-1.2 files load with the tint off at shipped colours and intensity 1.0.
+  pre-1.2 files load with the tint off at shipped colors and intensity 1.0.
 - **BPI tint reference** ([bpi_tints.py](framedraft/bpi_tints.py)): a searchable
-  popup grid of 164 approximate tint colours; a click drops the hex into the
+  popup grid of 164 approximate tint colors; a click drops the hex into the
   stop whose button opened it. **Only data ships** —
   `resources/bpi_tints.json` (~27 KB of name/family/hex/note) plus the
   disclaimer; the popup paints its own chips, and no BPI artwork enters the
   repo or the bundle. Regenerate with
   [scripts/scrape_bpi_tints.py](scripts/scrape_bpi_tints.py), which samples the
   middle of each rendered lens-disc swatch. The scraper gates on the swatch
-  being a centred, near-square disc: ~20 catalog entries illustrate *packaging*
-  (dye bottles, kits), and sampling those yields the colour of a bottle label.
+  being a centered, near-square disc: ~20 catalog entries illustrate *packaging*
+  (dye bottles, kits), and sampling those yields the color of a bottle label.
   Note the disc is only used to *locate* the swatch — a pale tint's interior
   reads as white, so the gate tests the bounding box, not how solidly it fills.
-  BPI publish their swatches as a light tint over white, so sampled colours run
+  BPI publish their swatches as a light tint over white, so sampled colors run
   pale by design; that is what Intensity exists to correct, and why the picked
   hex is stored unmodified rather than deepened at pick time.
 
 ## Frame Fill from a material swatch (Guides ▸ Frame Fill ▸ Style)
 
-Frame Fill has painted the profile in one flat colour since M8. A flat colour
+Frame Fill has painted the profile in one flat color since M8. A flat color
 is fine for a solid acetate and useless for everything else a maker actually
 buys — a laminate, a tortoise, anything with grain — because what the customer
 is choosing between *is* the pattern. Suppliers publish their ranges as sample
 sheet JPEGs (Jimei, Mazzucchelli, Takiron); this puts one of those sheets
 behind the frame profile.
 
-- **Style combo** on the Frame Fill box: *Colour* (what M8 did, unchanged) or
-  *Image*. The colour and the swatch are both kept per workspace, so switching
+- **Style combo** on the Frame Fill box: *Color* (what M8 did, unchanged) or
+  *Image*. The color and the swatch are both kept per workspace, so switching
   between them is lossless — the picked hex survives choosing a swatch, and the
-  swatch survives switching back to colour, which is what makes the combo worth
+  swatch survives switching back to color, which is what makes the combo worth
   having over a checkbox that forgets. Picking *Image* with nothing chosen yet
-  opens the file dialog rather than parking on a style that shows the colour;
-  cancelling out of *that* dialog returns the combo to Colour.
+  opens the file dialog rather than parking on a style that shows the color;
+  canceling out of *that* dialog returns the combo to Color.
 - **Placement is the stock blank, not the drawing.**
   `scene.set_fill_blank_width` takes the Stock Blank width and the swatch is
-  scaled to span it, centred on the origin — the blank guide's own anchor. So
+  scaled to span it, centered on the origin — the blank guide's own anchor. So
   the material lands on the design exactly as the sheet sits under it, and the
   frame shows the piece of sheet it would be cut from. Correcting the stock
   width rescales the material with it (`_on_stock_width_changed` now drives
@@ -1465,13 +1465,13 @@ behind the frame profile.
     still sees the frame in the material, and the Stock guide is the thing that
     says it no longer fits the sheet.
 - **Opacity moves to the item for a swatch** (`_apply_fill_path`). A texture
-  brush carries no alpha of its own, so the colour path keeps its alpha in the
+  brush carries no alpha of its own, so the color path keeps its alpha in the
   brush at item opacity 1.0 and the image path does the reverse — never both,
   or the two would compound and the face photo would read through at the square
   of what the slider says.
 - **Swatches are capped at 4096 px** on the long side at load
   (`FILL_IMAGE_MAX_PX`). A 170 mm blank at 300 dpi is ~2000 px, so this still
-  oversamples the largest PNG export while keeping a 6000-px catalogue photo
+  oversamples the largest PNG export while keeping a 6000-px catalog photo
   from pinning ~100 MB in the scene for the session.
 - **Persistence follows the face-photo contract exactly.** `"style"` and
   `"image"` join the existing `"fill"` block in SVG/.gdraw metadata; .gdraw
@@ -1480,9 +1480,9 @@ behind the frame profile.
   absolute path; a plain .svg stores a document-relative path or the bare
   basename (`portable_fill` / `resolve_fill_image`, now sharing
   `_portable_path` with the face photos). Pre-1.2 files have neither key and
-  load as a flat colour; an unknown future style degrades to colour rather than
+  load as a flat color; an unknown future style degrades to color rather than
   blanking the fill; a swatch that no longer resolves says so in the status bar
-  and shows the colour instead of failing the open.
+  and shows the color instead of failing the open.
   - One departure from the face photos: the swatch extracts to
     `<cache>/<tab>_fill/<original name>` rather than under its prefixed member
     name. The filename is what names the *material* in the sidebar
@@ -1538,7 +1538,7 @@ Lens Fill exercises the same paths.
    *outgoing* document's widget values over the departing workspace's freshly
    loaded state. A `_loading` flag now suppresses only that save; the restore
    for the arriving tab still runs.
-3. **Frame Fill never marked the document dirty**, though visibility, colour
+3. **Frame Fill never marked the document dirty**, though visibility, color
    and opacity are all saved — so those settings could be lost silently on
    close. Now at parity with Lens Fill.
 4. **Damaged metadata crashed the open.** `_load_ws_data` runs *outside*
@@ -1550,7 +1550,7 @@ Lens Fill exercises the same paths.
    it from the slider, but the position→value map is geometric and therefore
    lossy: a document saved at 3.0 came back 3.03, and again each switch. The
    handler is now the sole writer, the same rule already applied to the stop
-   colours and the free-box A/B/DBL targets.
+   colors and the free-box A/B/DBL targets.
 6. **The tint picker leaked.** The popup is built per open and parented to the
    main window, so every visit to the BPI reference stranded 164 buttons and
    their pixmaps for the rest of the session. `WA_DeleteOnClose` frees it;
@@ -1668,7 +1668,7 @@ the list is hand-maintained, and drift would silently restore the hang.
 
 CI's `pytest-timeout` stays as it is. It catches the *symptom* after 120 s and
 is worth keeping for whatever this list doesn't foresee, but it is no longer
-the first line of defence, and it stays a CI-only install.
+the first line of defense, and it stays a CI-only install.
 
 ### The frozen build's module list had fallen behind
 
@@ -1776,6 +1776,172 @@ re-run is the verification.
       test-install per the M28 checklist. Add the BPI button to the
       verification list — `load_tints` hides it silently when
       `framedraft/resources/bpi_tints.json` is not in the bundle.
+
+---
+
+# v1.3 round — cutting templates, text as a first-class object, bug hunt
+
+> **2026-09-27.** Three maintainer requests (engraving text through Mirror
+> Copy and the clipboard; a *Print Front + Temples* 1:1 template print for
+> the hand-cut workflow, requested by maker mbarowsky; Delete from the Layers
+> panel), then a source-wide bug hunt for the release. Built and held for
+> review — uncommitted.
+
+## Print Front + Temples (export/template_print.py)
+
+Device-agnostic like the catalog sheet: `layout_pages` is a pure function
+(stack the pieces at 1:1, centered, spill to a new page when one won't fit;
+an oversized piece gets its own page and is clipped at the margin),
+`paint_template_page` takes any QPainter, and the printer/PDF drivers read
+the FINAL page back from the QPrinter so the print dialog can override the
+paper. Paper, orientation (auto = fewest pages), line weight and labels live
+in `prefs["template_print"]`. Each workspace contributes what it shows —
+visible layers, the mirror ghost, engraving text — via
+`MainWindow._gather_template_components`. Component bounds are the exact
+path extents, not the control polygon; the catalog's `_content_bbox` was
+switched to the same rule.
+
+## Text objects
+
+`textpath.mirror_text` is the readable mirror: same footprint, rotation
+transformed so the side of the lettering facing the brow edge follows the
+reflection (horizontal: 180 − r; vertical: −r). A true reflection is
+mirror writing. Text now travels through `_selection_payload` (copy/paste/
+duplicate), `_transform_selected` (uniform size scale, rotation), the view's
+drag path (`TextItem` lost `ItemIsMovable`; a mixed selection moves as one
+through `_pre_move_selected`), the gizmo, Point Move and the Layers panel.
+
+## Bug hunt
+
+Five read-only review passes (MainWindow core; I/O and dialogs; canvas;
+tools and geometry; export, data, build and tests) produced ~90 findings;
+the confirmed ones are fixed with one regression test each in
+`tests/test_v130_bug_hunt.py` and listed in the README's *Bug-hunt fixes in
+1.3*. The structural ones:
+
+- `document.MIRRORED_LAYERS` is the single mirrored-layer set (scene ghosts,
+  draw preview, DXF export had three copies; DRILL was missing from the
+  canvas one).
+- `WorkspaceState` removes curves/dims/texts by identity (dataclass `==` is
+  field equality; two identical curves desynced document and scene).
+- `_update_info_label` no longer recomputes readiness; bulk selection goes
+  through `FrameScene.select_items` (one `selectionChanged` pass).
+- `geometry.t_nearest` / `intersect_curve_params` refine the parameter with
+  a ternary search between the bracketing samples.
+- `CanvasView._top_pick` / `_items_near`: screen-pixel picking, so a curve
+  is clickable at any zoom; texts take the same drag path as curves.
+- Draw/Circle/Dim tools emit `canceled`; the app restores Select mode.
+- `WorkspaceState.reset_session_state()` on every load and New.
+- `_open_gdraw` returns a status; recovery only restores the source path on
+  a clean load.
+- `prefs.load` deep-copies; `dxf_import` samples unclamped splines inside
+  the valid knot domain (`ct.point`) — ezdxf's `flattening` runs the whole
+  knot range and shoots off outside it.
+- `conftest.scratch_prefs`: every test uses a scratch prefs file.
+
+Deferred (reported, not done): a Linux CI job on push/PR; the snap indicator
+is cached per glyph but the fill rebuild still runs every drag tick; the
+Dim item's 3 mm hit tolerance is still zoom-independent; text-tool anchor
+snapping is in, the offset tool's status hint is not; MachinedBridge and
+`mirror.x` remain written-but-unused fields kept for file compatibility.
+
+## Parity with GuildModel, and an interface review (2026-09-29)
+
+> Asked while GuildModel's v1.8.0 builds ran: bring GuildModel's tooltip work
+> and pop-up sizing across, give the Preferences text and layout a pass, and
+> review the UI/UX for bugs. Uncommitted, on top of the round above.
+
+**Tooltips.** `framedraft/tooltips.py` is GuildModel's `gui/tooltips.py`
+(keep the two in step): `TooltipFilter` on the QApplication re-breaks plain
+tips into balanced ~56-character lines of the tooltip font and is the global
+off switch, exempting the ? button. The ? cannot sit past a spacer at the end
+of GuildDraw's bar as it does in GuildModel's — the bar already overflows at
+900 px, and the ⋯ would take it — so `PinnableToolBar.set_trailing_action`
+places it as a plain child below the ⋯, with its room reserved in the bar's
+contents margins (QLayout lays out inside `contentsRect`). Pref `tooltips`;
+icon `toggle-tooltips.svg` copied from GuildModel; QToolTip styled from the
+chrome tokens, as GuildModel's stylesheet does. Tool tooltips carry their
+current hotkey (`_tip_with_key`, rewritten by `_apply_hotkeys`).
+
+**Preferences.** As GuildModel's PrefsDialog: every tab scrolls
+(`_scrolled`), `_initial_size` sizes to content within 80 % of the screen,
+`prefs_dialog_size` is remembered (kept on Cancel), minimum height bounded by
+the screen, keyboard tracking off. Guidance is a `QLabel#hintLabel` (theme
+token `chrome.muted`, ~5:1 on the chrome; the old `#888` was 2.5:1). Toolbar
+grouped by `_TOOLBAR_SECTIONS` (the source of `_TOOLBAR_ACTION_DEFS`; Text was
+missing); `_FIXED_SHORTCUTS` feeds both the Hotkeys tab's list and
+`SettingsDialog._RESERVED_KEYS`; `_TYPING_KEYS` are refused as hotkeys too.
+`_WheelGuard` keeps the wheel on the scroll area unless a field has focus,
+here and in the Properties dock.
+
+**Review.** Three read-only reviews (chrome and flows; the Properties dock;
+the canvas tools), ~45 findings, the confirmed ones fixed with regressions in
+`tests/test_ui_review.py` (window side) and `tests/test_ui_review_canvas.py`
+(tool modules); the README's *Interface review in 1.3* lists them. The
+structural ones:
+
+- Recovery slots are per process (`recovery-<pid>`), owned through a
+  `QLockFile`; `_offer_recovery` offers orphans only, runs once, and `main()`
+  calls it before a command-line open.
+- `_do_save` returns success and owns `_current_path`; a `.svg` with
+  non-front work asks through `_ask_svg_scope`.
+- `_apply_settings` pushes only changed startup keys and never the open
+  document's `mirror_enabled`.
+- `closeEvent` removes the window's two app-wide event filters. A test
+  session's closed windows kept them all, and each new window's stylesheet
+  pass ran every one per event: the suite slowed quadratically.
+- `FrameScene._restyle_fill` / `_restyle_lens_fill` repaint in place; only
+  geometry re-stitches. `set_fill_image` skips an already-loaded path unless
+  `reload=True`.
+- `tools/trim.curve_item_at` is the one nearest-curve pick for the five
+  cursor tools; `SnapEngine.snap` reads the transform once and rejects curves
+  by cached extent.
+- conftest's modal guard covers `QMessageBox.exec` (a hand-built box).
+
+Then, at the maintainer's word the same day: checkboxes drawn by the
+stylesheet in both apps (`QCheckBox::indicator` / `QAbstractItemView::indicator`,
+tick files `check-light.svg` / `check-dark.svg`; GuildModel's rules sit in
+`style/theme._INDICATOR_QSS`); the Measurements Refresh button removed after
+driving every change path against a forced refresh, which found
+`_move_curve_items_to_layer` repainting the item only (now through
+`scene.refresh_curve`); American spelling throughout the repository, code and
+identifiers included (447 replacements; the LICENSE, URLs and persisted keys
+untouched).
+
+**Second sweep, before the build (2026-09-29).** Three more read-only
+reviews: today's own code, the tool/snap/export fixes, and a behavioral run
+of the real window through every workflow (no exception caught). Fixed:
+`_WheelGuard` skips `QScrollBar` (a scroll area hands a bar the wheel by
+sendEvent, so guarding one stopped all scrolling); recovery asks Restore /
+Later / Discard (`_ask_recovery`; Later releases the orphan's lock and keeps
+its files), damaged and leftover lock files are swept; `_run_modal` releases
+every one-use dialog; bookmark restore ends curve-holding tools; fills turned
+on behind a hidden layer wait for it; a scale typed before the first photo
+applies to it; hotkey tooltips rebuild from `_tip_bases`; Edit Text compares
+exactly; a middle double-click still pans; `_render_1to1` checks
+`painter.begin`; prints mirror `_GHOST_LAYERS` only; drill offsets live in
+the OD lens's frame (`_drill_datum`; drill patterns are now version 2, and
+version 1 is placed as drawn); a photo drag marks the design unsaved; a lens
+fill default that moves a design stars it; Endpiece width measures the
+sampled outline; the overflow pop-out fits the toolbar and never covers the
+menus; the Properties and Library tabs scroll (the window's floor was
+619 px); `EditTool.clear` reports the node deselected; pressing a red node to
+drag it keeps it red. Closed-curve seam: `_nearest_refined_t` refines on
+both sides of the seam, `split_curve_at_t` opens at the seam node and cuts a
+circle's 0° point opposite, `t_nearest_coarse` ranks hover candidates. Not
+done: undoing Mirror (bake) leaves Ghost off (the mirror flag is not in the
+geometry-only undo snapshot).
+
+**The suite went from 23 minutes to 19 seconds (2026-09-30).** pytest runs
+no event loop, so `deleteLater()` never ran: every window and dialog a test
+made stayed alive (about 9 MB a window, 8,000 widgets by the last files), and
+each new window's stylesheet pass re-polished all of them. The CI gate allows
+20 minutes. `tests/conftest.py` now flushes deferred deletes after every test
+(`windows_really_go`, which also deletes leftover dialogs) and clears every
+top-level widget at the end of each module (`nothing_outlives_its_module`).
+The flush found one real fault: `QTimer.singleShot` without a context object
+fires into a deleted view; every single-shot in `app.py` now names its
+owner.
 
 ---
 

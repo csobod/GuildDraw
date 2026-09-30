@@ -58,7 +58,7 @@ def size_to_finished_ab(curve: Curve, target_a: float | None, target_b: float | 
     perturbs B (and vice versa).  The bare-shape target is the finished target
     minus 2·bevel.  The horizontal scale pivots on the **nasal edge** (bbox edge
     nearest *axis_x*) so the DBL is preserved; the vertical scale pivots on the
-    box centre.  Returns a new curve, or None if nothing changes.
+    box center.  Returns a new curve, or None if nothing changes.
     """
     bb = lens_bbox(curve)
     if bb is None:

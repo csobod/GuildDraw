@@ -87,7 +87,7 @@ def test_closed_spline_roundtrips_within_tolerance(tmp_path):
 # Layer policy
 # ---------------------------------------------------------------------------
 
-def test_recognised_valid_layer_is_kept(tmp_path):
+def test_recognized_valid_layer_is_kept(tmp_path):
     # LENS is valid in the front workspace -> kept, no dump note.
     curves, notes = export_and_import(tmp_path, [circle(-15, 0, 10)],
                                       active_layer=Layer.OUTLINE,
@@ -108,7 +108,7 @@ def test_unknown_layer_dumps_to_active_layer(tmp_path):
     assert any("RANDOM" in n and "OUTLINE" in n for n in notes)
 
 
-def test_recognised_but_invalid_for_workspace_dumps(tmp_path):
+def test_recognized_but_invalid_for_workspace_dumps(tmp_path):
     # LENS is forbidden in a temple workspace -> dumped onto the active layer.
     path = tmp_path / "lens.dxf"
     doc = ezdxf.new("R2000")

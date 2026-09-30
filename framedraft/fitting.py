@@ -8,9 +8,9 @@ tool wants an imported dense polyline (a DXF from another CAD app) rebuilt as a
 few editable nodes. Both reduce to "fit cubics through points."
 
 Core algorithm: Philip J. Schneider, *An Algorithm for Automatically Fitting
-Digitized Curves* (Graphics Gems, 1990) — chord-length parameterisation,
+Digitized Curves* (Graphics Gems, 1990) — chord-length parameterization,
 least-squares control-point solve with prescribed end tangents, Newton–Raphson
-reparameterisation, recursive split at the point of maximum error. The same
+reparameterization, recursive split at the point of maximum error. The same
 engine as Inkscape / paper.js ``simplify()``.
 
 Two modes:
@@ -25,7 +25,7 @@ Two modes:
   UI can show the maker what a lower node count costs. Budget mode does not do
   corner detection — the maker chooses the node count.
 
-All distances are millimetres (scene units). Endpoints are interpolated
+All distances are millimeters (scene units). Endpoints are interpolated
 exactly (a fit always passes through the first and last input point).
 """
 
@@ -210,7 +210,7 @@ def _max_error(pts: List[Pt], bez: List[Pt], u: List[float]) -> Tuple[float, int
 def _fit_span(pts: List[Pt], t1: Pt, t2: Pt, tol: float) -> List[List[Pt]]:
     """Schneider recursive fit of one span with prescribed end tangents.
 
-    Internal splits reuse a shared centre tangent, so every join created here
+    Internal splits reuse a shared center tangent, so every join created here
     is G1-smooth. Returns an ordered list of cubics."""
     out: List[List[Pt]] = []
 
@@ -237,11 +237,11 @@ def _fit_span(pts: List[Pt], t1: Pt, t2: Pt, tol: float) -> List[List[Pt]]:
         if depth >= _MAX_SPLIT_DEPTH:
             out.append(bez)   # best effort — stop runaway recursion
             return
-        centre = _unit(_sub(span[split - 1], span[split + 1]))
-        if centre == (0.0, 0.0):
-            centre = _unit(_sub(span[split], span[split + 1]))
-        rec(span[:split + 1], a, centre, depth + 1)
-        rec(span[split:], _scale(centre, -1.0), b, depth + 1)
+        center = _unit(_sub(span[split - 1], span[split + 1]))
+        if center == (0.0, 0.0):
+            center = _unit(_sub(span[split], span[split + 1]))
+        rec(span[:split + 1], a, center, depth + 1)
+        rec(span[split:], _scale(center, -1.0), b, depth + 1)
 
     rec(pts, t1, t2, 0)
     return out
@@ -369,7 +369,7 @@ def _detect_corners(pts: List[Pt], closed: bool, angle_deg: float) -> List[int]:
 def _boundary_tangent(pts: List[Pt], i: int, closed: bool) -> Pt:
     """Unit tangent at boundary index *i*, pointing in the increasing-index
     direction. Interior/seam points use a central difference (→ G1); open
-    endpoints use the one-sided chord (→ a corner if the neighbour spans meet
+    endpoints use the one-sided chord (→ a corner if the neighbor spans meet
     at an angle)."""
     n = len(pts)
     if closed:

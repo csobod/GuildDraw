@@ -27,7 +27,7 @@ Arc angles:
 import ezdxf
 from ezdxf.math import Bezier4P, bezier_to_bspline, Vec3
 
-from ..document import Curve, Layer, ControlPoint
+from ..document import Curve, ControlPoint, MIRRORED_LAYERS
 from ..geometry import mirror_curve
 
 
@@ -97,11 +97,10 @@ def _add_curve(msp, curve: Curve):
             sp.dxf.flags = sp.dxf.flags | 1   # CLOSED flag
 
 
-# Layers that get a mirrored OS copy when mirror is on.
-# OUTLINE and BRIDGE span the full frame (drawn symmetric) — never mirrored.
-# SCULPT is back-surface geometry, symmetric like LENS — gets mirrored.
-# DRILL holes belong to a lens, so they mirror with it.
-_MIRROR_LAYERS = {Layer.LENS, Layer.HINGE, Layer.SCULPT, Layer.DRILL}
+# Layers that get a mirrored OS copy when mirror is on (document.MIRRORED_LAYERS:
+# LENS, HINGE, SCULPT, DRILL). OUTLINE and BRIDGE span the full frame (drawn
+# symmetric) — never mirrored here; an open OUTLINE half is closed separately.
+_MIRROR_LAYERS = MIRRORED_LAYERS
 
 
 def export_dxf(

@@ -14,7 +14,7 @@ A lens trace is announced by a TRCFMT record and carried by R records:
     R=2550;2548;...                radii in 1/100 mm, signed ASCII integers,
                                    conventionally 10 per line; point i sits at
                                    angle 360*i/n degrees CCW from the +x axis,
-                                   measured from the boxing centre
+                                   measured from the boxing center
 
 Frame-box records (HBOX, VBOX, DBL, FED, CRIB, ...) carry per-side values
 separated by ';' in R;L order. Records this module doesn't understand are
@@ -64,7 +64,7 @@ class OmaTrace:
 @dataclass
 class OmaDrill:
     """One DRILLE drill-hole feature. Position is mm from the binocular frame
-    centre (origin between the lenses), y-UP (OMA convention)."""
+    center (origin between the lenses), y-UP (OMA convention)."""
     x:     float
     y:     float
     dia:   float
@@ -194,13 +194,18 @@ def parse_oma(text: str) -> OmaJob:
         else:
             job.records.append((label, value))
 
-    for side, tr in job.traces.items():
+    for side, tr in list(job.traces.items()):
         if tr.npts and len(tr.radii_mm) != tr.npts:
             raise ValueError(
                 f"Side {side}: TRCFMT declares {tr.npts} points but "
                 f"{len(tr.radii_mm)} radii were found."
             )
         if not tr.radii_mm:
+            if tr.npts is None:
+                # A lab REQUEST record (TRCFMT=1;?;E;R;F) announces a trace
+                # that is not in the file. Tolerated: drop it, keep the rest.
+                del job.traces[side]
+                continue
             raise ValueError(f"Side {side}: TRCFMT record has no R data.")
 
     return job
@@ -217,7 +222,7 @@ def trace_to_curve(radii_mm: List[float],
 
     Point i sits at angle 360*i/n CCW (y-up OMA frame); scene y is negated.
     Non-positive radii (invalid tracer points) are skipped. The result is
-    decimated to ~target_nodes so it stays hand-editable; the boxing centre
+    decimated to ~target_nodes so it stays hand-editable; the boxing center
     of the trace lands at the scene origin (callers translate to place it).
     """
     n = len(radii_mm)
@@ -247,7 +252,7 @@ def trace_to_curve(radii_mm: List[float],
 # ---------------------------------------------------------------------------
 
 def boxing_center(curve: Curve) -> Tuple[float, float]:
-    """Bbox centre of the sampled contour (scene coords) — the radial origin
+    """Bbox center of the sampled contour (scene coords) — the radial origin
     used by curve_to_trace."""
     pts = sample_curve(curve, n_per_seg=_SAMPLES_PER_SEG)
     xs = [p[0] for p in pts]
@@ -256,11 +261,11 @@ def boxing_center(curve: Curve) -> Tuple[float, float]:
 
 
 def curve_to_trace(curve: Curve, n: int = 400) -> List[float]:
-    """Sample a closed contour at n equal angles about its boxing centre.
+    """Sample a closed contour at n equal angles about its boxing center.
 
     Returns radii in mm, point i at angle 360*i/n CCW in the y-up OMA frame.
     Raises ValueError if the contour is not star-shaped about its boxing
-    centre — radial sampling cannot represent such a shape.
+    center — radial sampling cannot represent such a shape.
     """
     samples = sample_curve(curve, n_per_seg=_SAMPLES_PER_SEG)
     return points_to_trace([(x, y) for x, y, _t in samples], n=n)
@@ -268,7 +273,7 @@ def curve_to_trace(curve: Curve, n: int = 400) -> List[float]:
 
 def points_to_trace(points: List[Tuple[float, float]], n: int = 400) -> List[float]:
     """Radially resample a closed contour polyline (scene coords, y-down) at
-    n equal angles about its bbox centre — the core of curve_to_trace, split
+    n equal angles about its bbox center — the core of curve_to_trace, split
     out so a *finished* (bevel-offset) outline can be traced directly.
 
     Same contract as curve_to_trace: radii in mm, point i at angle 360*i/n CCW
@@ -281,7 +286,7 @@ def points_to_trace(points: List[Tuple[float, float]], n: int = 400) -> List[flo
     cx = (min(xs) + max(xs)) / 2.0
     cy = (min(ys) + max(ys)) / 2.0
 
-    # Scene (y-down) -> OMA frame (y-up) about the boxing centre, deduped.
+    # Scene (y-down) -> OMA frame (y-up) about the boxing center, deduped.
     pp: List[Tuple[float, float]] = []
     for x, y in points:
         dx, dy = x - cx, -(y - cy)
@@ -301,7 +306,7 @@ def points_to_trace(points: List[Tuple[float, float]], n: int = 400) -> List[flo
             r = math.hypot(dx, dy)
             if r < 1e-9:
                 raise ValueError(
-                    "Contour passes through its boxing centre — cannot trace."
+                    "Contour passes through its boxing center — cannot trace."
                 )
             a = math.atan2(dy, dx)
             if not thetas:
@@ -319,7 +324,7 @@ def points_to_trace(points: List[Tuple[float, float]], n: int = 400) -> List[flo
     total = thetas[-1] + d_close - thetas[0]
     if abs(abs(total) - 2.0 * math.pi) > 0.1:
         raise ValueError(
-            "Contour does not wind once around its boxing centre — it is not "
+            "Contour does not wind once around its boxing center — it is not "
             "star-shaped and cannot be represented as an OMA radial trace."
         )
     if total < 0:               # normalize to CCW in the OMA frame
@@ -331,7 +336,7 @@ def points_to_trace(points: List[Tuple[float, float]], n: int = 400) -> List[flo
     steps.append(d_close)
     if min(steps) < -_BACK_TOL:
         raise ValueError(
-            "Contour doubles back in angle about its boxing centre — it is "
+            "Contour doubles back in angle about its boxing center — it is "
             "not star-shaped and cannot be represented as an OMA radial trace."
         )
 

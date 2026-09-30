@@ -113,12 +113,12 @@ def test_content_offset_shifts_drawing_down_not_caption():
     """The vertical offset moves the drawing (front + temples) down the page;
     the caption stays pinned to the corner."""
     comps = _sample_components()
-    centred = _render(comps, {**_SETTINGS, "content_offset_mm": 0.0}, "NAME")
+    centered = _render(comps, {**_SETTINGS, "content_offset_mm": 0.0}, "NAME")
     shifted = _render(comps, {**_SETTINGS, "content_offset_mm": 20.0}, "NAME")
     # ink overall moves down; a +20 mm shift at 150 dpi ≈ +118 px
-    assert _ink_centroid_y(shifted) > _ink_centroid_y(centred) + 30
+    assert _ink_centroid_y(shifted) > _ink_centroid_y(centered) + 30
     # caption still present in the lower-right corner in both
-    for img in (centred, shifted):
+    for img in (centered, shifted):
         w, h = img.width(), img.height()
         lr = sum(1 for x in range(w * 3 // 4, w, 4) for y in range(h * 4 // 5, h, 4)
                  if img.pixelColor(x, y) != QColor("#ffffff"))
@@ -129,7 +129,7 @@ def test_content_offset_shifts_drawing_down_not_caption():
 # Frame Fill / Lens Fill on the catalog sheet (v1.2)
 #
 # The overlays are display-only — they never become geometry — but a catalog
-# page is the one export where the maker wants the colour, so Settings ▸ PDF
+# page is the one export where the maker wants the color, so Settings ▸ PDF
 # can print them under the line work. The specs come straight off each
 # workspace's live scene, so the sheet shows the tint the canvas shows.
 # ═══════════════════════════════════════════════════════════════════════
@@ -163,7 +163,7 @@ def _fills_for(scene):
                       "lens":  scene.lens_fill_paint_spec()}}
 
 
-def _colour_tally(img):
+def _color_tally(img):
     """{hex: count} over a coarse grid of the sheet, whites dropped."""
     counts = {}
     for x in range(0, img.width(), 3):
@@ -188,8 +188,8 @@ def test_scene_reports_the_frame_fill_it_is_showing():
     assert spec is not None
     assert not spec["path"].isEmpty()
     assert spec["brush"].color().name() == _FILL_HEX
-    # A colour brush carries its own alpha, so the painter must not fade it a
-    # second time — that is the swatch's job, not the colour's.
+    # A color brush carries its own alpha, so the painter must not fade it a
+    # second time — that is the swatch's job, not the color's.
     assert spec["opacity"] == 1.0
 
 
@@ -220,9 +220,9 @@ def test_the_frame_fill_floods_the_profile_on_the_sheet():
     plain  = _render(comps, _SETTINGS, "NAME")
     filled = _render(comps, _SETTINGS, "NAME", _fills_for(scene))
 
-    assert _FILL_HEX not in _colour_tally(plain)
-    # A flooded profile, not a tinted edge: the fill is the page's main colour.
-    tally = _colour_tally(filled)
+    assert _FILL_HEX not in _color_tally(plain)
+    # A flooded profile, not a tinted edge: the fill is the page's main color.
+    tally = _color_tally(filled)
     assert max(tally, key=tally.get) == _FILL_HEX
 
     # …and every pixel it covers was bare paper before, so it went under the
@@ -240,13 +240,13 @@ def test_the_lens_aperture_stays_out_of_the_frame_fill():
     scene, front = _front_scene(fill=True)
     comps = {**_sample_components(), "front": front}
     filled = _render(comps, _SETTINGS, "NAME", _fills_for(scene))
-    # The lens centre (24, ~0 in scene mm) is the middle of the front row.
+    # The lens center (24, ~0 in scene mm) is the middle of the front row.
     w = filled.width()
     row_top = min(y for y in range(0, filled.height(), 2)
                   for x in range(0, w, 2)
                   if filled.pixelColor(x, y) != QColor("#ffffff"))
     # Sample a horizontal band a third of the way down the front and confirm
-    # white (the open aperture) still survives inside the coloured profile.
+    # white (the open aperture) still survives inside the colored profile.
     band = row_top + 40
     row = [filled.pixelColor(x, band).name() for x in range(0, w, 2)]
     assert _FILL_HEX in row
@@ -276,7 +276,7 @@ def test_no_fill_spec_paints_exactly_the_old_sheet():
     comps = _sample_components()
     a = _render(comps, _SETTINGS, "NAME", None)
     b = _render(comps, _SETTINGS, "NAME", {})
-    assert _colour_tally(a) == _colour_tally(b)
+    assert _color_tally(a) == _color_tally(b)
     assert _ink_count(a) > 0
 
 
@@ -290,8 +290,8 @@ def test_a_fill_cannot_escape_its_own_component():
     tiny = [_spline([(24, -1), (25, -1), (25, 0), (24, 0)], Layer.ENGRAVING)]
     comps = {**_sample_components(), "front": tiny}
     img = _render(comps, _SETTINGS, "NAME", _fills_for(scene))
-    # A hair of colour inside the 1 mm box is fine; a flooded page is not.
-    assert _colour_tally(img).get(_FILL_HEX, 0) < 20
+    # A hair of color inside the 1 mm box is fine; a flooded page is not.
+    assert _color_tally(img).get(_FILL_HEX, 0) < 20
 
 
 def test_export_writes_a_pdf_with_the_fills(tmp_path):

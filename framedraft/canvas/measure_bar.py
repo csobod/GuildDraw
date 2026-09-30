@@ -1,7 +1,7 @@
 """
 MeasureBar — exact-measurement input overlay.
 
-A floating HUD chip shown near the circle/arc centre while the tool wants a
+A floating HUD chip shown near the circle/arc center while the tool wants a
 radius (same pattern as the Move / Point Move HUDs — it used to be a
 full-width bar pinned at the bottom of the view, behind the scroll bar).
 The user types an exact radius (or diameter) in mm and presses Enter to
@@ -137,7 +137,7 @@ class MeasureBar(QWidget):
     # ------------------------------------------------------------------
 
     def show_radius(self, anchor_scene=None):
-        """Show the chip near *anchor_scene* (the circle/arc centre in scene
+        """Show the chip near *anchor_scene* (the circle/arc center in scene
         mm); with no anchor it sits in the bottom-left corner, clear of the
         scroll bars."""
         self._apply_style()

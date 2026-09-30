@@ -15,7 +15,7 @@ def test_valid_document_passes():
 
 
 def test_drill_holes_on_front_are_accepted():
-    # Drill-mount holes (DRILL circles) are optional, recognised, and closed —
+    # Drill-mount holes (DRILL circles) are optional, recognized, and closed —
     # they must not produce errors or warnings on a valid front.
     curves = [outline(), circle(-15, 0, 10), circle(15, 0, 10),
               circle(-20, 5, 0.7, layer=Layer.DRILL),
