@@ -32,7 +32,7 @@ Thank you to everyone filing issues and keeping the conversation going. For cont
 
 **Drawing tools**
 - Trim, Split, Fillet, Offset and Rebuild act on the curve nearest the click, not the one drawn last. Trim and Split cut exactly where you click.
-- Undo in the middle of a tool no longer duplicates curves, and a right-click no longer acts like a left-click.
+- Undo in the middle of a tool no longer duplicates curves, and a right-click no longer acts like a left-click. Undoing Mirror (bake) turns Ghost back on.
 - A double-click no longer edits a curve on a locked layer, and text can no longer be dragged without an undo step. Dragging a red node keeps it selected.
 - A tool's instructions stay in the status bar; the pointer coordinates have their own place.
 

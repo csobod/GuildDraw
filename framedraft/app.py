@@ -1089,6 +1089,7 @@ class WorkspaceState:
     # Set by MainWindow; called after any curve/dim add/remove/clear so the
     # Layers panel (and any future observer) can refresh.
     on_document_changed = None
+    on_mirror_restored = None     # fn(bool): an undo step brought a Ghost state back
 
     def _notify(self):
         if self.on_document_changed:
@@ -1213,18 +1214,32 @@ class WorkspaceState:
         for t in snapshot.get("texts", []):   # absent in pre-M8 bookmarks
             self.add_text(t)
 
+    # A snapshot may carry "mirror": the Ghost state that belongs with it.
+    # Mirror (bake) switches Ghost off as part of the operation, and only the
+    # geometry came back on Undo — the design showed half a frame until Ghost
+    # was switched on by hand. The step's counterpart on the other stack
+    # records the state being left, so Redo switches it off again.
+
+    def _step_across(self, source: list, target: list) -> None:
+        snapshot = source.pop()
+        current = self.take_snapshot()
+        if "mirror" in snapshot:
+            current["mirror"] = bool(getattr(self, "mirror_enabled", False))
+        target.append(current)
+        self.restore_snapshot(snapshot)
+        if "mirror" in snapshot and self.on_mirror_restored:
+            self.on_mirror_restored(bool(snapshot["mirror"]))
+
     def undo(self) -> bool:
         if not self.undo_stack:
             return False
-        self.redo_stack.append(self.take_snapshot())
-        self.restore_snapshot(self.undo_stack.pop())
+        self._step_across(self.undo_stack, self.redo_stack)
         return True
 
     def redo(self) -> bool:
         if not self.redo_stack:
             return False
-        self.undo_stack.append(self.take_snapshot())
-        self.restore_snapshot(self.redo_stack.pop())
+        self._step_across(self.redo_stack, self.undo_stack)
         return True
 
 
@@ -2644,6 +2659,9 @@ class MainWindow(QMainWindow):
             ws.scene.set_text_edit_callback(self._edit_text_object)
             ws.on_document_changed = (
                 lambda ws=ws: self._schedule_layer_panel_refresh(ws))
+            ws.on_mirror_restored = (
+                lambda on, ws=ws: self._act_mirror.setChecked(on)
+                if ws is self._active_ws else setattr(ws, "mirror_enabled", on))
             ws.scene.geometry_changed = (
                 lambda _curve=None, ws=ws: self._schedule_boxing_follow(ws))
             ws.scene.fill_auto_disabled = (
@@ -6883,6 +6901,8 @@ class MainWindow(QMainWindow):
         axis_x   = self.scene.mirror.x if self.scene.mirror else 0.0
 
         self._push_undo_snapshot()
+        # This step turns Ghost off below; Undo puts it back (see undo()).
+        self._undo_stack[-1]["mirror"] = self._act_mirror.isChecked()
         self.scene.clearSelection()
 
         gid_map: dict = {}

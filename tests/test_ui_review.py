@@ -669,3 +669,27 @@ def test_the_layer_label_follows_new(win):
     win._update_info_label()
     win._new()
     assert win._info_label.text().startswith(win._active_ws.active_layer.value)
+
+
+def test_undoing_mirror_bake_brings_the_ghost_back(win):
+    """The bake switches Ghost off; Undo restored the single lens but left
+    Ghost off, so the design showed half a frame."""
+    ws = win._workspaces[0]
+    it = ws.add_curve(closed_diamond(-30, 0, 20, layer=Layer.LENS))
+    assert win._act_mirror.isChecked()
+    it.setSelected(True)
+    win._on_duplicate_mirror()
+    assert not win._act_mirror.isChecked() and len(ws.doc_curves) == 2
+    win._undo()
+    assert win._act_mirror.isChecked() and ws.mirror_enabled
+    assert len(ws.doc_curves) == 1
+    win._redo()
+    assert not win._act_mirror.isChecked() and len(ws.doc_curves) == 2
+    win._undo()
+    assert win._act_mirror.isChecked()
+    # an ordinary step leaves Ghost as the maker set it
+    win._push_undo_snapshot()
+    ws.add_curve(line([(0, 0), (5, 0)]))
+    win._act_mirror.setChecked(False)
+    win._undo()
+    assert not win._act_mirror.isChecked()

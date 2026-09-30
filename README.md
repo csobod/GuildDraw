@@ -9,7 +9,7 @@ Built with Python + PySide6 (Qt 6). Scene units are true millimeters (1 scene
 unit = 1 mm) end to end: what you draw is what gets cut.
 
 **Status: v1.3.0 — stable.** All drafting features are complete and tested
-(691-test suite), and the full hardware round-trip is proven: physical frames
+(692-test suite), and the full hardware round-trip is proven: physical frames
 have been cut on GuildModel from GuildDraw-exported DXF. The 1.3 round serves
 the hand-made workflow and finishes engraving text as a first-class object:
 *Print Front + Temples* lays the three pieces out at 1:1 on your own paper as
@@ -194,6 +194,8 @@ panel, the canvas tools), with a regression test for each confirmed item in
   the node. The overflow pop-out stays below the menus, and the window can be
   made as short as a small laptop panel needs. Restoring a bookmark mid-tool
   no longer duplicates curves, and the wheel scrolls every list and panel.
+- Undoing Mirror (bake) switches Ghost back on, and Redo switches it off
+  again; Undo used to restore the single lens and leave half a frame showing.
 - American spelling throughout: the interface, the documentation and the
   code (color, center, canceled).
 

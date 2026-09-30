@@ -1928,9 +1928,11 @@ menus; the Properties and Library tabs scroll (the window's floor was
 619 px); `EditTool.clear` reports the node deselected; pressing a red node to
 drag it keeps it red. Closed-curve seam: `_nearest_refined_t` refines on
 both sides of the seam, `split_curve_at_t` opens at the seam node and cuts a
-circle's 0° point opposite, `t_nearest_coarse` ranks hover candidates. Not
-done: undoing Mirror (bake) leaves Ghost off (the mirror flag is not in the
-geometry-only undo snapshot).
+circle's 0° point opposite, `t_nearest_coarse` ranks hover candidates.
+Undoing Mirror (bake) brings Ghost back: that step's snapshot carries a
+`"mirror"` key, `WorkspaceState._step_across` writes the state being left
+into its counterpart on the other stack, and `on_mirror_restored` sets the
+toggle (2026-09-30).
 
 **The suite went from 23 minutes to 19 seconds (2026-09-30).** pytest runs
 no event loop, so `deleteLater()` never ran: every window and dialog a test
