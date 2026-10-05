@@ -24,6 +24,8 @@ Thank you to everyone filing issues and keeping the conversation going. For cont
 | `GuildDraw-1.3.1-macos-arm64.dmg` / `.zip` | **Mac (Apple Silicon, M1 and later).** Drag to Applications. |
 | `GuildDraw-1.3.1-macos-x86_64.dmg` / `.zip` | Mac (Intel). |
 
+The Mac builds need **macOS 13 Ventura or later** (the Qt they are built on sets that floor); Windows builds need Windows 10 or later, 64-bit.
+
 **First launch** (the builds are not signed): on Windows, SmartScreen asks once; click *More info ▸ Run anyway*. On macOS, **right-click the app ▸ Open ▸ Open** once. Details for your IT department: [IT-NOTES](docs/IT-NOTES.md).
 
 Pair it with [GuildModel 1.8.1](https://github.com/csobod/GuildModel/releases/tag/v1.8.1) to cut what you draw.
