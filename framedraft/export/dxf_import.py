@@ -171,13 +171,30 @@ def _ellipse_to_curve(e, layer: Layer) -> list[Curve]:
 # bulged ones expanded into line/arc segments by ezdxf.
 # ---------------------------------------------------------------------------
 
+_SEAM_MM = 1e-4   # a closed polyline's repeated first vertex is folded within this
+
+
+def _straight_polyline(coords: list, layer: Layer, closed: bool) -> list[Curve]:
+    """A bulge-free polyline as one line Curve.
+
+    A closed polyline that repeats its first vertex as its last — how most
+    converters write one, the DXF flag notwithstanding — would otherwise carry
+    a zero-length closing segment: a node sitting on its neighbor, which
+    Rebuild fitted as a hairline cubic and left as a self-intersecting seam
+    that GuildModel could not fill (2026-10-05). Fold it; the closure is implicit."""
+    pts = [(x, y) for (x, y, _b) in coords]
+    if closed and len(pts) > 2 and math.dist(pts[0], pts[-1]) < _SEAM_MM:
+        pts = pts[:-1]
+    nodes = [_sn(x, y) for (x, y) in pts]
+    if len(nodes) < 2:
+        return []
+    return [Curve(kind="line", layer=layer, nodes=nodes, closed=closed)]
+
+
 def _lwpolyline_to_curves(e, layer: Layer) -> list[Curve]:
     pts = list(e.get_points("xyb"))   # (x, y, bulge)
     if all(abs(b) < 1e-9 for (_x, _y, b) in pts):
-        nodes = [_sn(x, y) for (x, y, _b) in pts]
-        if len(nodes) < 2:
-            return []
-        return [Curve(kind="line", layer=layer, nodes=nodes, closed=bool(e.closed))]
+        return _straight_polyline(pts, layer, bool(e.closed))
     return _expand_virtual(e, layer)
 
 
@@ -187,10 +204,7 @@ def _polyline_to_curves(e, layer: Layer):
     coords = [(v.dxf.location.x, v.dxf.location.y, v.dxf.bulge or 0.0)
               for v in e.vertices]
     if all(abs(b) < 1e-9 for (_x, _y, b) in coords):
-        nodes = [_sn(x, y) for (x, y, _b) in coords]
-        if len(nodes) < 2:
-            return []
-        return [Curve(kind="line", layer=layer, nodes=nodes, closed=bool(e.is_closed))]
+        return _straight_polyline(coords, layer, bool(e.is_closed))
     return _expand_virtual(e, layer)
 
 

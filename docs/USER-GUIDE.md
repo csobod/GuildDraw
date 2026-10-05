@@ -1,4 +1,4 @@
-# GuildDraw User Guide (v1.3.0)
+# GuildDraw User Guide (v1.3.1)
 
 GuildDraw drafts eyewear in true millimeters. Everything you draw is at 1:1
 scale; the DXF you export is what the CNC cuts.
@@ -241,12 +241,31 @@ symmetric contour (draw half, then Mirror Close or bake + join).
   **embed** the photo, so a shared project shows it on the recipient's
   machine — and the file never records where the photo came from on yours.
 
-## 4. Importing & lens traces (DXF, OMA/DCS)
+## 4. Importing & lens traces (DXF, SVG, OMA/DCS)
 
 - **File → Import → DXF…** brings any DXF into the active workspace. Entities on
   recognized GuildDraw layers (OUTLINE/LENS/…) keep them; everything else lands
   on the active layer, selected, so you can drag each path to the right layer in
-  the Layers panel. Use it to migrate an existing frame library.
+  the Layers panel. Use it to migrate an existing frame library. A closed
+  polyline that repeats its first vertex, as most converters write one, is
+  folded so the curve has no zero-length seam.
+- **File → Import → SVG…** brings any SVG into the active workspace: a logo for
+  a temple engraving, a shape from a colleague's drawing, an outline traced in
+  another editor. Paths come in as the exact cubic splines the file holds, one
+  spline per subpath; `rect`, `circle`, `ellipse`, `line`, `polyline` and
+  `polygon` are read too. Groups labeled with a GuildDraw layer name that this
+  workspace uses (Inkscape's layer name, or an `id`) keep the layer; everything
+  else lands on the active layer, selected. The import asks for a **width** and
+  the height follows. A file that declares a physical size (mm, cm, in, pt)
+  imports at that size and where the file places it, so a drawing exported at
+  true scale comes back where it was; a file with no physical size, which is
+  most logos, is read at 96 px/in and **centered on the view**, ready to be
+  sized. Text, clones (`use`) and images are not imported and are counted in
+  the status bar: convert text to paths and expand clones in your editor first.
+  To engrave a logo, draw or import it on a temple's ENGRAVING layer; GuildModel
+  1.8.1 cuts a drawn closed shape as a filled engraving (a closed curve drawn
+  inside it is left standing, so an O is two circles), traces a drawn open
+  curve as a stroke, and engraves text as stroke centerlines.
 - **File → Import → OMA Lens Trace…** reads a frame-tracer / lab DCS file
   (TRCFMT format 1). Traces land in Frame Front as editable LENS splines,
   boxing centers on y=0, nasal edges separated by the file's DBL (or the

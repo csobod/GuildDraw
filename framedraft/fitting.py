@@ -44,6 +44,7 @@ Pt = Tuple[float, float]
 # ---------------------------------------------------------------------------
 
 _DEDUP_EPS_MM      = 1e-7   # consecutive points closer than this merge
+_HAIRLINE_MM       = 0.01   # a fitted node this close to its neighbor is the same node
 _MAX_SPLIT_DEPTH   = 48     # recursion guard for the tolerance fit
 _REPARAM_ITERS     = 8      # Newton–Raphson passes per fit attempt
 _REPARAM_FACTOR    = 20.0   # only iterate when the first fit is within tol·this
@@ -289,8 +290,34 @@ def _cubics_to_curve(cubics: List[List[Pt]], closed: bool,
         end.cp_in = ControlPoint(*last[2])
         nodes.append(end)
 
-    return Curve(kind="spline", layer=layer, nodes=nodes,
+    return Curve(kind="spline", layer=layer, nodes=_merge_hairline_nodes(nodes, closed),
                  closed=closed, line_weight=line_weight)
+
+
+def _merge_hairline_nodes(nodes: List[SplineNode], closed: bool) -> List[SplineNode]:
+    """Drop a node that sits on its predecessor — a fitted cubic shorter than
+    ``_HAIRLINE_MM``. The survivor takes the dropped node's outgoing handle, so
+    the chain stays continuous.
+
+    Seen 2026-10-05: a converter had closed a path with a 4 µm segment back
+    to its start. The corner detector read that hairline as a corner, the
+    fitter honored it with a 4 µm cubic, and the closed spline came out with
+    its last node on its first — a ring that intersects itself at the seam,
+    which GuildModel's engraving could not fill. The hairline carries no
+    shape; merging it is what a maker would do by hand."""
+    if len(nodes) < 3:
+        return nodes
+    out = [nodes[0]]
+    for n in nodes[1:]:
+        if math.hypot(n.x - out[-1].x, n.y - out[-1].y) <= _HAIRLINE_MM:
+            out[-1].cp_out = n.cp_out
+            continue
+        out.append(n)
+    if (closed and len(out) >= 3
+            and math.hypot(out[0].x - out[-1].x, out[0].y - out[-1].y) <= _HAIRLINE_MM):
+        out[0].cp_in = out[-1].cp_in
+        out.pop()
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -8,9 +8,12 @@ nothing else.
 Built with Python + PySide6 (Qt 6). Scene units are true millimeters (1 scene
 unit = 1 mm) end to end: what you draw is what gets cut.
 
-**Status: v1.3.0 — stable.** All drafting features are complete and tested
-(692-test suite), and the full hardware round-trip is proven: physical frames
-have been cut on GuildModel from GuildDraw-exported DXF. The 1.3 round serves
+**Status: v1.3.1 — stable.** All drafting features are complete and tested,
+and the full hardware round-trip is proven: physical frames have been cut on
+GuildModel from GuildDraw-exported DXF. The 1.3.1 update adds **File ▸ Import
+▸ SVG…**, so a logo or a colleague's drawing from any editor comes in as exact
+curves at the size you choose, and closes a hidden seam that closed shapes
+from other programs could carry (see *New in 1.3.1*). The 1.3 round serves
 the hand-made workflow and finishes engraving text as a first-class object:
 *Print Front + Temples* lays the three pieces out at 1:1 on your own paper as
 cutting templates, engraving text now copies, pastes, transforms and travels
@@ -57,6 +60,28 @@ files (see *New in 1.0*).
 - **Clean DXF out**: R2000 SPLINE entities (exact Bézier → B-spline, never
   flattened), strict layer vocabulary, per-workspace validation, and batch
   export of all four workspaces in one go.
+
+## New in 1.3.1
+
+- **Import SVG** — File ▸ Import ▸ *SVG…* reads any SVG into the active
+  workspace. Paths come in as the cubic splines the file holds, one spline per
+  subpath, with straight segments left straight; `rect`, `circle`, `ellipse`,
+  `line`, `polyline` and `polygon` are read too, and a circle that is still a
+  circle after its transforms stays a GuildDraw circle. Groups labeled with a
+  GuildDraw layer name that the workspace uses keep the layer; everything
+  else lands on the active layer, selected. The import asks for a width and
+  the height follows; a file that declares a physical size imports at that
+  size and where the file places it, so a drawing exported at true scale
+  comes back where it was, while a file with no physical size (most logos) is
+  read at 96 px/in and centered on the view, ready to be sized. Text, clones
+  and images are counted in the status bar rather than dropped silently.
+- **A closed shape from another program no longer carries a hidden seam.** A
+  closed polyline that repeats its first vertex, which is how most DXF
+  converters write one, imported with a zero-length segment, and Rebuild then
+  fitted the hairline as a node sitting on its neighbor: a spline that crossed
+  itself at the seam, which GuildModel's engraving could not fill. DXF import
+  folds the repeated vertex; Rebuild and SVG import merge a hairline into its
+  neighbor.
 
 ## New in 1.3
 

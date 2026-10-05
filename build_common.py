@@ -57,6 +57,7 @@ _HIDDEN_FRAMEDRAFT = [
     "framedraft.export.svg",
     "framedraft.export.dxf",
     "framedraft.export.dxf_import",
+    "framedraft.export.svg_import",
     "framedraft.export.png",
     "framedraft.export.validate",
     "framedraft.export.gdraw",

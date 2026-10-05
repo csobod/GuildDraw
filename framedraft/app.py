@@ -5764,6 +5764,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         imp = file_menu.addMenu("Import")
         imp.addAction("DXF…", self._import_dxf)
+        imp.addAction("SVG…", self._import_svg)
         imp.addAction("OMA Lens Trace…", self._import_oma)
         exp = file_menu.addMenu("Export")
         exp.addAction("DXF…", self._export_dxf)
@@ -9282,6 +9283,120 @@ class MainWindow(QMainWindow):
         if notes:
             msg += "  " + "  ".join(notes)
         self._status.showMessage(msg)
+
+    def _import_svg(self):
+        """File > Import > SVG… — pour any SVG's geometry into the active
+        workspace: a logo for a temple engraving, a shape from a colleague's
+        drawing, an outline traced in another editor.  Paths arrive as the
+        exact cubic splines the file holds; a group labeled with a GuildDraw
+        layer name valid here keeps the layer, everything else lands on the
+        active layer, selected.  A file that declares no physical size is
+        read at 96 px/in and offered a size, since a logo drawn at page size
+        is never wanted at page size on a temple."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import SVG", "", "SVG Files (*.svg);;All Files (*)")
+        if not path:
+            return
+        ws = self._active_ws
+        try:
+            from .export.svg_import import place_curves, read_svg
+            doc = read_svg(path, ws.active_layer, ws.workspace_type)
+        except Exception as e:
+            QMessageBox.critical(self, "SVG import failed", str(e))
+            return
+        if not doc.curves:
+            extra = ("\n\n" + "\n".join(doc.notes)) if doc.notes else ""
+            QMessageBox.information(
+                self, "Nothing imported",
+                f"No supported geometry was found in this SVG.{extra}")
+            return
+
+        answer = self._ask_svg_import(doc, os.path.basename(path))
+        if answer is None:
+            return                              # canceled
+        scale, center_on_view = answer
+        center = None
+        if center_on_view:
+            r = self._view_source_rect()
+            center = (r.center().x(), r.center().y())
+        curves = place_curves(doc.curves, scale=scale, center=center)
+
+        self._push_undo_snapshot()
+        self.scene.clearSelection()
+        for c in curves:
+            c.mirrored = False
+            ws.add_curve(c).setSelected(True)
+
+        msg = (f"Imported {len(curves)} curve(s) from {os.path.basename(path)} at "
+               f"{doc.width_mm * scale:.2f} × {doc.height_mm * scale:.2f} mm.")
+        if doc.notes:
+            msg += "  " + "  ".join(doc.notes)
+        self._status.showMessage(msg)
+
+    def _ask_svg_import(self, doc, filename: str) -> tuple[float, bool] | None:
+        """Size and placement for an SVG import.
+
+        Returns ``(scale, center_on_view)`` — the uniform factor to apply to the
+        file's own millimeters, and whether to land the result in the middle of
+        the view rather than where the file places it — or None if the maker
+        canceled.  Split out so tests can monkeypatch the answer without driving
+        a modal dialog."""
+        import html as _html
+        w0, h0 = doc.width_mm, doc.height_mm
+        ref = w0 if w0 > 1e-9 else h0
+        basis = ("at the size the file declares" if doc.physical
+                 else "at 96 pixels per inch — the file declares no physical size")
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Import SVG")
+        lay = QVBoxLayout(dlg)
+        note = QLabel(
+            f"<b>{_html.escape(filename)}</b> holds {len(doc.curves)} curve(s), "
+            f"{w0:.2f} × {h0:.2f} mm {basis}.<br><br>"
+            "Set the width to import it at another size; the height follows.")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+
+        spin = QDoubleSpinBox()
+        spin.setRange(0.01, 10000.0)
+        spin.setDecimals(2)
+        spin.setSuffix(" mm")
+        spin.setValue(w0 if w0 > 1e-9 else h0)
+        height_lbl = QLabel()
+
+        def _show_height(v: float) -> None:
+            if w0 > 1e-9:
+                height_lbl.setText(f"{h0 * v / w0:.2f} mm")
+            else:
+                height_lbl.setText(f"{v:.2f} mm")
+        spin.valueChanged.connect(_show_height)
+        _show_height(spin.value())
+        form = QFormLayout()
+        form.addRow("Width:" if w0 > 1e-9 else "Height:", spin)
+        form.addRow("Height:" if w0 > 1e-9 else "Width:",
+                    height_lbl if w0 > 1e-9 else QLabel("0.00 mm"))
+        lay.addLayout(form)
+        spin.setEnabled(ref > 1e-9)
+
+        center_cb = QCheckBox("Center on the view")
+        center_cb.setChecked(not doc.physical)
+        center_cb.setToolTip(
+            "On: the geometry lands in the middle of what you are looking at.\n"
+            "Off: it lands where the file places it, in millimeters from the "
+            "file's origin — a drawing exported at true scale comes back where "
+            "it was.")
+        lay.addWidget(center_cb)
+
+        btns = QDialogButtonBox()
+        b_import = btns.addButton("Import", QDialogButtonBox.AcceptRole)
+        btns.addButton(QDialogButtonBox.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        b_import.setDefault(True)
+        lay.addWidget(btns)
+        if _run_modal(dlg) != QDialog.Accepted:
+            return None
+        scale = (spin.value() / ref) if ref > 1e-9 else 1.0
+        return scale, center_cb.isChecked()
 
     def _ask_oma_import_bevel(self, default_depth: float) -> float | None:
         """Ask whether to shrink an imported OMA trace by the bevel depth.
