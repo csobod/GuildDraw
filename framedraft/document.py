@@ -12,9 +12,12 @@ class Layer(str, Enum):
     REF       = "REF"
     SCULPT    = "SCULPT"     # back-surface scallop lines (Frame Front → GuildModel)
     ENGRAVING = "ENGRAVING"  # engraving marks (Temple)
+    INLAY     = "INLAY"      # a seat for a plaque, a laminate or a plate (2.0; front
+                             # and temples). GuildModel owns its depth and face.
 
 
-MACHINED_LAYERS = {Layer.OUTLINE, Layer.LENS, Layer.BRIDGE, Layer.HINGE, Layer.DRILL}
+MACHINED_LAYERS = {Layer.OUTLINE, Layer.LENS, Layer.BRIDGE, Layer.HINGE, Layer.DRILL,
+                   Layer.INLAY}
 ALL_LAYER_NAMES = {l.value for l in Layer}
 
 # Layers whose geometry is duplicated across the mirror axis at DXF export
@@ -26,10 +29,15 @@ MIRRORED_LAYERS = {Layer.LENS, Layer.HINGE, Layer.SCULPT, Layer.DRILL}
 
 # Layers available per workspace (strict — layer combo filtered to these).
 # BRIDGE exists in the enum for future GuildModel bridge-path tooling (deferred).
+# INLAY is never mirrored: a seat is drawn where it is cut, and a pair comes
+# from Mirror (bake), the way OUTLINE and ENGRAVING work.
 WORKSPACE_LAYERS: dict[str, list[Layer]] = {
-    "front":    [Layer.OUTLINE, Layer.LENS, Layer.DRILL, Layer.SCULPT, Layer.HINGE, Layer.REF],
-    "temple_r": [Layer.OUTLINE, Layer.ENGRAVING, Layer.SCULPT, Layer.HINGE, Layer.REF],
-    "temple_l": [Layer.OUTLINE, Layer.ENGRAVING, Layer.SCULPT, Layer.HINGE, Layer.REF],
+    "front":    [Layer.OUTLINE, Layer.LENS, Layer.DRILL, Layer.SCULPT, Layer.INLAY,
+                 Layer.HINGE, Layer.REF],
+    "temple_r": [Layer.OUTLINE, Layer.ENGRAVING, Layer.INLAY, Layer.SCULPT, Layer.HINGE,
+                 Layer.REF],
+    "temple_l": [Layer.OUTLINE, Layer.ENGRAVING, Layer.INLAY, Layer.SCULPT, Layer.HINGE,
+                 Layer.REF],
     "hinge":    [Layer.HINGE,   Layer.REF],
 }
 

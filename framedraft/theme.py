@@ -102,6 +102,7 @@ _TOKENS: dict[str, tuple[str, str]] = {
 _LAYER_DEFAULTS: dict[str, tuple[str, str]] = {
     "SCULPT":    ("#8e44ad", "#c39bd3"),   # purple — back-surface geometry
     "ENGRAVING": ("#16a085", "#48c9b0"),   # teal   — engraving marks
+    "INLAY":     ("#a67c00", "#e0b84c"),   # gold   — a seat for a plaque or a plate
 }
 
 _dark: bool = False
@@ -178,7 +179,7 @@ def layer_color(layer) -> str:
     """Resolved color for a document Layer (enum or name string).
 
     Order: user override for ``layer.<NAME>`` → the layer's own default
-    (SCULPT/ENGRAVING) → the shared ``geometry.ink``."""
+    (SCULPT/ENGRAVING/INLAY) → the shared ``geometry.ink``."""
     name = getattr(layer, "value", str(layer))
     mode = "dark" if _dark else "light"
     ov = _overrides[mode].get(f"layer.{name}")

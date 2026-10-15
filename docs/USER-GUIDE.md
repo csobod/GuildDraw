@@ -10,8 +10,8 @@ layers, guides, and undo history:
 
 | Tab | Purpose | Machined layers |
 |---|---|---|
-| **Frame Front** | The front: outline + lenses | `OUTLINE` ×1, `LENS` ≥1, optional `DRILL` |
-| **Temple R / L** | Each temple arm | `OUTLINE` ×1, optional `HINGE`, `ENGRAVING` |
+| **Frame Front** | The front: outline + lenses | `OUTLINE` ×1, `LENS` ≥1, optional `DRILL`, `INLAY` |
+| **Temple R / L** | Each temple arm | `OUTLINE` ×1, optional `HINGE`, `ENGRAVING`, `INLAY` |
 | **Hinge Pocket** | Hinge recess geometry | `HINGE` ≥1 |
 
 At least one `LENS` contour is required for a GuildModel-ready front (a classic
@@ -161,6 +161,13 @@ Each layer row's tooltip says what the layer becomes in GuildModel:
   **island** left standing, so an O is two circles; an open curve is traced
   as a **stroke**; **text** is engraved as stroke centerlines and stays
   editable text in the `.gdraw` (a DXF carries it as outlines).
+- `INLAY` (front and temples, 2.0) is a seat for a plaque, a laminate or a
+  metal plate: a closed curve GuildModel cuts to a depth and on a face it
+  keeps per inlay, the visible face by default. An inlay inside an inlay is a
+  **step**; an inlay inside the `HINGE` curve is a step in the hinge pocket's
+  floor. Inlays never cross a lens, a drill hole, a hinge curve or a
+  decorative opening, and two inlays either nest or stay apart. They are not
+  mirrored: draw each seat, or Mirror (bake) a pair.
 - `REF` is reference geometry: never exported, and GuildModel ignores it.
 
 ### Mirror system (frame front)
@@ -414,6 +421,9 @@ complete, and GuildModel's intake is the final gate):
 - Hinge Pocket: at least 1 `HINGE`, no `OUTLINE`/`LENS`.
 - Machined contours must be closed (a gap ≤ 0.1 mm is auto-closed at export
   and warned about; a larger one is reported as not ready).
+- `INLAY` seats lie inside the profile, never cross a `LENS`, `DRILL` or
+  `HINGE` curve (inside a hinge curve is a step) or a decorative opening, and
+  either nest or stay apart.
 - Warnings only: an `OUTLINE` that leaves the stock guide (front or temple,
   with the overrun in mm; set the guide to your blank once, in Preferences),
   and a temple `OUTLINE` that does not cross the core line (y = 0), with the

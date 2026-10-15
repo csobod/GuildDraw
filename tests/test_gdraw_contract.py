@@ -64,7 +64,8 @@ def written(win, tmp_path):
     for c in (closed_diamond(0, 0, 40, layer=Layer.OUTLINE),
               circle(-15, 0, 10), circle(15, 0, 10),
               arc(0, -30, 5, 0, 90, layer=Layer.REF),
-              line([(0, 0), (10, 0)], layer=Layer.REF)):
+              line([(0, 0), (10, 0)], layer=Layer.REF),
+              closed_diamond(0, -30, 4, layer=Layer.INLAY)):
         front.add_curve(c)
     temple.add_curve(line([(0, -5), (120, -5), (120, 5), (0, 5)], closed=True,
                           layer=Layer.OUTLINE))
@@ -111,6 +112,10 @@ def test_every_curve_kind_is_spelled_the_way_guildmodel_reads_it(written):
     assert spline["closed"] is True
     for n in spline["nodes"]:
         assert {"x", "y"} <= set(n["cp_in"]) and {"x", "y"} <= set(n["cp_out"])
+    # The 2.0 layer travels under its own name, closed, for GuildModel's
+    # inlay feature to find.
+    inlays = [c for c in front["curves"] if c["layer"] == "INLAY"]
+    assert len(inlays) == 1 and inlays[0]["closed"] is True
 
 
 def test_text_stays_text_with_the_fields_guildmodel_engraves_from(written):

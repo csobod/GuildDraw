@@ -583,7 +583,8 @@ against the host's system libraries.
   contours inside it are decorative openings), `LENS` ≥1 (at least one lens
   is required; a classic pair is two, but aviators and other shapes may carry
   more), `BRIDGE`/`HINGE` optional, `DRILL` (mirrors with the lens), `REF`
-  ignored, `SCULPT` (back-surface), `ENGRAVING` (temples).
+  ignored, `SCULPT` (back-surface), `ENGRAVING` (temples), `INLAY` (2.0: a
+  closed seat inside the profile, nested for steps; never mirrored).
 - Scene is Y-down; DXF is Y-up — Y is negated on export.
 
 ## License

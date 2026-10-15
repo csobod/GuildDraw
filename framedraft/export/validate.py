@@ -6,11 +6,12 @@ Scene units are mm (1 scene unit = 1 mm), so all coordinates are used
 directly without any px_per_mm conversion.
 """
 import math
-from ..document import Curve, Layer, MACHINED_LAYERS
+from ..document import Curve, Layer, MACHINED_LAYERS, MIRRORED_LAYERS
 
 
 _CLOSURE_TOL_MM = 0.1   # GuildModel auto-closes within 0.1 mm
 _STOCK_TOL_MM   = 0.05  # an OUTLINE this far past the stock guide is on it
+_AREA_TOL_MM2   = 1e-3  # an overlap or an overrun smaller than this is touching
 
 
 def _endpoint_gap_mm(curve: Curve) -> float:
@@ -30,11 +31,24 @@ def _classify_extra_outlines(outlines: list) -> tuple[int, int]:
     Returns ``(n_holes, n_stray)``. Degenerate contours (fewer than 3 sample
     points or zero area) count as neither — GuildModel drops slivers too.
     """
+    polys = _area_polys(outlines)
+    if len(polys) < 2:
+        return 0, 0
+    shell = max(polys, key=lambda p: p.area)
+    holes = len(_openings(polys, shell))
+    return holes, len(polys) - 1 - holes
+
+
+def _area_polys(curves: list) -> list:
+    """Shapely polygons for the curves that enclose an area, in draw order.
+    An invalid ring is repaired and the largest piece kept; degenerate curves
+    (fewer than 3 sample points, or zero area) yield nothing, as GuildModel
+    drops slivers too."""
     from shapely.geometry import Polygon
     from ..geometry import sample_curve
 
     polys = []
-    for c in outlines:
+    for c in curves:
         pts = [(x, y) for x, y, _t in sample_curve(c)]
         if len(pts) < 3:
             continue
@@ -48,21 +62,16 @@ def _classify_extra_outlines(outlines: list) -> tuple[int, int]:
             continue
         if poly.area > 0:
             polys.append(poly)
-    if len(polys) < 2:
-        return 0, 0
+    return polys
 
-    shell = max(polys, key=lambda p: p.area)
-    holes = stray = 0
-    for p in polys:
-        if p is shell:
-            continue
-        # representative_point() is guaranteed inside p, so this is a true
-        # containment test even when the curves share a tangent point.
-        if shell.contains(p.representative_point()):
-            holes += 1
-        else:
-            stray += 1
-    return holes, stray
+
+def _openings(polys: list, shell) -> list:
+    """The polygons other than ``shell`` that lie inside it: the decorative
+    openings GuildModel cuts through. representative_point() is guaranteed
+    inside its polygon, so this is a true containment test even when the
+    curves share a tangent point."""
+    return [p for p in polys
+            if p is not shell and shell.contains(p.representative_point())]
 
 
 def _outline_bounds(outlines: list):
@@ -129,6 +138,71 @@ def _origin_checks(outlines: list, workspace_type: str,
                 f"OUTLINE runs {over:.1f} mm past the {w:g} × {h:g} mm stock "
                 "guide, which GuildModel centers on the origin."
             )
+
+
+def _inside(p, q) -> bool:
+    return p.difference(q).area <= _AREA_TOL_MM2
+
+
+def _crosses(p, q) -> bool:
+    """Partial overlap: the two share area and neither holds the other."""
+    return (p.intersection(q).area > _AREA_TOL_MM2
+            and not _inside(p, q) and not _inside(q, p))
+
+
+def _inlay_checks(export: list, mirror_on: bool, workspace_type: str,
+                  errors: list) -> None:
+    """INLAY (2.0): a closed seat for a plaque, a laminate or a plate, which
+    GuildModel cuts to a depth and on a face it keeps per inlay. The drawing
+    carries the geometry only, and these rules keep it cuttable: a seat lies
+    inside the profile; it never crosses a LENS aperture, a DRILL hole or a
+    decorative opening (a closed OUTLINE curve inside the profile), all cut
+    through; it never crosses a HINGE curve, though inside one it is a step
+    in the hinge pocket's floor; and two inlays nest (a step) or stay apart,
+    since a partial overlap has no cut order. Errors, since GuildModel cannot
+    cut them as drawn. The Ghost copies of LENS, DRILL and HINGE count, as
+    they are cut."""
+    inlays = [c for c in export if c.layer == Layer.INLAY]
+    if not inlays:
+        return
+    from ..geometry import mirror_curve
+    horizontal = workspace_type in ("temple_r", "temple_l")
+
+    def layer_polys(layer: Layer) -> list:
+        curves = [c for c in export if c.layer == layer]
+        if mirror_on and layer in MIRRORED_LAYERS:
+            curves = curves + [mirror_curve(c, 0.0, horizontal=horizontal)
+                               for c in curves]
+        return _area_polys(curves)
+
+    seats = _area_polys(inlays)
+    outlines = layer_polys(Layer.OUTLINE)
+    profile = max(outlines, key=lambda p: p.area) if outlines else None
+    apertures = [("a LENS curve", p) for p in layer_polys(Layer.LENS)]
+    apertures += [("a DRILL curve", p) for p in layer_polys(Layer.DRILL)]
+    if profile is not None:
+        apertures += [("a decorative opening (a closed OUTLINE curve inside "
+                       "the profile)", p) for p in _openings(outlines, profile)]
+    hinges = layer_polys(Layer.HINGE)
+
+    for i, seat in enumerate(seats, 1):
+        if profile is not None and not _inside(seat, profile):
+            errors.append(
+                f"INLAY {i} leaves the OUTLINE profile; a seat lies inside the part.")
+        for what, cut in apertures:
+            if seat.intersection(cut).area > _AREA_TOL_MM2:
+                errors.append(f"INLAY {i} crosses {what}.")
+                break
+        if any(_crosses(seat, h) for h in hinges):
+            errors.append(
+                f"INLAY {i} crosses a HINGE curve; draw it inside the hinge "
+                "outline for a step in the pocket's floor, or beside it.")
+    for i in range(len(seats)):
+        for j in range(i + 1, len(seats)):
+            if _crosses(seats[i], seats[j]):
+                errors.append(
+                    f"INLAY {i + 1} and INLAY {j + 1} overlap without nesting; "
+                    "nest one inside the other for a step, or move them apart.")
 
 
 def _outline_layer_check(outlines: list, errors: list, warnings: list,
@@ -200,6 +274,7 @@ def validate(
                 f"Need at least 1 LENS contour, found {by_layer[Layer.LENS]}."
             )
         _origin_checks(outlines, workspace_type, stock_mm, warnings)
+        _inlay_checks(export, mirror_on, workspace_type, errors)
     elif workspace_type in ("temple_r", "temple_l"):
         _outline_layer_check(outlines, errors, warnings, "Temple needs at least")
         if by_layer[Layer.LENS]:
@@ -208,6 +283,7 @@ def validate(
                 f"(found {by_layer[Layer.LENS]})."
             )
         _origin_checks(outlines, workspace_type, stock_mm, warnings)
+        _inlay_checks(export, mirror_on, workspace_type, errors)
     elif workspace_type == "hinge":
         if by_layer[Layer.HINGE] < 1:
             errors.append("Hinge pocket needs at least 1 HINGE contour.")

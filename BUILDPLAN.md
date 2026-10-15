@@ -66,6 +66,15 @@ Item 2, *Open in GuildModel*, was built and dropped the same day: the apps
 never launch each other (see the item). The review fixed three faults first
 (items 1 and 3). 776 tests.
 
+*2026-10-15, the leap.* There is no 1.4.0: the 1.4 round and GuildModel's
+held 1.8.2 work ship inside **2.0.0 on both sides** (*Road to 2.0* below).
+GuildModel's side is complete (§8a inlays, M21 to M26). Item 1 here, the
+INLAY layer, is committed, with a rule the review added: a seat never
+crosses a decorative opening. The maker added two items the same day,
+Inlay Fill and View Obverse (items 7 and 8; the obverse turns every tab left
+to right). 787 tests. Next: those two, then item 3's writer and item 5;
+item 6 is decided after item 5.
+
 ---
 
 ## 1. Goal & scope *(unchanged — archive §1)*
@@ -113,6 +122,16 @@ stroke, text as stroke centerlines (a `.gdraw` keeps text as text; a DXF
 temple is unchanged). GuildModel watches the open drawing for a save;
 GuildDraw's save is atomic (a temp file replaced into place beside the
 `.bak`), so the watcher sees one complete file. Do not regress it.
+
+**2026-10-15 addendum — INLAY (2.0).** A ninth layer, `INLAY`, on the front
+and the temples: a closed seat for a plaque, a laminate or a plate. The
+drawing carries geometry only; GuildModel keeps depth, face (the visible face
+by default), step-or-island and the floor per inlay. Nested seats are steps;
+a seat inside a HINGE curve is a step in the hinge pocket's floor. The
+validator refuses a seat outside the profile, one crossing a LENS, DRILL or
+HINGE curve or a decorative opening, and two seats that overlap without
+nesting. Never mirrored. GuildModel 2.0 reads it, models it in all three
+kernels and cuts it (its §8a).
 
 ---
 
@@ -2101,12 +2120,112 @@ owner.
 
 ## Release
 
+*Superseded 2026-10-15: there is no v1.4.0. This round ships inside 2.0.0,
+see *Road to 2.0* below; the paragraph stays as the pattern the 2.0 notes
+follow.*
+
 v1.4.0 beside GuildModel 1.8.2. `docs/RELEASE-v1.4.0.md` after 1.3.1's
 pattern, with one paragraph on the origin rule (what a maker who drew a temple
 off the zero line sees in GuildModel, and the box that restores the old
 placement); the two apps' notes link each other; the README's status
 paragraph; the version in `framedraft/__init__.py` and `pyproject.toml`;
 Windows and macOS builds from GitHub Actions; the installer unchanged.
+
+---
+
+# Road to 2.0 — the leap with GuildModel 2.0 (2026-10-15)
+
+> **The decision.** 1.3.1 and GuildModel 1.8.1 stay the published releases;
+> everyone is content with them. The 1.4 round and GuildModel's held 1.8.2
+> work are not cut as releases: they ship inside **2.0.0 on both sides**, the
+> big affair, when GuildModel's leap lands (its BUILDPLAN: inlays in §8a,
+> then M21 to M26). GuildDraw's job in the meantime is every change
+> commensurate with that leap, so a 2.0 drawing is what 2.0 machining
+> expects. A few days is fine.
+
+## What GuildModel 2.0 plans, and what each asks of GuildDraw
+
+| GuildModel 2.0 | GuildDraw |
+|---|---|
+| **Inlays** (§8a there, before M24): a closed INLAY curve is a seat for a plaque, a laminate or a plate. Depth, face (the visible face by default), step-or-island and the floor are kept per inlay in GuildModel; nested curves are steps; one inside a HINGE curve is a step in the hinge pocket's floor. | The INLAY layer on the front and the temples, geometry only, with the rules that keep it cuttable (item 1). |
+| **M24, two-sided machining**: setups, the flip, the anterior relief run through the generators that exist; anterior features are "modeled, not posted" first. | Nothing the drawing must carry: the face is a per-feature choice in GuildModel. What it unlocks here: ENGRAVING on the front (item 2) and the BRIDGE path (item 4). |
+| **M21 stock engine, M23 press dies, M25 pre-curved blank, M26 fourth axis**: stock, forming and the bed. | The forming metadata already travels (apical radius, frontal angle). The guide sizes as the stock seed (item 3) is the one addition. |
+| **M22 sculpts**: STL meshes dropped and snapped in GuildModel. | SCULPT stays the castle's section cuts; the layer tooltip says so. Nothing new. |
+| M20's interface: collapsible groups, icon buttons, quiet fields. | Parity where the dock wants it (item 5). |
+
+## What lands
+
+1. **The INLAY layer.** ✅ **Landed 2026-10-15.** `Layer.INLAY`, machined,
+   never mirrored, on the front and both temples; gold in both modes; a
+   layer-row tooltip; DXF under its own name; the contract test pins it. The
+   validator refuses, as errors, a seat outside the OUTLINE profile, one
+   crossing a LENS, DRILL or HINGE curve (inside a HINGE curve is a step in
+   the pocket's floor) or a decorative opening (a closed OUTLINE curve
+   inside the profile, cut through), and two seats that overlap without
+   nesting; the Ghost copies of LENS, DRILL and HINGE count, since they are
+   cut. The review before the commit added the decorative opening, which
+   had let a seat sit in air. The drawing carries geometry only: depth,
+   face, step-or-island and the floor are GuildModel's, per inlay, and
+   GuildModel 2.0 reads, models and cuts the layer (its §8a). A 2.0 drawing
+   with INLAY curves does not open in 1.3.x: that tab loads with an error,
+   which the startup version gate explains. Eleven tests.
+2. **ENGRAVING on the front**, once GuildModel reads a front's engraving
+   with a face (M24): the front's layer list gains ENGRAVING, the Text tool
+   allows the front, the engraving rules apply there, and the catalog PDF's
+   layer choice lists it. Not before GuildModel's reader, so a front
+   engraving is never silently ignored.
+3. **Guide sizes in the `.gdraw`** (item 5 of 1.4, carried): an optional
+   `guides` key per workspace with the stock guide's width and height, and
+   the pad block's on the front, so GuildModel seeds a new project's blank
+   from the drawing. The writer and its contract test may land first: an
+   optional key GuildModel ignores until a GuildModel session reads it.
+4. **The BRIDGE path** (Proposal B, which waited for M24): a drawn centerline
+   with taper parameters in a `bridge` sidecar, pink, front only; on the DXF
+   BRIDGE layer and in the `.gdraw`; the validator's open-centerline rule.
+   Needs GuildModel's choice of centerline-plus-parameters against the
+   pre-offset envelope, and its anterior bridge cut.
+5. **Interface parity from GuildModel M20** (item 6 of 1.4, carried):
+   collapsible group headers for the Properties dock, icon buttons where a
+   row of text buttons overflows, the wheel guard kept.
+6. **The drafting round, proposed for 2.0:** the symmetry checker, the
+   curvature comb, the lens-shape library and *New from measurements* (Tier B
+   1, 3, 4 and 6). A 2.0 that is only a contract change on the drawing side
+   is thin; the maker decides whether these ride along.
+7. **Inlay Fill**, the maker's item (2026-10-15): an Inlay Fill box under
+   Frame Fill in the Guides panel. Color and opacity, or an image scaled to
+   cover each closed INLAY body (a turquoise stone photo, say), one copy per
+   body; with several bodies, *Tumble bodies* turns each copy differently so
+   one photo reads as several stones, the same way each time the file
+   opens. It paints above the frame fill, since an inlay is taken to sit on
+   the anterior; a nested seat (a step) paints over its parent. Display only:
+   saved per workspace in the `.gdraw` with its swatch, the way the Frame
+   Fill's is, printed with the fills on the catalog page, never machined.
+8. **View Obverse**, the maker's item (2026-10-15): a view toggle per
+   workspace that shows the other face. A front is drawn facing the
+   anterior, as its reference photo is; a temple faces the posterior, the
+   skin side, so engraved text reads naturally. The obverse view mirrors the
+   whole scene left to right (x → −x) on every tab, the orientation
+   GuildModel's reader gives each part; the maker chose that over turning a
+   temple about its length. A badge in the canvas corner says *Obverse* and,
+   under it, the face toward the viewer: a front's posterior, a temple's
+   anterior. A view transform only: the document, snapping and every export
+   are unchanged.
+9. **Release 2.0.0, both apps together.** The versions in
+   `framedraft/__init__.py` and `pyproject.toml`; `docs/RELEASE-v2.0.0.md`
+   with the 1.4 round's notes folded in (the origin rule, the folder catalog,
+   the layer tooltips) and the INLAY layer; the README's status paragraph and
+   contract list; the USER-GUIDE's version; builds from GitHub Actions; the
+   installer unchanged. The notes say that a 2.0 drawing with inlays does not
+   open in 1.3.x.
+
+## Order
+
+Item 1 is done. Items 7 and 8, the maker's, come next; neither needs
+anything from GuildModel. Then item 3's writer, ahead of GuildModel's reader,
+and item 5. Item 6 is decided after item 5. Item 2 waits on GuildModel
+reading a front's engraving with a face, and item 4 on its bridge decision
+and anterior bridge cut. The release is last, with GuildModel's, whose own
+gates (a shipped-bed redesign and a video) come first.
 
 ---
 

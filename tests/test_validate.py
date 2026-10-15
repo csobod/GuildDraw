@@ -228,3 +228,73 @@ def test_the_origin_warnings_never_make_an_error():
     assert errors == []
     assert len(warnings) == 2
 
+
+# ── INLAY (Road to 2.0, item 1): a seat GuildModel cuts to a depth it owns ──
+
+def seat(cx, cy, r=4.0):
+    return closed_diamond(cx, cy, r, layer=Layer.INLAY)
+
+
+def front_with(*extra):
+    return [outline(), circle(-15, 0, 10), circle(15, 0, 10), *extra]
+
+
+def test_an_inlay_inside_the_profile_is_quiet():
+    errors, warnings = validate(front_with(seat(0, -30)), mirror_on=False)
+    assert errors == [] and warnings == []
+
+
+def test_an_inlay_outside_the_profile_is_an_error():
+    errors, _ = validate(front_with(seat(60, 0)), mirror_on=False)
+    assert any("INLAY 1 leaves the OUTLINE profile" in e for e in errors)
+
+
+def test_an_inlay_never_crosses_a_lens_or_a_drill_hole():
+    errors, _ = validate(front_with(seat(10, 0)), mirror_on=False)   # into the lens
+    assert any("INLAY 1 crosses a LENS curve" in e for e in errors)
+    drill = circle(0, -28, 0.7, layer=Layer.DRILL)
+    errors, _ = validate(front_with(drill, seat(0, -30)), mirror_on=False)
+    assert any("INLAY 1 crosses a DRILL curve" in e for e in errors)
+
+
+def test_an_inlay_never_crosses_a_decorative_opening():
+    # A closed OUTLINE curve inside the profile is cut through, like a lens:
+    # a seat inside it sits in air, and one across it has no floor.
+    opening = closed_diamond(0, -25, 6, layer=Layer.OUTLINE)
+    for inside_or_across in (seat(0, -25, 3), seat(0, -31, 3)):
+        errors, _ = validate(front_with(opening, inside_or_across), mirror_on=False)
+        assert any("INLAY 1 crosses a decorative opening" in e for e in errors)
+    errors, _ = validate(front_with(opening, seat(0, 30, 3)), mirror_on=False)
+    assert errors == []
+
+
+def test_the_ghost_lens_counts_as_cut():
+    # One lens drawn on the right with the Ghost on: the seat on the left
+    # sits in the mirrored aperture.
+    curves = [outline(), circle(15, 0, 10), seat(-15, 0)]
+    errors, _ = validate(curves, mirror_on=True)
+    assert any("crosses a LENS" in e for e in errors)
+    errors, _ = validate(curves, mirror_on=False)
+    assert not any("crosses a LENS" in e for e in errors)
+
+
+def test_nested_inlays_are_a_step_and_overlapping_ones_an_error():
+    errors, _ = validate(front_with(seat(0, -28, 6), seat(0, -28, 2)), mirror_on=False)
+    assert errors == []
+    errors, _ = validate(front_with(seat(0, -28, 5), seat(4, -28, 5)), mirror_on=False)
+    assert any("INLAY 1 and INLAY 2 overlap without nesting" in e for e in errors)
+
+
+def test_an_inlay_inside_the_hinge_curve_is_a_step_and_across_it_an_error():
+    arm = closed_diamond(60, 0, 50, layer=Layer.OUTLINE)
+    hinge = closed_diamond(95, 0, 8, layer=Layer.HINGE)
+    errors, _ = validate([arm, hinge, seat(95, 0, 3)], False, "temple_r")
+    assert errors == []
+    errors, _ = validate([arm, hinge, seat(89, 0, 4)], False, "temple_r")
+    assert any("INLAY 1 crosses a HINGE curve" in e for e in errors)
+
+
+def test_an_open_inlay_is_not_closed():
+    open_seat = line([(0, -34), (4, -30), (0, -26)], layer=Layer.INLAY)
+    errors, _ = validate(front_with(open_seat), mirror_on=False)
+    assert any("INLAY contour is not closed" in e for e in errors)

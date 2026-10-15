@@ -207,6 +207,14 @@ _LAYER_TIPS = {
         "standing, so an O is two circles; an open curve is traced as a "
         "stroke; text is engraved as stroke centerlines and stays editable "
         "text in the .gdraw."),
+    Layer.INLAY: (
+        "A seat for a plaque, a laminate or a metal plate (GuildModel 2.0). "
+        "GuildModel cuts it to a depth and on a face it keeps per inlay, the "
+        "visible face by default. An inlay inside another is a step; inside "
+        "the HINGE curve, a step in the hinge pocket's floor. It never crosses "
+        "a LENS, DRILL or HINGE curve or a decorative opening, and two inlays "
+        "nest or stay apart. Not mirrored: draw each seat, or Mirror (bake) a "
+        "pair."),
     Layer.REF: "Reference geometry: never exported, and GuildModel ignores it.",
 }
 
@@ -1735,8 +1743,8 @@ class SettingsDialog(QDialog):
         lc_lay = _page("Layers", spacing=10)
         lc_lay.addWidget(self._hint(
             "Each layer's drawing color in light and dark mode. Most layers "
-            "use the shared ink until you pick a color; SCULPT and ENGRAVING "
-            "have their own."))
+            "use the shared ink until you pick a color; SCULPT, ENGRAVING "
+            "and INLAY have their own."))
 
         # Only layer.* overrides are edited here; _collect_theme preserves
         # any other tokens already present in the prefs["theme"] dicts.
