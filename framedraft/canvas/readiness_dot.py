@@ -40,12 +40,14 @@ _DIAMETER = 10  # px — subtle
 
 
 def readiness_state(curves: list, mirror_on: bool,
-                    workspace_type: str = "front") -> tuple[str, str]:
+                    workspace_type: str = "front",
+                    stock_mm=None) -> tuple[str, str]:
     """Return ``(state, tooltip)`` for the workspace's handoff readiness.
 
     Pure function of the document — drives the dot and is unit-testable
     without Qt. Reuses the export validator so the indicator and the export
-    gate can never disagree.
+    gate can never disagree. ``stock_mm`` is the workspace's stock guide
+    (width, height), for the validator's fit warning; None skips it.
     """
     from ..export.validate import validate
 
@@ -54,7 +56,8 @@ def readiness_state(curves: list, mirror_on: bool,
     if not has_machined:
         return OFF, "Nothing to hand off yet — draw machined geometry first"
 
-    errors, warnings = validate(curves, mirror_on, workspace_type)
+    errors, warnings = validate(curves, mirror_on, workspace_type,
+                                stock_mm=stock_mm)
     if errors:
         return AMBER, "Not ready for GuildModel — " + errors[0]
     if warnings:

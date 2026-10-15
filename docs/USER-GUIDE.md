@@ -10,7 +10,7 @@ layers, guides, and undo history:
 
 | Tab | Purpose | Machined layers |
 |---|---|---|
-| **Frame Front** | The front: outline + lenses | `OUTLINE` ×1, `LENS` ≥1 |
+| **Frame Front** | The front: outline + lenses | `OUTLINE` ×1, `LENS` ≥1, optional `DRILL` |
 | **Temple R / L** | Each temple arm | `OUTLINE` ×1, optional `HINGE`, `ENGRAVING` |
 | **Hinge Pocket** | Hinge recess geometry | `HINGE` ≥1 |
 
@@ -30,7 +30,9 @@ the copy to change the words; placement and style are already identical.
 ## 2. Drawing
 
 Draw at real size. The origin cross is (0,0); for the frame front, the bridge
-mirror axis is the vertical through x=0.
+mirror axis is the vertical through x=0. The origin is also where GuildModel
+puts the part: its blank is centered on (0,0), a front is cut as drawn, and a
+temple's y = 0 is the core line (see *The origin rule* in section 6).
 
 | Tool | Default key | Notes |
 |---|---|---|
@@ -146,6 +148,21 @@ The Properties sidebar's layer tree is the layer interface:
   dragged from.
 - Right-click for *select all on layer* / *move selection to layer*.
 
+Each layer row's tooltip says what the layer becomes in GuildModel:
+
+- `OUTLINE` is the profile GuildModel cuts. The largest closed curve is the
+  profile; a closed curve inside it is a decorative opening; one outside it
+  is ignored. It is never mirrored, so draw the whole contour.
+- `LENS` is the lens apertures, any count; `DRILL` the drill-mount holes;
+  `SCULPT` the back-surface section cuts; `HINGE` the hinge pocket. All
+  four are doubled across the Ghost axis at export on the front.
+- `ENGRAVING` (temples) is what GuildModel engraves, since 1.8.1: a closed
+  drawn curve is a **filled shape**; a closed curve inside it is an
+  **island** left standing, so an O is two circles; an open curve is traced
+  as a **stroke**; **text** is engraved as stroke centerlines and stays
+  editable text in the `.gdraw` (a DXF carries it as outlines).
+- `REF` is reference geometry: never exported, and GuildModel ignores it.
+
 ### Mirror system (frame front)
 
 - **Ghost** toggles the live mirrored preview across the bridge axis. Ghosts
@@ -177,8 +194,15 @@ symmetric contour (draw half, then Mirror Close or bake + join).
     outline to lens** co-resizes the frame outline at a constant eyewire wall
     (flats and corners preserved; open mirrored halves grow from the bridge,
     closed finished frames grow symmetrically).
-- **Stock / pad guides**: outlines of your acetate blank and pad block, for
-  checking the design fits the material.
+- **Stock / pad guides**: outlines of your acetate blank and pad block,
+  centered on the origin, for checking the design fits the material.
+  GuildModel centers its blank on the same origin, so the readiness dot warns
+  when an OUTLINE leaves the stock guide, with the overrun in mm. On the
+  temple tabs the stock guide carries a dash-dot **core line** at y = 0, where
+  the wire runs: draw the temple across it. The front's blank is set once in
+  *Preferences ▸ General* (Stock blank); the temple blank sits beside it
+  (Temple blank, 170 × 30 mm by default, GuildModel's own), shared by both
+  temple tabs.
 - **Frame Fill** (Guides panel): fills the frame body — the OUTLINE profile
   minus the LENS apertures and any decorative openings — so the drawing reads
   as a frame rather than a wireframe. **Style** picks what it is filled with:
@@ -323,6 +347,20 @@ For rimless / drill-mount lenses (flat, no bevel), use the **DRILL** layer:
   one landscape sheet with the design's name — true size when it fits.
   Paper size, line weight, caption font, and a vertical offset (for a
   binding margin) live in *Preferences ▸ Print & PDF*.
+- **File → Export → Catalog PDFs for a Folder…**: pick a folder of designs,
+  and every `.gdraw` at its top (subfolders are left alone) gets the Frame
+  Fill switched on in the front and both temples at the color and opacity
+  you choose, saved back when that changed anything (the originals that
+  change are copied to `_backup/<timestamp>/` in the folder first), and a
+  catalog PDF written to `catalog/` beside them, or to a folder you pick,
+  with your PDF preferences and the fill included. A progress window shows
+  one line per design; a design that does not open cleanly, or whose outline
+  does not close, is reported and left as it was. *Report only* shows what
+  would change without writing anything, and the box for the Ghost switches
+  off a mirror left on in a temple tab, which would print a flipped second
+  outline. The design open in GuildDraw is untouched: the run happens in a
+  second window that is never shown. The same run is available from the
+  command line as `scripts/batch_catalog.py`.
   - **Print frame and lens fills** (same preferences page, off by default)
     lays those overlays under the line work, per workspace, exactly as that
     workspace shows them — the material swatch or tint in the frame profile
@@ -345,6 +383,26 @@ For rimless / drill-mount lenses (flat, no bevel), use the **DRILL** layer:
    true mm; closed contours have endpoints within 0.1 mm; `REF` is ignored
    by GuildModel; ENGRAVING text is already converted to outline splines.
 
+**The origin rule.** Since GuildModel 1.8.2 a part is placed by the drawing's
+origin: the blank is centered on (0,0), a front is cut as drawn, and a temple's
+y = 0 is the core line, where the wire runs. The temple's hinge end is snapped
+to the blank's end, so where the temple sits along x does not matter; across
+the blank it stays exactly where you drew it. A temple drawn beside the core
+line is therefore cut beside the wire. GuildDraw shows the rule (the core line
+on the temple stock guide, the origin cross) and checks it: the readiness dot
+warns, in its tooltip, about a temple that does not cross y = 0 and about an
+OUTLINE that leaves the stock guide. Both are warnings; the dot stays green.
+In GuildModel, the part's *Stock* tab has an *Origin from drawing* box;
+clearing it restores the old placement, centered on the outline.
+
+**The `.gdraw` itself.** GuildModel (1.8.1 and later) opens the `.gdraw`
+directly: save here, then open the file in GuildModel (its *File ▸ Open*, or
+*Open with* on Windows). GuildModel watches the open drawing and reloads it on
+request after your next save; the drawing stays open here. The DXF route
+above remains for GuildModel's DXF intake and for other tools. GuildDraw never
+launches GuildModel, or any other program: each of the three apps stands
+alone, and the handoff is always a file you open.
+
 What the validator checks (it drives the readiness dot and the export
 notes; since 1.0 it never blocks an export — you decide when the geometry is
 complete, and GuildModel's intake is the final gate):
@@ -356,6 +414,10 @@ complete, and GuildModel's intake is the final gate):
 - Hinge Pocket: at least 1 `HINGE`, no `OUTLINE`/`LENS`.
 - Machined contours must be closed (a gap ≤ 0.1 mm is auto-closed at export
   and warned about; a larger one is reported as not ready).
+- Warnings only: an `OUTLINE` that leaves the stock guide (front or temple,
+  with the overrun in mm; set the guide to your blank once, in Preferences),
+  and a temple `OUTLINE` that does not cross the core line (y = 0), with the
+  gap in mm.
 
 ## 7. Files & data safety
 

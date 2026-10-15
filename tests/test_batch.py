@@ -109,3 +109,17 @@ def test_write_batch_temples_mirror_horizontally(tmp_path):
     centers = sorted((c.dxf.center.x, c.dxf.center.y)
                      for c in msp if c.dxftype() == "CIRCLE")
     assert centers == [(15, -10), (15, 10)]
+
+
+def test_check_batch_passes_the_stock_guide_to_the_validator():
+    # The fit warning (Road to 1.4, item 1) reaches the batch report, and
+    # never its errors.
+    from helpers import line
+    from framedraft.document import Layer
+    arm = line([(0, -5), (180, -5), (180, 5), (0, 5)], closed=True,
+               layer=Layer.OUTLINE)
+    item = BatchWorkspace("temple_r", [arm], stock_mm=(170.0, 30.0))
+    report = check_batch([item])
+    assert report.ok
+    assert any("10.0 mm longer than the 170 mm stock guide" in w
+               for w in report.warnings["temple_r"])

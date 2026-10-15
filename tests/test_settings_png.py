@@ -46,15 +46,15 @@ def test_settings_apply_in_temple_leaves_temple_guides_alone(win):
     QApplication.processEvents()
     temple = win._active_ws
     assert temple.workspace_type == "temple_r"
-    assert win._stock_w_spin.value() == 160.0      # temple stock default
+    assert win._stock_w_spin.value() == 170.0      # temple stock default
 
     win._apply_settings(_tweaked_prefs(win))
 
     # Temple sidebar + session + guide objects untouched
-    assert win._stock_w_spin.value() == 160.0
+    assert win._stock_w_spin.value() == 170.0
     assert win._stock_h_spin.value() == 30.0
-    assert temple.stock_w == 160.0 and temple.stock_h == 30.0
-    assert temple.stock_guide._width_mm == 160.0
+    assert temple.stock_w == 170.0 and temple.stock_h == 30.0
+    assert temple.stock_guide._width_mm == 170.0
     assert temple.pad_visible is False
     assert temple.pad_guide._visible is False
 
@@ -73,8 +73,8 @@ def test_settings_apply_in_temple_leaves_temple_guides_alone(win):
     # the corruption surviving until an app restart)
     win._ws_tab_widget.setCurrentIndex(1)
     QApplication.processEvents()
-    assert win._stock_w_spin.value() == 160.0
-    assert temple.stock_guide._width_mm == 160.0
+    assert win._stock_w_spin.value() == 170.0
+    assert temple.stock_guide._width_mm == 170.0
     assert temple.pad_guide._visible is False
 
 

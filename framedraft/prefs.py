@@ -37,6 +37,10 @@ DEFAULTS: dict = {
     "stock_on_startup":     True,
     "stock_width_mm":       170.0,
     "stock_height_mm":      85.0,
+    # The temple blank (both temple tabs; length × width, centered at origin,
+    # the core line along its middle). GuildModel's default temple blank.
+    "temple_stock_width_mm":  170.0,
+    "temple_stock_height_mm": 30.0,
     # Pad block reference guide (centered at origin)
     "pad_on_startup":       True,
     "pad_width_mm":         45.0,
@@ -68,6 +72,17 @@ DEFAULTS: dict = {
         "content_offset_mm": 0.0,
         "front_layers":  ["OUTLINE", "LENS"],
         "temple_layers": ["OUTLINE"],
+    },
+    # File ▸ Export ▸ Catalog PDFs for a Folder…: what the last run used
+    # (export/batch_catalog.py). The folder is picked each time; this is the
+    # starting point for the picker and the options.
+    "batch_catalog": {
+        "library":          "",
+        "out":              "",          # empty = <library>/catalog
+        "color":            "#000000",
+        "opacity_pct":      100,
+        "save_fill":        True,
+        "temple_ghost_off": False,
     },
     # Print Front + Temples: 1:1 cutting templates on the maker's own paper
     # (File ▸ Print Front + Temples… / Export ▸ PDF Front + Temples…).

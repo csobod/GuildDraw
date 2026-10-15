@@ -33,6 +33,8 @@ class BatchWorkspace:
     curves:         list         # Curve objects in mm (text already converted)
     mirror_on:      bool = False
     axis_x:         float = 0.0  # mirror axis x in mm
+    stock_mm:       tuple | None = None   # stock guide (width, height) in mm,
+                                          # for the validator's fit warning
 
 
 @dataclass
@@ -72,7 +74,8 @@ def check_batch(items: list) -> BatchReport:
             report.skipped.append(item.workspace_type)
             continue
         errors, warnings = validate(item.curves, item.mirror_on,
-                                    item.workspace_type)
+                                    item.workspace_type,
+                                    stock_mm=item.stock_mm)
         if errors:
             report.errors[item.workspace_type] = errors
         if warnings:

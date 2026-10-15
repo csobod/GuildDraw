@@ -57,6 +57,15 @@ the maintainer's own, never tracked. 738 tests collect. GuildModel's
 the handoff assumes; *Road to 1.4* records it and is the next work, released
 beside GuildModel 1.8.2 with a video update.
 
+*2026-10-15, later.* Three of the four *Road to 1.4* items landed in one
+session and were committed after review: the origin visible and checked
+(the temple core line, two validator warnings, the temple blank as a
+preference), *File ▸ Export ▸ Catalog PDFs for a Folder…* on an engine the
+script now shares, and the `.gdraw` contract test with the layer tooltips.
+Item 2, *Open in GuildModel*, was built and dropped the same day: the apps
+never launch each other (see the item). The review fixed three faults first
+(items 1 and 3). 776 tests.
+
 ---
 
 ## 1. Goal & scope *(unchanged — archive §1)*
@@ -1990,7 +1999,7 @@ owner.
 |---|---|
 | The blank is centered on the design origin; a temple's y = 0 is the core line; a front is placed as drawn. | Show it and check it (item 1). A temple's x does not matter: GuildModel snaps the hinge end to the blank end. |
 | Reads the `.gdraw` itself. | The file's keys are the contract (§2 addendum); a writer test pins them (item 4). |
-| Watches the drawing and reloads on request; opens a drawing dropped on its window. | Saves are atomic already. *Open in GuildModel* closes the loop from this side (item 2). |
+| Watches the drawing and reloads on request; opens a drawing dropped on its window. | Saves are atomic already. The maker opens the saved `.gdraw` in GuildModel; no cross-launch from this side (item 2, dropped). |
 | A closed ENGRAVING curve is a filled shape (1.8.1). | Say so where the maker draws it (item 4). |
 | Its stock list carries length, width and thickness; the drawing's guides never travel. | Guide sizes in the `.gdraw` are a candidate, not a contract change, until GuildModel reads them (item 5). |
 | M22 "sculpts" are STL meshes dropped in GuildModel; M24 (2.0) machines the anterior. | SCULPT stays the castle's section cuts. BRIDGE (Proposal B) waits for M24. |
@@ -2009,12 +2018,35 @@ owner.
    so a shop with longer blanks sets its guide once. Tests in
    `tests/test_validate.py`; the USER-GUIDE's handoff section states the
    origin rule.
-2. **File ▸ Open in GuildModel.** Saves first, then launches GuildModel on the
-   file: the installed app (Windows, where the installer put it; macOS,
-   `/Applications/GuildModel.app`), a checkout beside this one through its
-   venv, or a path set in Preferences ▸ General. Mirrors GuildModel's *Open in
-   GuildSend*. The drawing stays open here; GuildModel reloads on the next
-   save. Disabled, with the reason in the tooltip, when nothing is found.
+   ✅ **Landed 2026-10-15.** `RectGuide` draws a dash-dot core line across the
+   rectangle when asked (`core_line`), on both temple tabs; the origin cross
+   already existed in every workspace (the scene's dotted axes, always shown)
+   and stays as it was. The validator takes `stock_mm` and warns about a
+   temple OUTLINE that does not straddle y = 0 (with the gap) and an OUTLINE
+   past the stock guide (the front as drawn against the centered guide; a
+   temple by its length along the blank and its extent across, since
+   GuildModel snaps the hinge end). The readiness dot, the export note and
+   the batch report pass the stock guide's size, and the dot follows the
+   stock spinboxes. The temple blank became a preference beside the front's
+   (*Preferences ▸ General ▸ Guide Sizes ▸ Temple blank*), shared by both
+   temple tabs and defaulting to GuildModel's own 170 × 30 mm; it had been a
+   fixed 160 × 30. The batch export checks every tab, so the checks read a
+   tab's stock size from its session: the review before the commit found
+   them reading the guide, which an inactive tab's catches up with only on
+   activation. Eighteen tests: eleven of the validator, five of the window,
+   one each of the readiness dot and the batch report.
+2. **File ▸ Open in GuildModel.** ❌ **Dropped 2026-10-15, the maker's
+   decision; built and removed the same day.** The three apps never find or
+   start each other, and never dial out: no app pokes around the user's
+   computer for another, there is no `connect()` anywhere, and each app fits
+   a different workflow with the user's autonomy and the security claim
+   (docs/IT-NOTES.md: no network, no process launch) first. The maker loads
+   the `.gdraw` into GuildModel and the `.gmodel` into GuildSend by hand.
+   GuildModel's retired *Open in GuildSend* remnants (the disconnected
+   action, launcher and finder) go the same way, in its tree. A GuildSuite
+   that unites the apps, with GuildSend and perhaps GuildBook, is a v3 or v4
+   idea, nowhere near. The handoff from this side is the saved file:
+   GuildModel opens the `.gdraw`, watches it and reloads on request.
 3. **Batch catalog export in the app.** `scripts/batch_catalog.py` (every
    `.gdraw` at the top of a library folder through a hidden window: Frame Fill
    on at a color and opacity, saved back when that changed anything, PDF for
@@ -2025,11 +2057,39 @@ owner.
    parts (file selection, the backup copy, the report) under test; the script
    stays as the command-line entry, tracked. `scripts/build_archive.py` is the
    maintainer's own and is never tracked or folded in.
+   ✅ **Landed 2026-10-15.** `export/batch_catalog.py` holds the engine:
+   `library_files`, `backup_dir_for`, `backup_original`, `fill_record` and
+   the `BatchCatalogReport` are Qt-free and under test; `run_batch_catalog`
+   drives a `MainWindow` the caller builds and reports a `FileVerdict` per
+   file through a callback, with a stop check between files. The menu item
+   opens a folder picker first (the maker's note), then
+   `batch_catalog_ui.BatchCatalogOptionsDialog` (fill color and opacity, the
+   PDF folder, save-the-fill with the backup, Ghost off, report only), then
+   `BatchCatalogProgressDialog` with the bar, one line per file and Cancel.
+   The run happens in a second `MainWindow` that is never shown and is
+   deleted after, so the open design is untouched; `prepare_window` stops
+   its autosave, suppresses the recovery offer and neuters its prefs write,
+   and `_open_gdraw(quiet=True)` reports instead of asking. The script is
+   now a thin command line over the engine, tracked with this round;
+   `prefs["batch_catalog"]` remembers the last run's choices. The review
+   before the commit found the hidden window writing the preferences as it
+   closed (the run's forced *Include fill*, and the geometry of a window
+   never shown); `prepare_window` silences that write too. The progress
+   window's close button and Esc cancel a run instead of hiding it. Twelve
+   tests, five of them a real run on files the app authored.
 4. **The contract pinned and explained.** A test that a written `.gdraw`
    carries every key GuildModel reads (the §2 list), so a rename fails here
    before it fails there; the Layers panel's ENGRAVING tooltip and the
    USER-GUIDE say what a closed curve, an inner curve, an open curve and text
    each become.
+   ✅ **Landed 2026-10-15.** `tests/test_gdraw_contract.py` reads a file the
+   app wrote the way GuildModel's reader does (the ZIP members, the manifest's
+   `active_tab`, the JSON in each SVG's `<metadata>`, never GuildDraw's own
+   loader) and pins the workspace keys, every curve kind's keys, the spline
+   node handles, and the text fields GuildModel engraves from. The Layers
+   panel's layer rows carry a tooltip each (`_LAYER_TIPS`): what the layer
+   becomes in GuildModel, ENGRAVING spelled out as filled shape, island,
+   stroke and text; the USER-GUIDE's Layers panel section says the same.
 5. **Candidate, decided at the round's end:** the guide sizes saved in the
    `.gdraw` under an optional key, so GuildModel can seed a new project's
    stock from the drawing. GuildModel's reader comes first, and its stock has
@@ -2076,6 +2136,13 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
 > code" still holds, `QtNetwork` stays excluded, and the shipped artifact
 > contains only the resulting name/hex table. If a future change makes the app
 > itself fetch anything, this claim must be revisited, not quietly amended.
+>
+> **2026-10-15 — the claim stands, and the ethos is written down.** A *File ▸
+> Open in GuildModel* that launched GuildModel on the saved drawing was built
+> and removed the same day (*Road to 1.4* item 2, the maker's decision): the
+> three apps never find or start each other, and never dial out. "No
+> subprocess/shell execution" above is unchanged; `docs/IT-NOTES.md` now says
+> the companions are opened by the user, never by GuildDraw.
 
 ### Root cause of the AV/EDR reports (ranked)
 

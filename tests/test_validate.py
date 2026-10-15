@@ -132,3 +132,99 @@ def test_mirrored_flag_curves_are_ignored():
     curves = [outline(), ghost]
     errors, _ = validate(curves, mirror_on=False)
     assert any("LENS" in e for e in errors)   # ghost doesn't count → 0 lenses
+
+
+# ── The origin rule (BUILDPLAN *Road to 1.4*, item 1) ───────────────────────
+# GuildModel 1.8.2 centers the blank on the drawing's origin, places a front
+# as drawn, and runs a temple's core along y = 0 with the hinge end snapped to
+# the blank's end. Warnings only: the dot stays green "with warnings".
+
+def temple_arm(cy=0.0, length=120.0, width=10.0):
+    """A closed temple OUTLINE: a length × width rectangle from x = 0, centered
+    on y = cy."""
+    hw = width / 2
+    return line([(0, cy - hw), (length, cy - hw), (length, cy + hw), (0, cy + hw)],
+                closed=True, layer=Layer.OUTLINE)
+
+
+def test_temple_on_the_core_line_is_quiet():
+    errors, warnings = validate([temple_arm()], mirror_on=False,
+                                workspace_type="temple_r", stock_mm=(170.0, 30.0))
+    assert errors == [] and warnings == []
+
+
+def test_temple_off_the_core_line_warns_with_the_gap():
+    arm = temple_arm(cy=12.0)                      # y 7..17: all to one side
+    errors, warnings = validate([arm], False, "temple_r")
+    assert errors == []
+    assert any("core line" in w and "7.0 mm" in w for w in warnings)
+    arm = temple_arm(cy=-12.0)                     # the other side
+    _, warnings = validate([arm], False, "temple_l")
+    assert any("core line" in w and "7.0 mm" in w for w in warnings)
+
+
+def test_temple_edge_on_the_core_line_counts_as_off_it():
+    arm = temple_arm(cy=5.0, width=10.0)           # y 0..10: the wire on the edge
+    _, warnings = validate([arm], False, "temple_r")
+    assert any("core line" in w and "0.0 mm" in w for w in warnings)
+
+
+def test_front_is_never_asked_to_straddle_zero():
+    curves = [closed_diamond(0, 30, 20, layer=Layer.OUTLINE),
+              circle(-8, 30, 5), circle(8, 30, 5)]
+    errors, warnings = validate(curves, False, "front")
+    assert errors == [] and warnings == []
+
+
+def test_outline_inside_the_stock_guide_is_quiet():
+    curves = [outline(), circle(-15, 0, 10), circle(15, 0, 10)]    # ±40 mm
+    _, warnings = validate(curves, False, "front", stock_mm=(80.0, 80.0))
+    assert warnings == []
+
+
+def test_front_outline_past_the_stock_guide_warns_with_the_overrun():
+    curves = [outline(), circle(-15, 0, 10), circle(15, 0, 10)]    # ±40 mm
+    _, warnings = validate(curves, False, "front", stock_mm=(60.0, 85.0))
+    assert any("10.0 mm past the 60 × 85 mm stock guide" in w for w in warnings)
+    _, warnings = validate(curves, False, "front", stock_mm=(60.0, 50.0))
+    assert any("15.0 mm past the 60 × 50 mm stock guide" in w for w in warnings)
+
+
+def test_no_stock_guide_means_no_fit_check():
+    curves = [outline(), circle(-15, 0, 10), circle(15, 0, 10)]
+    _, warnings = validate(curves, False, "front")
+    assert warnings == []
+
+
+def test_temple_longer_than_the_blank_warns_by_length_not_position():
+    # GuildModel snaps the hinge end to the blank's end, so where the temple
+    # sits along x is irrelevant: only its length counts.
+    arm = temple_arm(length=150.0)                 # x 0..150 on a centered 170 guide
+    _, warnings = validate([arm], False, "temple_r", stock_mm=(170.0, 30.0))
+    assert warnings == []
+    arm = temple_arm(length=180.0)
+    _, warnings = validate([arm], False, "temple_r", stock_mm=(170.0, 30.0))
+    assert any("10.0 mm longer than the 170 mm stock guide" in w for w in warnings)
+
+
+def test_temple_past_the_blank_across_the_core_line_warns():
+    arm = temple_arm(width=40.0)                   # y ±20 on a 30 mm blank
+    _, warnings = validate([arm], False, "temple_r", stock_mm=(170.0, 30.0))
+    assert any("5.0 mm past the 30 mm stock guide across the core line" in w
+               for w in warnings)
+    assert not any("drawn off the core line" in w for w in warnings)
+
+
+def test_hinge_pocket_has_no_stock_or_origin_rule():
+    pocket = circle(30, 30, 2, layer=Layer.HINGE)
+    errors, warnings = validate([pocket], False, "hinge", stock_mm=(10.0, 20.0))
+    assert errors == [] and warnings == []
+
+
+def test_the_origin_warnings_never_make_an_error():
+    arm = temple_arm(cy=10.0, length=200.0, width=8.0)   # y 6..14: off the
+    errors, warnings = validate([arm], False, "temple_r",  # line, and too long
+                                stock_mm=(170.0, 30.0))
+    assert errors == []
+    assert len(warnings) == 2
+

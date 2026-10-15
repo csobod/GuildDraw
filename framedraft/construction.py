@@ -263,21 +263,47 @@ class BoxingGuide:
 
 
 class RectGuide:
-    """Dashed rectangle centered at the scene origin — stock blank or pad block reference."""
+    """Dashed rectangle centered at the scene origin — stock blank or pad block
+    reference.
+
+    With ``core_line`` on (the temple blanks) a dash-dot line runs across the
+    rectangle at y = 0: the core line, where the wire runs. GuildModel draws the
+    same line on its blank and, since 1.8.2, places a temple by the drawing's
+    origin — so a temple drawn on this line sits on the wire there, and one
+    drawn beside it is cut beside the wire.
+    """
 
     _Z = 5
 
     def __init__(self, scene, color_token: str,
-                 width_mm: float = 170.0, height_mm: float = 85.0):
+                 width_mm: float = 170.0, height_mm: float = 85.0,
+                 core_line: bool = False):
         self._scene       = scene
         self._items: list = []
         self._visible     = False
         self._width_mm    = width_mm
         self._height_mm   = height_mm
+        self._core_line   = core_line
         self._color_token = color_token   # theme token, e.g. "guide.stock"
+
+    @property
+    def width_mm(self) -> float:
+        return self._width_mm
+
+    @property
+    def height_mm(self) -> float:
+        return self._height_mm
+
+    @property
+    def core_line(self) -> bool:
+        return self._core_line
 
     def set_visible(self, on: bool):
         self._visible = on
+        self._refresh()
+
+    def set_core_line(self, on: bool):
+        self._core_line = on
         self._refresh()
 
     def set_width(self, mm: float):
@@ -309,3 +335,12 @@ class RectGuide:
         item = self._scene.addPath(rp, pen)
         item.setZValue(self._Z)
         self._items.append(item)
+
+        if self._core_line:
+            # A drafting center line (long-short dashes) along y = 0, the full
+            # width of the blank: where the wire runs.
+            core_pen = QPen(QColor(theme.color(self._color_token)), 0)
+            core_pen.setStyle(Qt.PenStyle.DashDotLine)
+            line = self._scene.addLine(-w / 2, 0.0, w / 2, 0.0, core_pen)
+            line.setZValue(self._Z)
+            self._items.append(line)

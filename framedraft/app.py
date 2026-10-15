@@ -182,6 +182,34 @@ _WS_ONLY_ACTIONS = {
     "text":        ("temple_r", "temple_l"),
 }
 
+# What each layer becomes in GuildModel, on the Layers panel's layer rows
+# (Road to 1.4, item 4; the USER-GUIDE's Layers panel section says the same).
+_LAYER_TIPS = {
+    Layer.OUTLINE: (
+        "The profile GuildModel cuts. The largest closed curve is the profile; "
+        "a closed curve inside it is a decorative opening (Hole1…); one outside "
+        "it is ignored. Never mirrored: draw the whole contour."),
+    Layer.LENS: (
+        "The lens apertures (Frame Front). Any count: the classic pair, or more "
+        "for an aviator. Doubled across the Ghost axis at export."),
+    Layer.DRILL: (
+        "Drill-mount holes (Frame Front): circles, doubled across the Ghost "
+        "axis at export, and written to an OMA trace as DRILLE."),
+    Layer.SCULPT: (
+        "Back-surface section cuts for GuildModel's sculpting. Doubled across "
+        "the Ghost axis at export."),
+    Layer.HINGE: (
+        "The hinge pocket GuildModel cuts, from the hinge library. On the "
+        "front, doubled across the Ghost axis at export."),
+    Layer.ENGRAVING: (
+        "What GuildModel engraves on a temple (1.8.1 and later). A closed drawn "
+        "curve is a filled shape; a closed curve inside it is an island left "
+        "standing, so an O is two circles; an open curve is traced as a "
+        "stroke; text is engraved as stroke centerlines and stays editable "
+        "text in the .gdraw."),
+    Layer.REF: "Reference geometry: never exported, and GuildModel ignores it.",
+}
+
 # Shortcuts bound outside the hotkey table (menus and window QShortcuts).
 # Preferences ▸ Hotkeys lists every one, and SettingsDialog._RESERVED_KEYS —
 # which refuses them as hotkeys — is built from this list.
@@ -1487,8 +1515,9 @@ class SettingsDialog(QDialog):
         start_grid.setColumnStretch(2, 1)
         gen_lay.addWidget(start_box)
 
-        # The Frame Front's guide sizes, one row per guide (width × height).
-        size_box  = QGroupBox("Frame Front Guides")
+        # The guide sizes, one row per guide (width × height): the Frame
+        # Front's, and the temple blank shared by both temple tabs.
+        size_box  = QGroupBox("Guide Sizes")
         size_grid = QGridLayout(size_box)
         size_grid.setHorizontalSpacing(6)
         self._box_a   = _spinbox(30.0, 80.0,  0.5, prefs["boxing_a_mm"])
@@ -1498,6 +1527,10 @@ class SettingsDialog(QDialog):
         self._stock_h = _spinbox(20.0, 200.0, 1.0, prefs["stock_height_mm"])
         self._pad_w   = _spinbox(10.0, 200.0, 0.5, prefs["pad_width_mm"])
         self._pad_h   = _spinbox(10.0, 200.0, 0.5, prefs["pad_height_mm"])
+        self._temple_stock_w = _spinbox(50.0, 400.0, 1.0,
+                                        prefs["temple_stock_width_mm"])
+        self._temple_stock_h = _spinbox(10.0, 200.0, 1.0,
+                                        prefs["temple_stock_height_mm"])
         boxing_tip = ("The dashed lens boxes: A is a box's width, B its height, "
                       "and DBL the distance between the two boxes.")
         for row, (label, first, second, tip) in enumerate((
@@ -1508,7 +1541,12 @@ class SettingsDialog(QDialog):
                  "blank the front is cut from (width × height)."),
                 ("Pad block:", self._pad_w, self._pad_h,
                  "The purple dashed rectangle, centered at the origin "
-                 "(width × height)."))):
+                 "(width × height)."),
+                ("Temple blank:", self._temple_stock_w, self._temple_stock_h,
+                 "The green dashed rectangle on both temple tabs: the blank "
+                 "a temple is cut from (length × width), with the core line "
+                 "along its middle. GuildModel's default temple blank is "
+                 "170 × 30 mm."))):
             lbl = QLabel(label)
             size_grid.addWidget(lbl, row, 0)
             size_grid.addWidget(first, row, 1)
@@ -2214,6 +2252,8 @@ class SettingsDialog(QDialog):
             "stock_on_startup":     self._stock_chk.isChecked(),
             "stock_width_mm":       self._stock_w.value(),
             "stock_height_mm":      self._stock_h.value(),
+            "temple_stock_width_mm":  self._temple_stock_w.value(),
+            "temple_stock_height_mm": self._temple_stock_h.value(),
             "pad_on_startup":       self._pad_chk.isChecked(),
             "pad_width_mm":         self._pad_w.value(),
             "pad_height_mm":        self._pad_h.value(),
@@ -2744,19 +2784,23 @@ class MainWindow(QMainWindow):
                                         front0.lens_fill_intensity)
 
         # Workspace-specific default overrides (override prefs for non-front tabs)
+        # The temple blank is its own preference; the guide carries the core
+        # line (y = 0), where the wire runs and where GuildModel places the
+        # temple's zero.
         for temple in (self._workspaces[1], self._workspaces[2]):  # temple_r, temple_l
             temple.guides_visible = False
             temple.boxing_visible = False
             temple.pad_visible    = False
             temple.stock_visible  = True
-            temple.stock_w        = 160.0
-            temple.stock_h        = 30.0
+            temple.stock_w        = p["temple_stock_width_mm"]
+            temple.stock_h        = p["temple_stock_height_mm"]
             temple.const_guides.set_visible(False)
             temple.boxing_guide.set_visible(False)
             temple.pad_guide.set_visible(False)
+            temple.stock_guide.set_core_line(True)
             temple.stock_guide.set_visible(True)
-            temple.stock_guide.set_width(160.0)
-            temple.stock_guide.set_height(30.0)
+            temple.stock_guide.set_width(temple.stock_w)
+            temple.stock_guide.set_height(temple.stock_h)
 
         hinge = self._workspaces[3]
         hinge.guides_visible = False
@@ -2984,6 +3028,9 @@ class MainWindow(QMainWindow):
         self._act_stock = QAction("Stock", self, checkable=True, checked=False)
         self._act_stock.setToolTip(
             "Stock Guide: show raw blank stock size as a dashed green rectangle centered at origin.\n"
+            "On the temples it carries the core line at y = 0, where the wire runs.\n"
+            "GuildModel centers its blank on the origin and places the part as drawn;\n"
+            "the readiness dot warns when the OUTLINE leaves the guide.\n"
             "Set dimensions in the Properties panel or Settings."
         )
         self._act_pad = QAction("Pad", self, checkable=True, checked=False)
@@ -3464,7 +3511,9 @@ class MainWindow(QMainWindow):
         self._stock_w_spin.setSuffix(" mm")
         self._stock_w_spin.setSingleStep(1.0)
         self._stock_w_spin.setValue(170.0)
-        self._stock_w_spin.setToolTip("Width of raw stock blank (mm). Toggle visibility with the Stock button.")
+        self._stock_w_spin.setToolTip(
+            "Width of raw stock blank (mm). Toggle visibility with the Stock button.\n"
+            "The readiness dot warns when the OUTLINE leaves the guide.")
         self._stock_w_spin.valueChanged.connect(self._on_stock_width_changed)
         stock_lay.addRow("Width:", self._stock_w_spin)
 
@@ -3474,8 +3523,7 @@ class MainWindow(QMainWindow):
         self._stock_h_spin.setSingleStep(1.0)
         self._stock_h_spin.setValue(85.0)
         self._stock_h_spin.setToolTip("Height of raw stock blank (mm).")
-        self._stock_h_spin.valueChanged.connect(
-            lambda v: self._stock_guide.set_height(v))
+        self._stock_h_spin.valueChanged.connect(self._on_stock_height_changed)
         stock_lay.addRow("Height:", self._stock_h_spin)
 
         guides_lay.addWidget(stock_box)
@@ -3967,6 +4015,8 @@ class MainWindow(QMainWindow):
             count  = len(curves) + len(texts)
             locked = ws.scene.is_layer_locked(layer)
             top = QTreeWidgetItem([f"{layer.value}  ({count})", "", ""])
+            if layer in _LAYER_TIPS:
+                top.setToolTip(0, _LAYER_TIPS[layer])
             top.setIcon(1, self._layer_icon(
                 "layer-show" if ws.scene.is_layer_visible(layer) else "layer-hide"))
             top.setIcon(2, self._layer_icon(
@@ -4250,7 +4300,8 @@ class MainWindow(QMainWindow):
             return
         ws = self._active_ws
         mirror_on = bool(ws.scene.mirror and ws.scene.mirror.enabled)
-        state, tip = readiness_state(ws.doc_curves, mirror_on, ws.workspace_type)
+        state, tip = readiness_state(ws.doc_curves, mirror_on, ws.workspace_type,
+                                     stock_mm=self._stock_mm(ws))
         dot.set_dark_mode(self._dark_mode)
         dot.set_readiness(state, tip)
 
@@ -4540,6 +4591,13 @@ class MainWindow(QMainWindow):
         ws.stock_w = mm
         ws.stock_guide.set_width(mm)
         ws.scene.set_fill_blank_width(mm)
+        self._update_readiness()   # the fit warning follows the guide
+
+    def _on_stock_height_changed(self, mm: float):
+        ws = self._active_ws
+        ws.stock_h = mm
+        ws.stock_guide.set_height(mm)
+        self._update_readiness()
 
     # ── Frame fill controls ─────────────────────────────────────────────
 
@@ -5777,6 +5835,7 @@ class MainWindow(QMainWindow):
         exp.addAction("PDF Front + Temples (1:1 Templates)…",
                       self._export_pdf_templates)
         exp.addAction("PDF for Catalog…", self._export_pdf_catalog)
+        exp.addAction("Catalog PDFs for a Folder…", self._export_catalog_folder)
         file_menu.addSeparator()
         file_menu.addAction("Print at 1:1 Scale…", self._print_1to1)
         file_menu.addAction("Print Front + Temples (1:1 Templates)…",
@@ -7505,6 +7564,21 @@ class MainWindow(QMainWindow):
                 if key in changed:
                     setattr(front, attr, p[key])
 
+        # The temple blank is one preference for both temple tabs. The active
+        # temple takes it through the sidebar widgets (they drive its guide
+        # and the readiness dot); the other's session state is written
+        # directly and surfaces on activation, as the front's does above.
+        for temple in self._workspaces[1:3]:
+            for key, attr, spin in (
+                    ("temple_stock_width_mm",  "stock_w", self._stock_w_spin),
+                    ("temple_stock_height_mm", "stock_h", self._stock_h_spin)):
+                if key not in p or p[key] == old_prefs.get(key):
+                    continue
+                if self._active_ws is temple:
+                    spin.setValue(p[key])
+                else:
+                    setattr(temple, attr, p[key])
+
         # Lens Fill default opacity — a starting value, so it moves the live
         # slider only for workspaces that are still sitting on the old default
         # (a maker who has already dialed a tint in keeps their setting).
@@ -8094,9 +8168,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             event.ignore()
             return
-        self._prefs["main_window_geometry"] = bytes(
-            self.saveGeometry().toBase64()).decode()
-        _prefs_mod.save(self._prefs)
+        self._save_prefs_on_close()
         # The app-wide filters go with the window. Left installed, a closed
         # window's two filters kept running on every event the app delivers —
         # one stylesheet pass is ~12,000 of them — and a test session's
@@ -8120,6 +8192,15 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass   # already disconnected / already gone
         super().closeEvent(event)
+
+    def _save_prefs_on_close(self):
+        """The window's geometry, then the preferences, as the window closes.
+        A batch window replaces this with a no-op (export/batch_catalog.py,
+        prepare_window): it was never shown, and its preferences carry the
+        run's own settings."""
+        self._prefs["main_window_geometry"] = bytes(
+            self.saveGeometry().toBase64()).decode()
+        _prefs_mod.save(self._prefs)
 
     # ------------------------------------------------------------------
     # Autosave + crash recovery
@@ -8607,16 +8688,20 @@ class MainWindow(QMainWindow):
             + (f"  ·  {len(bm)} bookmark(s)" if bm else "")
         )
 
-    def _open_gdraw(self, path: str, remember: bool = True) -> str | None:
+    def _open_gdraw(self, path: str, remember: bool = True,
+                    quiet: bool = False) -> str | None:
         """Load a .gdraw ZIP into all four workspaces.
 
         Returns "ok", "errors" (some tabs loaded empty; the path was NOT
-        kept, so Save asks for a new name) or None (nothing was loaded)."""
+        kept, so Save asks for a new name) or None (nothing was loaded).
+        ``quiet`` reports those two without a dialog — for a batch run in a
+        window nobody is watching (export/batch_catalog.py)."""
         try:
             from .export.gdraw import load_gdraw
             all_data = load_gdraw(path)
         except Exception as e:
-            QMessageBox.critical(self, "Open failed", str(e))
+            if not quiet:
+                QMessageBox.critical(self, "Open failed", str(e))
             return None
         self._settle_before_replacing_document()
         tab_names = ["front", "temple_r", "temple_l", "hinge"]
@@ -8639,12 +8724,13 @@ class MainWindow(QMainWindow):
             # A corrupt tab loaded empty: do NOT keep the path — Save would
             # overwrite the original file with that empty content. Force
             # Save As and flag the document as unsaved.
-            QMessageBox.warning(
-                self, "Some workspaces failed to load",
-                "These workspaces could not be read and were loaded empty:\n\n"
-                + "\n".join(f"• {e}" for e in errors)
-                + "\n\nThe original file will not be touched — saving will "
-                  "ask for a new file name (Save As).")
+            if not quiet:
+                QMessageBox.warning(
+                    self, "Some workspaces failed to load",
+                    "These workspaces could not be read and were loaded empty:\n\n"
+                    + "\n".join(f"• {e}" for e in errors)
+                    + "\n\nThe original file will not be touched — saving will "
+                      "ask for a new file name (Save As).")
             self._current_path = None
             self._dirty = True
             self._update_title()
@@ -9042,12 +9128,21 @@ class MainWindow(QMainWindow):
     # Exports
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _stock_mm(ws: "WorkspaceState") -> tuple[float, float]:
+        """The workspace's stock guide (width, height) as the validator wants
+        it, whether or not the guide is shown. Read from the session, not the
+        guide: a Preferences change reaches an inactive tab's guide only when
+        the tab is activated, and the batch export checks every tab."""
+        return ws.stock_w, ws.stock_h
+
     def _readiness_note(self) -> str:
         """One-line GuildModel-readiness summary for the active workspace, used
         as the status-bar marker after a (never-blocked) DXF export."""
         from .export.validate import validate
         errors, warnings = validate(self._doc_curves, self._act_mirror.isChecked(),
-                                    self._active_ws.workspace_type)
+                                    self._active_ws.workspace_type,
+                                    stock_mm=self._stock_mm(self._active_ws))
         if errors:
             return f"not yet GuildModel-ready ({errors[0]})"
         if warnings:
@@ -9112,6 +9207,7 @@ class MainWindow(QMainWindow):
                 curves         = curves,
                 mirror_on      = ws.mirror_enabled,
                 axis_x         = ws.scene.mirror.x if ws.scene.mirror else 0.0,
+                stock_mm       = self._stock_mm(ws),
             ))
 
         if not any(it.curves for it in items):
@@ -10008,6 +10104,57 @@ class MainWindow(QMainWindow):
                 f"Catalog PDF exported: {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.critical(self, "Catalog PDF export failed", str(e))
+
+    def _export_catalog_folder(self):
+        """File ▸ Export ▸ Catalog PDFs for a Folder… (Road to 1.4, item 3):
+        scripts/batch_catalog.py in the app. A folder picker first, then the
+        fill and where the PDFs go, then the run with a verdict per file."""
+        from .batch_catalog_ui import (BatchCatalogOptionsDialog,
+                                       BatchCatalogProgressDialog)
+        from .export.batch_catalog import library_files
+        last = dict(self._prefs.get("batch_catalog", {}))
+        start = (os.path.dirname(self._current_path) if self._current_path
+                 else last.get("library", ""))
+        library = QFileDialog.getExistingDirectory(
+            self, "Folder of .gdraw designs", start)
+        if not library:
+            return
+        if not library_files(library):
+            QMessageBox.information(
+                self, "Catalog PDFs for a Folder",
+                f"No .gdraw files at the top of {library}.")
+            return
+        dlg = BatchCatalogOptionsDialog(self, library, last)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        opts = dlg.options()
+        self._prefs["batch_catalog"] = dlg.remembered()
+        _prefs_mod.save(self._prefs)
+        progress = BatchCatalogProgressDialog(self, len(library_files(library)))
+        progress.show()
+        QApplication.processEvents()
+        report = self._run_catalog_batch(
+            library, opts,
+            progress=lambda i, n, v: (progress.step(i, n, v.line()),
+                                      QApplication.processEvents()),
+            should_stop=progress.canceled)
+        progress.finish(report.summary())
+        progress.exec()
+
+    def _run_catalog_batch(self, library: str, opts, progress=None,
+                           should_stop=None):
+        """Run the batch in a second window that is never shown, so the
+        design open here is untouched; the window goes when the run ends.
+        Returns the report (export.batch_catalog.BatchCatalogReport)."""
+        from .export.batch_catalog import run_batch_catalog
+        hidden = MainWindow()
+        try:
+            return run_batch_catalog(hidden, library, opts,
+                                     progress=progress, should_stop=should_stop)
+        finally:
+            hidden._dirty = False
+            hidden.close()
+            hidden.deleteLater()
 
     # ------------------------------------------------------------------
     # Persistent preferences

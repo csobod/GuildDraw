@@ -69,3 +69,14 @@ def test_amber_temple_with_lens():
                                  workspace_type="temple_r")
     assert state == AMBER
     assert "LENS" in tip
+
+
+def test_green_with_a_warning_when_the_temple_is_off_the_core_line():
+    # The origin rule (Road to 1.4, item 1) warns, never blocks: the dot stays
+    # green and the tooltip names the gap.
+    arm = line([(0, 7), (120, 7), (120, 17), (0, 17)], closed=True,
+               layer=Layer.OUTLINE)
+    state, tip = readiness_state([arm], mirror_on=False,
+                                 workspace_type="temple_r", stock_mm=(170.0, 30.0))
+    assert state == GREEN
+    assert "with warnings" in tip and "core line" in tip

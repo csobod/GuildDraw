@@ -18,7 +18,8 @@ is public, so every claim below can be verified directly.
   services, scheduled tasks, drivers, or startup (Run-key) entries. Nothing
   runs unless the user launches the app, and nothing survives closing it.
 - **No shell or subprocess execution.** The app never launches other
-  programs.
+  programs — not even its companions GuildModel and GuildSend, which are
+  opened by the user, never by GuildDraw.
 - **No dynamic code execution.** No `eval`/`exec`, no `pickle`/`marshal`
   deserialization of user files. Documents are plain ZIP/XML/JSON/DXF data
   parsed with size caps (checked against the ZIP directory before any member
