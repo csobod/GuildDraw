@@ -27,6 +27,21 @@ transformed so the side of the lettering that faces the brow edge follows the
 temple (a right-temple engraving at 180° becomes 0° on the left). Double-click
 the copy to change the words; placement and style are already identical.
 
+**Which face you see.** A front is drawn facing the anterior, the side the
+world sees, as its reference photo is. A temple is drawn from the posterior,
+the skin side, so engraved text reads naturally. **View Obverse** (toolbar
+and *View* menu, hotkey `V`; front and temples) turns the active tab's view to
+show the other face. The whole canvas is mirrored left to right: the face
+photo, the grid and the dimension lines turn with the drawing, and engraved
+text reads mirrored, while dimension values stay readable. A badge in the
+canvas's top-left corner says *Obverse* and, under it, the face toward you:
+*posterior* on a front, *anterior* on a temple. Use it to see a temple's
+inlays from the outside, or a front from behind. It is a view only: you draw,
+edit and snap as usual, the file and every export keep the drawing as drawn,
+and GuildModel still makes its single flip when it reads the file. Each tab
+keeps its own setting, and a design you open or start begins on its default
+faces.
+
 ## 2. Drawing
 
 Draw at real size. The origin cross is (0,0); for the frame front, the bridge
@@ -50,6 +65,7 @@ temple's y = 0 is the core line (see *The origin rule* in section 6).
 | Rebuild | `R` | Refit the selected spline/polyline: type a target node count (or press `Tab` and type a tolerance in mm); the HUD shows the achieved deviation live, Enter replaces the original (undoable). The way to turn a dense imported DXF outline into a clean, editable spline |
 | Point Move | `G` | Grab a point (snapped), click destination or type exact X/Y |
 | Move gizmo | `M` | Drag selection with exact-distance HUD |
+| View Obverse | `V` | Turn the view to the drawing's other face (section 1); front and temples |
 | Text | `I` | ENGRAVING text (temples only); double-click to re-edit. The **Font** box filters as you type — see below |
 | Snap node→endpoint | `E` | Snap a node onto another curve's endpoint |
 
@@ -57,8 +73,8 @@ All hotkeys are reassignable in **Preferences → Hotkeys**, and each tool's
 tooltip names its current key. A hotkey cannot take a fixed shortcut (section
 8) or a key the tools read while you type a value (digits, `.`, `,`, `-`, Enter
 and Tab). Toolbar buttons can be hidden per button in **Preferences →
-Toolbar**; Ghost and Guides stay in the View menu when their buttons are
-hidden.
+Toolbar**; Ghost, Guides and View Obverse stay in the View menu when their
+buttons are hidden.
 
 **Tooltips** wrap to a readable width. The **?** button at the foot of the
 toolbar turns them off everywhere and back on; the choice is remembered, and
@@ -163,7 +179,8 @@ Each layer row's tooltip says what the layer becomes in GuildModel:
   editable text in the `.gdraw` (a DXF carries it as outlines).
 - `INLAY` (front and temples, 2.0) is a seat for a plaque, a laminate or a
   metal plate: a closed curve GuildModel cuts to a depth and on a face it
-  keeps per inlay, the visible face by default. An inlay inside an inlay is a
+  keeps per inlay, the visible face by default. On a temple that is the
+  anterior, the face **View Obverse** shows. An inlay inside an inlay is a
   **step**; an inlay inside the `HINGE` curve is a step in the hinge pocket's
   floor. Inlays never cross a lens, a drill hole, a hinge curve or a
   decorative opening, and two inlays either nest or stay apart. They are not

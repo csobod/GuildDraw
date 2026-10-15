@@ -41,6 +41,7 @@ _HIDDEN_FRAMEDRAFT = [
     "framedraft.canvas.snapping",
     "framedraft.canvas.dim",
     "framedraft.canvas.measure_bar",
+    "framedraft.canvas.obverse_badge",
     "framedraft.canvas.move_gizmo",
     "framedraft.canvas.readiness_dot",
     "framedraft.tools.draw",

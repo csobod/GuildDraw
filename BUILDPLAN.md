@@ -2229,6 +2229,22 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
    under it, the face toward the viewer: a front's posterior, a temple's
    anterior. A view transform only: the document, snapping and every export
    are unchanged.
+   ✅ **Landed 2026-10-15.** `CanvasView.set_obverse` composes a scale of −1
+   in x onto the view's transform and re-centers on the scene point that was
+   in the middle of the viewport, so the drawing turns in place. Each tab's
+   view keeps its own turn, and the *View Obverse* toggle (toolbar, hotkey
+   `V`, its own View menu entry; front and temples only) follows the tab on
+   a switch. `ObverseBadge` is a HUD chip, a child of the view rather than
+   its scrolling viewport and transparent to the mouse, with the face from
+   `_OBVERSE_FACE`. The view's zoom readers took the sign out
+   (`CanvasView.zoom`): a mirrored `m11` read as a negative zoom, which the
+   next wheel step clamped to 1 %. Snapping, the band, picks, pans and drags
+   already went through the view's own mapping. Dimension values stay
+   readable, being drawn in screen space; engraving text reads mirrored. The
+   turn is not saved, as no other view state is, so New and Open start every
+   tab on its default face. Eleven tests, among them a band drag and a line
+   drawn in the turned view, and the `.gdraw` members and the DXF entities
+   compared with the view turned and not.
 9. **Release 2.0.0, both apps together.** The versions in
    `framedraft/__init__.py` and `pyproject.toml`; `docs/RELEASE-v2.0.0.md`
    with the 1.4 round's notes folded in (the origin rule, the folder catalog,
@@ -2239,8 +2255,7 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
 
 ## Order
 
-Items 1 and 7 are done. Item 8, the maker's other item, comes next; it
-needs nothing from GuildModel. Then item 3's writer, ahead of GuildModel's
+Items 1, 7 and 8 are done. Next, item 3's writer, ahead of GuildModel's
 reader, and item 5. Item 6 is decided after item 5. Item 2 waits on
 GuildModel reading a front's engraving with a face, and item 4 on its bridge
 decision and anterior bridge cut. The release is last, with GuildModel's,

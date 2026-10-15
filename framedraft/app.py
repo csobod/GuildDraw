@@ -25,13 +25,14 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction, QActionGroup, QColor, QBrush, QFontMetrics, QIcon, QPainter,
-    QPen, QPixmap,
+    QPen, QPixmap, QTransform,
 )
 
 from . import theme
 from .canvas.items import CurveItem
 from .canvas.dim import DimItem
 from .canvas.measure_bar import MeasureBar
+from .canvas.obverse_badge import ObverseBadge
 from .canvas.readiness_dot import ReadinessDot, readiness_state
 from .canvas.scene import (FrameScene, TextItem, DEFAULT_LENS_FILL_TOP,
                            DEFAULT_LENS_FILL_BOTTOM, DEFAULT_LENS_FILL_OPACITY,
@@ -158,6 +159,7 @@ _TOOLBAR_SECTIONS = [
         ("boxing",       "Boxing",                  True),
         ("stock",        "Stock",                   True),
         ("pad",          "Pad",                     True),
+        ("obverse",      "View Obverse",            True),
     ]),
     ("Operations", [
         ("mirror",       "Mirror (bake)",           True),
@@ -179,6 +181,9 @@ _WS_ONLY_ACTIONS = {
     "boxing":      ("front",),
     "pad":         ("front",),
     "copy_temple": ("temple_r", "temple_l"),
+    # A front or a temple has two faces to see; a hinge pocket is cut, and
+    # drawn, from one side only.
+    "obverse":     ("front", "temple_r", "temple_l"),
     # ENGRAVING only exists in temple workspaces (WORKSPACE_LAYERS)
     "text":        ("temple_r", "temple_l"),
 }
@@ -211,13 +216,21 @@ _LAYER_TIPS = {
     Layer.INLAY: (
         "A seat for a plaque, a laminate or a metal plate (GuildModel 2.0). "
         "GuildModel cuts it to a depth and on a face it keeps per inlay, the "
-        "visible face by default. An inlay inside another is a step; inside "
+        "visible face by default; on a temple that is the anterior, which "
+        "View Obverse shows. An inlay inside another is a step; inside "
         "the HINGE curve, a step in the hinge pocket's floor. It never crosses "
         "a LENS, DRILL or HINGE curve or a decorative opening, and two inlays "
         "nest or stay apart. Not mirrored: draw each seat, or Mirror (bake) a "
         "pair."),
     Layer.REF: "Reference geometry: never exported, and GuildModel ignores it.",
 }
+
+# View Obverse (Road to 2.0, item 8): the face toward the viewer once a tab's
+# view is turned. A front is drawn facing the anterior, as its reference
+# photo is; a temple is drawn from the posterior, the skin side, so engraved
+# text reads naturally there.
+_OBVERSE_FACE = {"front": "posterior", "temple_r": "anterior",
+                 "temple_l": "anterior"}
 
 # Shortcuts bound outside the hotkey table (menus and window QShortcuts).
 # Preferences ▸ Hotkeys lists every one, and SettingsDialog._RESERVED_KEYS —
@@ -270,6 +283,7 @@ _HOTKEY_ACTION_DEFS = [
     ("snap_node_ep", "Snap Node to Endpoint"),
     ("move_gizmo",   "Move gizmo"),
     ("join",         "Join curves"),
+    ("obverse",      "View Obverse"),
     ("bookmark",     "Bookmark revision"),
     ("insert_square", "Insert □ (size notation)"),
 ]
@@ -383,6 +397,9 @@ class CanvasView(QGraphicsView):
         # With `self` as context: a bare singleShot outlives the view and
         # fired into a deleted MeasureBar.
         QTimer.singleShot(0, self, self._reposition_measure_bar)
+        # View Obverse's corner chip: a child of the view, never of the
+        # viewport, whose scroll would carry it off with the drawing.
+        self.obverse_badge = ObverseBadge(self)
 
     # ------------------------------------------------------------------
     # Grid overlay (mm grid with major/minor divisions, drawn behind all)
@@ -569,6 +586,7 @@ class CanvasView(QGraphicsView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._reposition_measure_bar()
+        self.obverse_badge.reposition()
         self._ensure_scroll_room()
 
     def _ensure_scroll_room(self):
@@ -596,14 +614,42 @@ class CanvasView(QGraphicsView):
         rect.adjust(-vis.width(), -vis.height(), vis.width(), vis.height())
         self.setSceneRect(rect)
 
+    def zoom(self) -> float:
+        """The zoom (screen pixels per scene mm), whether or not the view is
+        mirrored: View Obverse makes the transform's m11 negative."""
+        return abs(self.transform().m11())
+
     def zoom_by(self, factor: float):
         """Scale the view by *factor*, clamped to [_MIN_ZOOM, _MAX_ZOOM]."""
-        current = self.transform().m11()
+        current = self.zoom()
         target  = max(self._MIN_ZOOM, min(self._MAX_ZOOM, current * factor))
         f = target / current
         if abs(f - 1.0) > 1e-9:
             self.scale(f, f)
-        self.zoom_changed.emit(round(self.transform().m11() * 100))
+        self.zoom_changed.emit(round(self.zoom() * 100))
+
+    def is_obverse(self) -> bool:
+        return self.transform().m11() < 0.0
+
+    def set_obverse(self, on: bool, face: str = ""):
+        """View Obverse (BUILDPLAN *Road to 2.0*, item 8): mirror the view left
+        to right, x → −x, to show the drawing from its other face. A view
+        transform only, so the scene, snapping and every export are
+        untouched. The scene point in the middle of the viewport stays there:
+        the drawing turns in place. *face* is the face then toward the
+        viewer, for the corner badge."""
+        if on != self.is_obverse():
+            vp = QRectF(self.viewport().rect())
+            center = self.viewportTransform().inverted()[0].map(vp.center())
+            flipped = QTransform(self.transform())
+            flipped.scale(-1.0, 1.0)
+            self.setTransform(flipped)
+            self._ensure_scroll_room()
+            self.centerOn(center)
+        self.obverse_badge.set_face(face)
+        self.obverse_badge.setVisible(on)
+        if on:
+            self.obverse_badge.reposition()
 
     def fit_view(self, rect):
         """fitInView, then re-clamp into the wheel-zoom bounds — a tiny (or
@@ -1107,6 +1153,7 @@ class WorkspaceState:
         self.inlay_fill_style:   str   = "color"   # "color" | "image"
         self.inlay_fill_image:   str   = ""        # kept while the color shows
         self.inlay_fill_tumble:  bool  = False     # turn each body's copy
+        self.obverse:        bool  = False       # View Obverse: the view only
         self.selected_face_idx: int       = -1
         self.face_image_paths:  list[str] = []
         self.fitted:            bool      = False   # True once fitInView has been called
@@ -1848,10 +1895,11 @@ class SettingsDialog(QDialog):
                     chk.setEnabled(False)
                     chk.setToolTip("Select is always shown.")
                 elif key in _WS_ONLY_ACTIONS:
+                    shown_on = _WS_ONLY_ACTIONS[key]
                     chk.setToolTip(
-                        "Shown on the Frame Front only."
-                        if _WS_ONLY_ACTIONS[key] == ("front",)
-                        else "Shown on the temples only.")
+                        "Shown on the Frame Front only." if shown_on == ("front",)
+                        else "Shown on the temples only." if "front" not in shown_on
+                        else "Shown on the Frame Front and the temples.")
                 self._tb_checks[key] = chk
                 grid.addWidget(chk, i % rows, i // rows)
             grid.setColumnStretch(2, 1)
@@ -2678,6 +2726,7 @@ class MainWindow(QMainWindow):
             "snap_node_ep": self._snap_selected_node_to_endpoint,
             "move_gizmo":   self._toggle_move_gizmo,
             "join":         self._act_join.trigger,
+            "obverse":      self._act_obverse.trigger,
             "bookmark":     self._add_bookmark,
             "insert_square": self._insert_square_char,
         }
@@ -2710,6 +2759,8 @@ class MainWindow(QMainWindow):
         self._snap_palette.types_changed.connect(self._on_snap_types_changed)
         self._snap_palette.radius_changed.connect(self._on_snap_radius_changed)
         self._act_snap_palette.toggled.connect(self._toggle_snap_palette)
+
+        self._act_obverse.toggled.connect(self._on_obverse_toggled)
 
         # ── Grid overlay (global) ─────────────────────────────────────────
         self._act_grid.blockSignals(True)
@@ -3098,6 +3149,14 @@ class MainWindow(QMainWindow):
             "Pad Guide: show pad block size as a dashed purple rectangle centered at origin.\n"
             "Set dimensions in the Properties panel or Settings."
         )
+        self._act_obverse = QAction("View\nObverse", self, checkable=True,
+                                    checked=False)
+        self._act_obverse.setToolTip(
+            "View Obverse: see the drawing from its other face, mirrored left\n"
+            "to right. A front is drawn facing the anterior, as its photo is; a\n"
+            "temple from the posterior, the skin side, so engraved text reads.\n"
+            "The badge in the canvas corner names the face toward you. A view\n"
+            "only: snapping, the file and every export keep the drawing as drawn.")
         tb.addAction(self._act_mirror)
         tb.addAction(self._act_guides)
         tb.addAction(self._act_snap)
@@ -3107,6 +3166,7 @@ class MainWindow(QMainWindow):
         tb.addAction(self._act_boxing)
         tb.addAction(self._act_stock)
         tb.addAction(self._act_pad)
+        tb.addAction(self._act_obverse)
 
         tb.addSeparator()
 
@@ -3217,6 +3277,7 @@ class MainWindow(QMainWindow):
             "boxing":       self._act_boxing,
             "stock":        self._act_stock,
             "pad":          self._act_pad,
+            "obverse":      self._act_obverse,
             "mirror":       self._act_dup_mirror,
             "mirror_close": self._act_mirror_close,
             "copy_temple":  self._act_copy_temple,
@@ -4385,7 +4446,7 @@ class MainWindow(QMainWindow):
         # selection change and wheel tick — the validator in that path made
         # select-all on a few hundred curves take seconds.
         layer = self._active_ws.active_layer.value
-        zoom  = round(self.view.transform().m11() * 100)
+        zoom  = round(self.view.zoom() * 100)
         self._info_label.setText(f"{layer}  |  {zoom}%")
 
     def _update_readiness(self):
@@ -4537,6 +4598,7 @@ class MainWindow(QMainWindow):
             (self._act_boxing,  ws.boxing_visible),
             (self._act_stock,   ws.stock_visible),
             (self._act_pad,     ws.pad_visible),
+            (self._act_obverse, ws.obverse),
         ]:
             act.blockSignals(True)
             act.setChecked(val)
@@ -6019,7 +6081,8 @@ class MainWindow(QMainWindow):
                          ("split_curve", self._act_split_curve),
                          ("offset", self._act_offset), ("rebuild", self._act_rebuild),
                          ("point_move", self._act_point_move), ("text", self._act_text),
-                         ("snap_node_ep", self._act_snap_ep), ("join", self._act_join)):
+                         ("snap_node_ep", self._act_snap_ep), ("join", self._act_join),
+                         ("obverse", self._act_obverse)):
             key_str = hotkey_prefs.get(key, "").strip()
             if key_str in SettingsDialog._RESERVED_KEYS or key_str in _TYPING_KEYS:
                 key_str = ""                      # not bound (see _apply_hotkeys)
@@ -6092,6 +6155,7 @@ class MainWindow(QMainWindow):
             (self._act_boxing,       "toggle-boxing"),
             (self._act_stock,        "toggle-stock"),
             (self._act_pad,          "toggle-pad"),
+            (self._act_obverse,      "view-obverse"),
             (self._act_mirror_close, "op-mirror-close"),
             (self._act_dup_mirror,   "op-dup-mirror"),
             (self._act_copy_temple,  "op-copy-temple"),
@@ -6216,8 +6280,9 @@ class MainWindow(QMainWindow):
         # hiding the button in Preferences ▸ Toolbar hid the menu entry too —
         # and Ghost has no hotkey, so nothing could switch it any more.
         self._view_menu_toggles: dict[str, tuple[QAction, QAction]] = {}
-        for key, act in (("ghost", self._act_mirror), ("guides", self._act_guides)):
-            proxy = QAction(act.text(), self, checkable=True)
+        for key, act in (("ghost", self._act_mirror), ("guides", self._act_guides),
+                         ("obverse", self._act_obverse)):
+            proxy = QAction(act.text().replace("\n", " "), self, checkable=True)
             proxy.setToolTip(act.toolTip())
             proxy.triggered.connect(lambda checked, a=act: a.setChecked(checked))
             view_menu.addAction(proxy)
@@ -6243,6 +6308,21 @@ class MainWindow(QMainWindow):
         self._act_prefs = settings_menu.addAction(
             "Preferences…", self._open_settings)
         self._act_prefs.setShortcut(QKeySequence("Ctrl+,"))
+
+    def _on_obverse_toggled(self, on: bool):
+        """View Obverse turns the active tab's view only: a front and a temple
+        may be seen from opposite faces at once."""
+        ws = self._active_ws
+        face = _OBVERSE_FACE.get(ws.workspace_type)
+        if face is None:
+            # The Hinge Pocket's button is hidden, but its hotkey still
+            # triggers the action: the pocket has no other face to show.
+            self._act_obverse.blockSignals(True)
+            self._act_obverse.setChecked(False)
+            self._act_obverse.blockSignals(False)
+            return
+        ws.obverse = on
+        ws.view.set_obverse(on, face)
 
     def _sync_view_menu_toggles(self):
         ws_type = self._active_ws.workspace_type
@@ -8941,6 +9021,13 @@ class MainWindow(QMainWindow):
         self._act_select.setChecked(True)
         self._set_tool_select()
         self._save_ws_sidebar_state(self._active_ws)
+        # The next document is first seen from its default faces.
+        for ws in self._workspaces:
+            ws.obverse = False
+            ws.view.set_obverse(False)
+        self._act_obverse.blockSignals(True)
+        self._act_obverse.setChecked(False)
+        self._act_obverse.blockSignals(False)
 
     def _new(self):
         if not self._confirm_discard():

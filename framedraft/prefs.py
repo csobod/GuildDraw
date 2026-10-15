@@ -122,6 +122,7 @@ DEFAULTS: dict = {
         "boxing":       True,
         "stock":        True,
         "pad":          True,
+        "obverse":      True,   # View Obverse (the drawing's other face)
         "mirror":       True,   # Mirror (bake operation)
         "mirror_close": False,  # hidden by default
         "copy_temple":  True,   # Mirror Copy (temple R ↔ L)
@@ -191,6 +192,7 @@ DEFAULTS: dict = {
         "snap_node_ep": "E",
         "move_gizmo":   "M",
         "join":         "J",
+        "obverse":      "V",
         "bookmark":     "Ctrl+B",
         # Types "□" into the focused text field — frame-size notation
         # A□DBL-TempleLength in bookmark names, filenames, engravings.
