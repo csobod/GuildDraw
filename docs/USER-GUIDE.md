@@ -524,3 +524,6 @@ complete, and GuildModel's intake is the final gate):
 
 Over the Properties panel or in Preferences, the mouse wheel scrolls the page;
 a number field, list or slider takes the wheel only after you click into it.
+Each section of the Properties panel folds under its header: click the header
+to fold it away or open it again. The panel remembers which sections you
+folded, as GuildModel's does.

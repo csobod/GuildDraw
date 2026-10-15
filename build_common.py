@@ -35,6 +35,7 @@ _HIDDEN_FRAMEDRAFT = [
     "framedraft.fontpicker",
     "framedraft.textpath",
     "framedraft.tooltips",
+    "framedraft.collapsible",
     "framedraft.canvas.items",
     "framedraft.canvas.mirror",
     "framedraft.canvas.scene",

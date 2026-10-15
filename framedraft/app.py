@@ -33,6 +33,7 @@ from .canvas.items import CurveItem
 from .canvas.dim import DimItem
 from .canvas.measure_bar import MeasureBar
 from .canvas.obverse_badge import ObverseBadge
+from .collapsible import CollapsibleBox
 from .canvas.readiness_dot import ReadinessDot, readiness_state
 from .canvas.scene import (FrameScene, TextItem, DEFAULT_LENS_FILL_TOP,
                            DEFAULT_LENS_FILL_BOTTOM, DEFAULT_LENS_FILL_OPACITY,
@@ -3300,6 +3301,11 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         tabs.tabBar().setExpanding(False)
+        # Every section folds under its header, as GuildModel's dock does
+        # (Road to 2.0, item 5); prefs["dock_folds"] remembers the ones the
+        # maker turned from how they open.
+        self._folds: dict[str, CollapsibleBox] = {}
+        self._fold_defaults: dict[str, bool] = {}
 
         # ── Tab 0: Curve ──────────────────────────────────────────────────
         curve_w = QWidget()
@@ -3307,8 +3313,8 @@ class MainWindow(QMainWindow):
         curve_lay.setContentsMargins(8, 8, 8, 8)
         curve_lay.setSpacing(12)
 
-        draw_box = QGroupBox("Drawing")
-        draw_lay = QFormLayout(draw_box)
+        draw_box = self._fold_box("Drawing")
+        draw_lay = QFormLayout(draw_box.body)
         draw_lay.setSpacing(6)
 
         self._weight_spin = QDoubleSpinBox()
@@ -3331,8 +3337,8 @@ class MainWindow(QMainWindow):
 
         # ── Layers (the single home for everything layer-related) ─────────
         from PySide6.QtWidgets import QHeaderView
-        layers_box = QGroupBox("Layers")
-        layers_lay = QVBoxLayout(layers_box)
+        layers_box = self._fold_box("Layers")
+        layers_lay = QVBoxLayout(layers_box.body)
         layers_lay.setContentsMargins(4, 4, 4, 4)
 
         self._layer_tree = LayerTree()
@@ -3375,8 +3381,8 @@ class MainWindow(QMainWindow):
         curve_lay.addWidget(layers_box)
 
         # ── Measurements: Frame Front ──────────────────────────────────────
-        meas_front_box = QGroupBox("Measurements")
-        meas_front_lay = QFormLayout(meas_front_box)
+        meas_front_box = self._fold_box("Measurements", key="Measurements · front")
+        meas_front_lay = QFormLayout(meas_front_box.body)
         meas_front_lay.setSpacing(6)
 
         self._meas_frame_width_lbl = QLabel("—")
@@ -3409,8 +3415,8 @@ class MainWindow(QMainWindow):
         self._meas_front_box = meas_front_box
 
         # ── Measurements: Temple ───────────────────────────────────────────
-        meas_temple_box = QGroupBox("Measurements")
-        meas_temple_lay = QFormLayout(meas_temple_box)
+        meas_temple_box = self._fold_box("Measurements", key="Measurements · temple")
+        meas_temple_lay = QFormLayout(meas_temple_box.body)
         meas_temple_lay.setSpacing(6)
 
         self._meas_temple_length_lbl = QLabel("—")
@@ -3434,8 +3440,8 @@ class MainWindow(QMainWindow):
         guides_lay.setContentsMargins(8, 8, 8, 8)
         guides_lay.setSpacing(12)
 
-        guide_box = QGroupBox("Construction (Forming)")
-        guide_lay = QFormLayout(guide_box)
+        guide_box = self._fold_box("Construction (Forming)")
+        guide_lay = QFormLayout(guide_box.body)
         guide_lay.setSpacing(6)
 
         from .construction import ConstructionGuides as _CG
@@ -3505,8 +3511,8 @@ class MainWindow(QMainWindow):
         guides_lay.addWidget(guide_box)
         self._construction_guide_box = guide_box   # ref for section show/hide
 
-        boxing_box = QGroupBox("Boxing System")
-        boxing_lay = QFormLayout(boxing_box)
+        boxing_box = self._fold_box("Boxing System")
+        boxing_lay = QFormLayout(boxing_box.body)
         boxing_lay.setSpacing(6)
 
         # A and B share a chain (aspect-link) toggle that spans both rows.
@@ -3623,8 +3629,8 @@ class MainWindow(QMainWindow):
         guides_lay.addWidget(boxing_box)
         self._boxing_guide_box = boxing_box   # ref for section show/hide
 
-        stock_box = QGroupBox("Stock Blank")
-        stock_lay = QFormLayout(stock_box)
+        stock_box = self._fold_box("Stock Blank")
+        stock_lay = QFormLayout(stock_box.body)
         stock_lay.setSpacing(6)
 
         self._stock_w_spin = QDoubleSpinBox()
@@ -3650,8 +3656,8 @@ class MainWindow(QMainWindow):
         guides_lay.addWidget(stock_box)
         self._stock_guide_box = stock_box   # ref for section show/hide
 
-        pad_box = QGroupBox("Pad Block")
-        pad_lay = QFormLayout(pad_box)
+        pad_box = self._fold_box("Pad Block")
+        pad_lay = QFormLayout(pad_box.body)
         pad_lay.setSpacing(6)
 
         self._pad_w_spin = QDoubleSpinBox()
@@ -3678,8 +3684,8 @@ class MainWindow(QMainWindow):
         self._pad_guide_box = pad_box   # ref for section show/hide
 
         # ── Frame Fill (display-only render overlay, M8) ─────────────────
-        fill_box = QGroupBox("Frame Fill")
-        fill_lay = QFormLayout(fill_box)
+        fill_box = self._fold_box("Frame Fill")
+        fill_lay = QFormLayout(fill_box.body)
         fill_lay.setSpacing(6)
 
         self._fill_show_chk = QCheckBox("Show fill")
@@ -3728,8 +3734,8 @@ class MainWindow(QMainWindow):
         self._fill_box = fill_box   # ref for section show/hide
 
         # ── Inlay Fill (display-only render overlay, Road to 2.0 item 7) ──
-        inlay_box = QGroupBox("Inlay Fill")
-        inlay_lay = QFormLayout(inlay_box)
+        inlay_box = self._fold_box("Inlay Fill")
+        inlay_lay = QFormLayout(inlay_box.body)
         inlay_lay.setSpacing(6)
 
         self._inlay_fill_show_chk = QCheckBox("Show inlay fill")
@@ -3788,8 +3794,8 @@ class MainWindow(QMainWindow):
         self._inlay_fill_box = inlay_box   # ref for section show/hide
 
         # ── Lens Fill (display-only render overlay, v1.2) ─────────────────
-        lens_fill_box = QGroupBox("Lens Fill")
-        lens_fill_lay = QFormLayout(lens_fill_box)
+        lens_fill_box = self._fold_box("Lens Fill")
+        lens_fill_lay = QFormLayout(lens_fill_box.body)
         lens_fill_lay.setSpacing(6)
 
         self._lens_fill_show_chk = QCheckBox("Show lens fill")
@@ -3897,8 +3903,8 @@ class MainWindow(QMainWindow):
         image_lay.setContentsMargins(8, 8, 8, 8)
         image_lay.setSpacing(12)
 
-        img_box = QGroupBox("Reference Images")
-        img_vlay = QVBoxLayout(img_box)
+        img_box = self._fold_box("Reference Images")
+        img_vlay = QVBoxLayout(img_box.body)
         img_vlay.setSpacing(6)
 
         # Add / Remove buttons
@@ -3917,6 +3923,10 @@ class MainWindow(QMainWindow):
         # Image list
         self._face_list = QListWidget()
         self._face_list.setFixedHeight(72)
+        # Fixed, not the list's own Expanding: a fixed-height list that says
+        # it expands made its section claim the tab's spare height as gaps.
+        self._face_list.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                      QSizePolicy.Policy.Fixed)
         self._face_list.setToolTip("Loaded reference images. Select one to adjust its settings.")
         self._face_list.currentRowChanged.connect(self._on_face_list_selection_changed)
         img_vlay.addWidget(self._face_list)
@@ -3954,8 +3964,8 @@ class MainWindow(QMainWindow):
 
         image_lay.addWidget(img_box)
 
-        calib_box = QGroupBox("Calibration")
-        calib_lay = QFormLayout(calib_box)
+        calib_box = self._fold_box("Calibration")
+        calib_lay = QFormLayout(calib_box.body)
         calib_lay.setSpacing(6)
 
         self._calib_label = QLabel("Not set")
@@ -4097,8 +4107,32 @@ class MainWindow(QMainWindow):
         self._prop_dock.setMinimumWidth(max(_DOCK_WIDTH, fit))
         self._wheel_guard = _WheelGuard(self)
         self._wheel_guard.guard(tabs)
+        self._set_fold_state(self._prefs.get("dock_folds"))
         self._prop_dock.setWidget(tabs)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._prop_dock)
+
+    def _fold_box(self, title: str, key: str | None = None) -> CollapsibleBox:
+        """A dock section that folds under its header, registered under *key*
+        (the title unless two sections share one) for prefs["dock_folds"].
+        The caller lays out its ``body`` as it laid out a QGroupBox."""
+        box = CollapsibleBox(title)
+        key = key or title
+        self._folds[key] = box
+        self._fold_defaults[key] = box.is_expanded()
+        return box
+
+    def _fold_state(self) -> dict:
+        """The sections folded or opened away from how they first open, by
+        key — only those, so a section added later opens as it was built to,
+        and a fold the maker never touched is not written down."""
+        return {key: box.is_expanded() for key, box in self._folds.items()
+                if box.is_expanded() != self._fold_defaults[key]}
+
+    def _set_fold_state(self, state: dict | None):
+        """Fold or open the sections *state* names; the rest as built."""
+        state = state if isinstance(state, dict) else {}
+        for key, box in self._folds.items():
+            box.set_expanded(bool(state.get(key, self._fold_defaults[key])))
 
     # ------------------------------------------------------------------
     # Layers panel
@@ -5345,7 +5379,7 @@ class MainWindow(QMainWindow):
         self._meas_temple_box.setVisible(is_temple)
         if is_temple:
             label = "Temple R" if ws_type == "temple_r" else "Temple L"
-            self._meas_temple_box.setTitle(f"Measurements — {label}")
+            self._meas_temple_box.set_title(f"Measurements — {label}")
         # Library tab: save/rename/delete only in Hinge Pocket workspace
         self._lib_hinge_actions.setVisible(is_hinge)
 
@@ -8300,8 +8334,8 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
         lay.addWidget(hint)
 
-        entry = QGroupBox("Place hole")
-        form = QFormLayout(entry)
+        entry = self._fold_box("Place hole")
+        form = QFormLayout(entry.body)
         form.setSpacing(6)
         self._drill_x = QDoubleSpinBox()
         self._drill_x.setRange(-60, 60); self._drill_x.setSuffix(" mm")
@@ -8643,6 +8677,7 @@ class MainWindow(QMainWindow):
         run's own settings."""
         self._prefs["main_window_geometry"] = bytes(
             self.saveGeometry().toBase64()).decode()
+        self._prefs["dock_folds"] = self._fold_state()
         _prefs_mod.save(self._prefs)
 
     # ------------------------------------------------------------------

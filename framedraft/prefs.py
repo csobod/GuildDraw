@@ -141,6 +141,10 @@ DEFAULTS: dict = {
         "custom_bg": "#faf6ee",   # canvas color when preset == "custom"
         "vignette":  0,           # 0–100 edge-darkening intensity
     },
+    # The Properties dock's folded sections, by title (Road to 2.0, item 5,
+    # GuildModel's "dock_folds"): {"Lens Fill": false, ...}. Only the ones
+    # turned from how they open are listed.
+    "dock_folds": {},
     # Node/handle editing-dot radius in screen px (theme.dot_radius)
     "dot_radius_px": 4,
     # Compact toolbar: tight button padding + slightly smaller icons

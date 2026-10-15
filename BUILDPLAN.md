@@ -75,6 +75,14 @@ Inlay Fill and View Obverse (items 7 and 8; the obverse turns every tab left
 to right). 787 tests. Next: those two, then item 3's writer and item 5;
 item 6 is decided after item 5.
 
+*2026-10-15, the evening round.* Items 7, 8 and 5 landed, and item 3's
+writer: Inlay Fill, View Obverse, the guide sizes in the `.gdraw` (read back
+on open), and the dock's folding sections, committed one item each after
+review. The maker passed on item 6, the drafting round. 855 tests. Next:
+GuildModel's reader of the `guides` key, in a GuildModel session; items 2
+and 4 wait on GuildModel; the release, item 9, comes last, beside
+GuildModel's.
+
 ---
 
 ## 1. Goal & scope *(unchanged — archive §1)*
@@ -2198,10 +2206,27 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
 5. **Interface parity from GuildModel M20** (item 6 of 1.4, carried):
    collapsible group headers for the Properties dock, icon buttons where a
    row of text buttons overflows, the wheel guard kept.
+   ✅ **Landed 2026-10-15.** `framedraft/collapsible.py` is GuildModel's
+   `CollapsibleBox`, its header styled as there (`collapsibleHeader`, the
+   hover from a new `chrome.fold_hover` token with GuildModel's values).
+   All fourteen sections of the dock fold, keyed by title; the two
+   Measurements sections share a title and keep keys of their own.
+   `prefs["dock_folds"]` holds only the sections turned from how they open,
+   written as the window closes and read as the dock is built, as GuildModel
+   keeps its own. No row of text buttons overflows at the dock's minimum
+   width (348 px, set by the tab bar), so none turned to icons. The wheel
+   guard covers the controls inside the folds. Without the group frames, the
+   Canvas tab's fixed-height image list stopped claiming the tab's spare
+   height. Six tests.
 6. **The drafting round, proposed for 2.0:** the symmetry checker, the
    curvature comb, the lens-shape library and *New from measurements* (Tier B
    1, 3, 4 and 6). A 2.0 that is only a contract change on the drawing side
    is thin; the maker decides whether these ride along.
+   ❌ **Passed for 2.0, 2026-10-15, the maker's decision.** None of the four
+   is necessary to the leap, and each risks making the app more confusing
+   and less to the point. Lens shapes in particular are what the Guild
+   Archives offer makers as a paid starter pack, so GuildDraw ships no
+   library of them.
 7. **Inlay Fill**, the maker's item (2026-10-15): an Inlay Fill box under
    Frame Fill in the Guides panel. Color and opacity, or an image scaled to
    cover each closed INLAY body (a turquoise stone photo, say), one copy per
@@ -2266,10 +2291,10 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
 
 ## Order
 
-Items 1, 7 and 8 are done, and item 3's writer, ahead of GuildModel's
-reader. Next, item 5. Item 6 is decided after item 5. Item 2 waits on
-GuildModel reading a front's engraving with a face, and item 4 on its bridge
-decision and anterior bridge cut. The release is last, with GuildModel's,
+Items 1, 5, 7 and 8 are done, and item 3's writer, ahead of GuildModel's
+reader; item 6 was passed. Item 2 waits on GuildModel reading a front's
+engraving with a face, and item 4 on its bridge decision and anterior bridge
+cut. The release is last, with GuildModel's,
 whose own gates (a shipped-bed redesign and a video) come first.
 
 ---

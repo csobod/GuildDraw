@@ -39,6 +39,9 @@ _TOKENS: dict[str, tuple[str, str]] = {
     # print. Chosen for contrast on chrome.bg (about 5:1 in both modes); the
     # gray #888 it replaces read at 2.5:1 on the light chrome.
     "chrome.muted":        ("#6e5520", "#9a917f"),
+    # A dock section's header under the pointer (Road to 2.0, item 5):
+    # GuildModel's values, so the two docks' fold headers answer alike.
+    "chrome.fold_hover":   ("#8a6d2f", "#e8c07a"),
     # Disabled controls — GuildModel's values, so an inert button reads the
     # same in both apps. Before these, a disabled control here looked exactly
     # like an enabled one.
@@ -378,6 +381,16 @@ QGroupBox::title {
     padding: 0 4px;
     background-color: %(bg)s;
 }
+/* A dock section's header (framedraft/collapsible.py, GuildModel's M20): a
+   heading with an arrow, not a button; its checked state means "expanded"
+   and must not take the checked button fill. */
+QToolButton#collapsibleHeader, QToolButton#collapsibleHeader:checked,
+QToolButton#collapsibleHeader:hover, QToolButton#collapsibleHeader:pressed {
+    background: transparent; border: none; border-radius: 0; padding: 4px 2px;
+    min-width: 0; font-size: 12px; font-weight: bold; color: %(ink)s;
+    text-align: left;
+}
+QToolButton#collapsibleHeader:hover { color: %(fold_hover)s; }
 QDoubleSpinBox, QSpinBox, QLineEdit, QComboBox {
     background-color: %(panel)s;
     border: 1px solid %(border)s;
@@ -500,6 +513,7 @@ def build_qss() -> str:
         "checked_ink":  color("chrome.checked_ink"),
         "slider_hover": color("chrome.slider_hover"),
         "muted":        color("chrome.muted"),
+        "fold_hover":   color("chrome.fold_hover"),
         "disabled_bg":     color("chrome.disabled_bg"),
         "disabled_border": color("chrome.disabled_border"),
         "disabled_ink":    color("chrome.disabled_ink"),
