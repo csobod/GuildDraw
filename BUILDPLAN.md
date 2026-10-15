@@ -2179,6 +2179,17 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
    the pad block's on the front, so GuildModel seeds a new project's blank
    from the drawing. The writer and its contract test may land first: an
    optional key GuildModel ignores until a GuildModel session reads it.
+   ✅ **Writer landed 2026-10-15.** Each workspace's SVG state carries
+   `guides: {"stock": {"width_mm", "height_mm"}}`, the front's a `"pad"`
+   beside it, in scene mm (width along x), from the session's sizes. GuildDraw
+   reads the key back on open, held to the sidebar's ranges: a writer
+   without a reader let the next open-and-save swap a design's blank for the
+   session's, and the folder catalog run saves files back. A file without
+   the key keeps the session's sizes. The contract test pins the names; four
+   round-trip tests. **GuildModel's side, for a GuildModel session:** read
+   `guides.stock` per workspace (the front's for the front blank, a temple's
+   for the temple blank) as the seed for a new project's stock length and
+   width, ignoring it when absent.
 4. **The BRIDGE path** (Proposal B, which waited for M24): a drawn centerline
    with taper parameters in a `bridge` sidecar, pink, front only; on the DXF
    BRIDGE layer and in the `.gdraw`; the validator's open-centerline rule.
@@ -2255,8 +2266,8 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
 
 ## Order
 
-Items 1, 7 and 8 are done. Next, item 3's writer, ahead of GuildModel's
-reader, and item 5. Item 6 is decided after item 5. Item 2 waits on
+Items 1, 7 and 8 are done, and item 3's writer, ahead of GuildModel's
+reader. Next, item 5. Item 6 is decided after item 5. Item 2 waits on
 GuildModel reading a front's engraving with a face, and item 4 on its bridge
 decision and anterior bridge cut. The release is last, with GuildModel's,
 whose own gates (a shipped-bed redesign and a video) come first.

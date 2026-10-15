@@ -226,7 +226,9 @@ symmetric contour (draw half, then Mirror Close or bake + join).
   the wire runs: draw the temple across it. The front's blank is set once in
   *Preferences ▸ General* (Stock blank); the temple blank sits beside it
   (Temple blank, 170 × 30 mm by default, GuildModel's own), shared by both
-  temple tabs.
+  temple tabs. Each tab's guide sizes are saved in the `.gdraw` and come back
+  when you open it, so a design keeps the blank it was drawn against; the
+  preferences set the sizes a session starts with.
 - **Frame Fill** (Guides panel): fills the frame body — the OUTLINE profile
   minus the LENS apertures and any decorative openings — so the drawing reads
   as a frame rather than a wireframe. **Style** picks what it is filled with:

@@ -236,6 +236,7 @@ def save_svg(
     bookmarks:        list | None = None,
     dims:             list | None = None,
     layers:           dict | None = None,   # {layer name: {"visible","locked"}}
+    guides:           dict | None = None,   # {"stock"|"pad": {"width_mm","height_mm"}}
     fill:             dict | None = None,   # {"visible","color","opacity","style","image"}
     lens_fill:        dict | None = None,   # {"visible","top","bottom","linked","opacity"}
     inlay_fill:       dict | None = None,   # fill's keys plus "tumble" (2.0)
@@ -296,6 +297,8 @@ def save_svg(
         state["dims"] = [_dim_to_dict(d) for d in dims]
     if layers:
         state["layers"] = layers
+    if guides:
+        state["guides"] = guides
     if fill:
         state["fill"] = fill
     if lens_fill:
@@ -418,7 +421,7 @@ def _load_face_images(state: dict) -> list[FaceImage]:
 def load_svg(path: str) -> dict:
     """
     Return a dict with keys: curves, dims, texts, calibration, mirror,
-    forming, machined_bridge, face_images, bookmarks, layers, fill,
+    forming, machined_bridge, face_images, bookmarks, layers, guides, fill,
     lens_fill, inlay_fill, bevel.  Keys absent from an older file come back
     as their empty defaults.  Raises on parse error.
     """
@@ -469,6 +472,7 @@ def load_svg(path: str) -> dict:
         "face_images": _load_face_images(state),
         "bookmarks": bookmarks,
         "layers": state.get("layers", {}),
+        "guides": state.get("guides"),         # None when absent (pre-2.0 files)
         "fill": state.get("fill"),   # None when absent (pre-0.9.8 files)
         "lens_fill": state.get("lens_fill"),   # None when absent (pre-1.2 files)
         "inlay_fill": state.get("inlay_fill"), # None when absent (pre-2.0 files)

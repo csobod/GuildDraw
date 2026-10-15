@@ -33,6 +33,9 @@ TEXT_KEYS      = {"text", "family", "size_mm", "rotation", "anchor_x", "anchor_y
 FORMING_KEYS   = {"apical_radius_mm", "bridge_angle_deg"}
 MIRROR_KEYS    = {"x", "enabled"}
 LAYER_NAMES    = {layer.value for layer in Layer}
+# Written for GuildModel to seed a new project's blank (Road to 2.0, item 3);
+# pinned here before its reader takes them, so the names are settled.
+GUIDE_KEYS     = {"width_mm", "height_mm"}
 
 
 def _state(zf: zipfile.ZipFile, member: str) -> dict:
@@ -129,3 +132,18 @@ def test_text_stays_text_with_the_fields_guildmodel_engraves_from(written):
     # filled shape to GuildModel.
     eng = [c for c in temple["curves"] if c["layer"] == "ENGRAVING"]
     assert len(eng) == 1 and eng[0]["closed"] is True
+
+
+def test_every_workspace_carries_its_guide_sizes(win, written):
+    with zipfile.ZipFile(written) as zf:
+        states = {tab: _state(zf, f"{tab}.svg") for tab in TABS}
+    for tab, ws in zip(TABS, win._workspaces, strict=True):
+        guides = states[tab]["guides"]
+        assert set(guides) == ({"stock", "pad"} if tab == "front" else {"stock"}), tab
+        assert set(guides["stock"]) == GUIDE_KEYS
+        assert (guides["stock"]["width_mm"], guides["stock"]["height_mm"]) == \
+            (ws.stock_w, ws.stock_h)
+    pad = states["front"]["guides"]["pad"]
+    assert set(pad) == GUIDE_KEYS
+    assert (states["temple_r"]["guides"]["stock"]["width_mm"],
+            states["temple_r"]["guides"]["stock"]["height_mm"]) == (170.0, 30.0)

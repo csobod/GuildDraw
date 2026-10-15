@@ -9288,6 +9288,23 @@ class MainWindow(QMainWindow):
 
         ws.bookmarks = list(data.get("bookmarks", []))
 
+        # Guide sizes (2.0). Absent in older files, which leave the session's
+        # sizes as they are; out-of-range values are held to the sidebar's.
+        guides = data.get("guides")
+        guides = guides if isinstance(guides, dict) else {}
+        stock = guides.get("stock")
+        if isinstance(stock, dict):
+            ws.stock_w = _num_or(stock.get("width_mm"), ws.stock_w, 5.0, 400.0)
+            ws.stock_h = _num_or(stock.get("height_mm"), ws.stock_h, 5.0, 200.0)
+            ws.stock_guide.set_width(ws.stock_w)
+            ws.stock_guide.set_height(ws.stock_h)
+        pad = guides.get("pad")
+        if isinstance(pad, dict):
+            ws.pad_w = _num_or(pad.get("width_mm"), ws.pad_w, 10.0, 200.0)
+            ws.pad_h = _num_or(pad.get("height_mm"), ws.pad_h, 10.0, 200.0)
+            ws.pad_guide.set_width(ws.pad_w)
+            ws.pad_guide.set_height(ws.pad_h)
+
         fill = data.get("fill") or {}
         ws.fill_visible = bool(fill.get("visible", False))
         ws.fill_color   = _hex_or(fill.get("color"), "#2a6099")
@@ -9547,6 +9564,14 @@ class MainWindow(QMainWindow):
                 for i in range(ws.scene.face_count())
             ],
             "bookmarks": ws.bookmarks,
+            # The blank and the pad block the design is drawn against (2.0):
+            # read back on open, and the seed GuildModel takes for a new
+            # project's stock once its reader knows the key.
+            "guides": {
+                "stock": {"width_mm": ws.stock_w, "height_mm": ws.stock_h},
+                **({"pad": {"width_mm": ws.pad_w, "height_mm": ws.pad_h}}
+                   if ws.workspace_type == "front" else {}),
+            },
             "fill": {
                 "visible": ws.fill_visible,
                 "color":   ws.fill_color,
@@ -9597,6 +9622,7 @@ class MainWindow(QMainWindow):
             bookmarks       = d["bookmarks"],
             dims            = d["dims"],
             layers          = d["layers"],
+            guides          = d["guides"],
             fill            = portable_fill(d["fill"], path),
             inlay_fill      = portable_fill(d["inlay_fill"], path),
             lens_fill       = d["lens_fill"],

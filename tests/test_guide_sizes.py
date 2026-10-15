@@ -1,0 +1,92 @@
+"""Guide sizes in the .gdraw (BUILDPLAN *Road to 2.0*, item 3): each
+workspace's stock guide, and the front's pad block, are written with the
+design and read back on open, so a design reopens on the blank it was drawn
+against and a later save never swaps it for the session's."""
+import pytest
+from PySide6.QtWidgets import QApplication
+
+import framedraft.prefs as prefs_mod
+from framedraft.document import Layer
+from helpers import circle, closed_diamond
+
+
+@pytest.fixture()
+def win(tmp_path, monkeypatch):
+    monkeypatch.setattr(prefs_mod, "_DIR", tmp_path)
+    monkeypatch.setattr(prefs_mod, "_FILE", tmp_path / "prefs.json")
+    from framedraft.app import MainWindow
+    w = MainWindow()
+    QApplication.processEvents()
+    yield w
+    w._dirty = False
+    w.close()
+    w.deleteLater()
+    QApplication.processEvents()
+
+
+def _tab(win, i):
+    win._ws_tab_widget.setCurrentIndex(i)
+    QApplication.processEvents()
+    return win._active_ws
+
+
+def test_a_design_reopens_on_the_blank_it_was_drawn_against(win, tmp_path):
+    front = win._active_ws
+    for c in (closed_diamond(0, 0, 40), circle(-15, 0, 10), circle(15, 0, 10)):
+        front.add_curve(c)
+    win._stock_w_spin.setValue(180.0)
+    win._stock_h_spin.setValue(90.0)
+    win._pad_w_spin.setValue(50.0)
+    temple = _tab(win, 1)
+    win._stock_w_spin.setValue(175.0)
+    _tab(win, 0)
+    path = str(tmp_path / "frame.gdraw")
+    win._do_save_gdraw(path)
+    win._dirty = False
+
+    # Another design's session sizes, then the file again.
+    win._stock_w_spin.setValue(150.0)
+    _tab(win, 1)
+    win._stock_w_spin.setValue(160.0)
+    _tab(win, 0)
+    win._new()
+    win._open_gdraw(path, remember=False)
+
+    assert (front.stock_w, front.stock_h, front.pad_w) == (180.0, 90.0, 50.0)
+    assert win._stock_w_spin.value() == 180.0          # the active tab's sidebar
+    assert front.stock_guide.width_mm == 180.0
+    assert front.scene.fill_blank_width() == 180.0     # the swatch spans it
+    assert win._stock_mm(front) == (180.0, 90.0)       # and the fit warning
+    assert temple.stock_w == 175.0 and temple.stock_guide.width_mm == 175.0
+    _tab(win, 1)
+    assert win._stock_w_spin.value() == 175.0
+
+
+def test_an_older_file_keeps_the_session_sizes(win):
+    front = win._active_ws
+    front.stock_w = 165.0
+    win._load_ws_data(front, {"curves": []})
+    assert front.stock_w == 165.0
+
+
+def test_a_damaged_size_is_held_to_the_sidebar_range(win):
+    front = win._active_ws
+    win._load_ws_data(front, {"guides": {
+        "stock": {"width_mm": 9999, "height_mm": "wide"},
+        "pad": {"width_mm": -3, "height_mm": 40}}})
+    assert front.stock_w == 400.0                      # clamped
+    assert front.stock_h == 85.0                       # unreadable: kept
+    assert (front.pad_w, front.pad_h) == (10.0, 40.0)
+
+
+def test_a_plain_svg_carries_them_too(win, tmp_path):
+    from framedraft.export.svg import load_svg
+    front = win._active_ws
+    front.add_curve(closed_diamond(0, 0, 40, layer=Layer.OUTLINE))
+    win._stock_w_spin.setValue(182.0)
+    path = str(tmp_path / "frame.svg")
+    win._do_save_svg(path)
+    win._dirty = False
+    guides = load_svg(path)["guides"]
+    assert guides["stock"]["width_mm"] == 182.0
+    assert set(guides) == {"stock", "pad"}
