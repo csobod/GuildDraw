@@ -54,6 +54,11 @@ DEFAULTS: dict = {
     # picked; reference swatches are published light, so a maker who always
     # deepens can make that their starting point (see scene.deepen_tint).
     "lens_fill_intensity":   1.0,
+    # Inlay Fill overlay (2.0): the color and opacity a fresh inlay fill
+    # starts at. The fill itself, image and tumble included, lives in the
+    # .gdraw per workspace.
+    "inlay_fill_color":       "#3fb0a5",
+    "inlay_fill_opacity_pct": 85,
     # PNG export resolution (true print scale: pixels = mm · dpi / 25.4)
     "png_export_dpi":       600,
     # PDF-for-Catalog export (front + both temples on one printable sheet)

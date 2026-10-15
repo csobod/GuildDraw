@@ -2200,6 +2200,25 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
    the anterior; a nested seat (a step) paints over its parent. Display only:
    saved per workspace in the `.gdraw` with its swatch, the way the Frame
    Fill's is, printed with the fills on the catalog page, never machined.
+   ✅ **Landed 2026-10-15.** `FrameScene` paints one item per body at z −497,
+   between the frame fill and the lens fill, from the INLAY curves stitched
+   the way the other fills stitch theirs. A step comes back as two bodies
+   that never overlap, the outer one with the step punched out, so neither
+   paints over the other. An image is cropped to cover each body
+   (`inlay_image_transform`); with *Tumble bodies* each copy turns by the
+   golden angle times the body's rank, every other copy is mirrored, and the
+   crop slides within the slack a 1.25 overscale leaves around the body's
+   turned bounds. The rank comes from where each body sits, so a reopened
+   file tumbles as it was saved. The Inlay Fill box sits under Frame Fill on
+   the front and both temples, and the two share one image row
+   (`_swatch_row`). The `.gdraw` carries an `inlay_fill` block per workspace
+   and embeds the image as `images/<tab>_inlay_fill_<name>`, the Frame
+   Fill's pattern; a plain `.svg` keeps it portable. *Preferences ▸ General ▸
+   Inlay Fill* holds the starting color and opacity (turquoise at 85 %), and
+   a new default moves the fills still on the old one, as the Lens Fill's
+   does. The catalog page prints the inlay over the frame fill, and its
+   option reads *Print frame, inlay and lens fills*; the folder catalog run
+   still sets the Frame Fill only. Forty-six tests.
 8. **View Obverse**, the maker's item (2026-10-15): a view toggle per
    workspace that shows the other face. A front is drawn facing the
    anterior, as its reference photo is; a temple faces the posterior, the
@@ -2220,12 +2239,12 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
 
 ## Order
 
-Item 1 is done. Items 7 and 8, the maker's, come next; neither needs
-anything from GuildModel. Then item 3's writer, ahead of GuildModel's reader,
-and item 5. Item 6 is decided after item 5. Item 2 waits on GuildModel
-reading a front's engraving with a face, and item 4 on its bridge decision
-and anterior bridge cut. The release is last, with GuildModel's, whose own
-gates (a shipped-bed redesign and a video) come first.
+Items 1 and 7 are done. Item 8, the maker's other item, comes next; it
+needs nothing from GuildModel. Then item 3's writer, ahead of GuildModel's
+reader, and item 5. Item 6 is decided after item 5. Item 2 waits on
+GuildModel reading a front's engraving with a face, and item 4 on its bridge
+decision and anterior bridge cut. The release is last, with GuildModel's,
+whose own gates (a shipped-bed redesign and a video) come first.
 
 ---
 

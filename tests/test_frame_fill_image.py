@@ -426,7 +426,7 @@ def test_a_long_swatch_name_is_elided_not_expanded(fresh, tmp_path, monkeypatch)
     _pick(monkeypatch, img)
     fresh._on_fill_image_clicked()
 
-    assert fresh._fill_image_full_text == long_name
+    assert fresh._swatch_btn_texts[fresh._fill_image_btn] == long_name
     assert fresh._fill_image_btn.toolTip() == img
     shown = fresh._fill_image_btn.text()
     assert shown == long_name or "…" in shown

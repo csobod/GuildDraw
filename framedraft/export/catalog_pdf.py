@@ -50,17 +50,18 @@ def _content_bbox(curves):
 def _draw_fill(painter, fill, clip: QRectF):
     """Lay one component's display-only fills down under its line work.
 
-    *fill* is the {"frame": …, "lens": [...]} record the app collects from the
-    workspace's scene (see FrameScene.fill_paint_spec) — already in the same
+    *fill* is the {"frame": …, "inlay": [...], "lens": [...]} record the app
+    collects from the workspace's scene (see FrameScene.fill_paint_spec; the
+    inlays paint over the frame, as on the canvas) — already in the same
     scene-mm space as the curves, so it rides the component transform the
     strokes ride. Nothing here changes the geometry; it is the color the
     maker set on canvas, printed.
 
-    The fill comes from the OUTLINE and LENS layers whether or not those are
-    among the layers this sheet prints, so it is clipped to *clip* (the
-    component's own bbox, which is what the layout reserved space for). With
-    the usual layer choices that clips nothing; with an odd one it keeps a
-    tint from washing across the page instead of sitting on its frame."""
+    The fill comes from the OUTLINE, INLAY and LENS layers whether or not
+    those are among the layers this sheet prints, so it is clipped to *clip*
+    (the component's own bbox, which is what the layout reserved space for).
+    With the usual layer choices that clips nothing; with an odd one it keeps
+    a tint from washing across the page instead of sitting on its frame."""
     if not fill:
         return
     painter.save()
@@ -71,6 +72,11 @@ def _draw_fill(painter, fill, clip: QRectF):
         painter.setOpacity(float(frame.get("opacity", 1.0)))
         painter.setBrush(frame["brush"])
         painter.drawPath(frame["path"])
+        painter.setOpacity(1.0)
+    for path, brush, opacity in (fill.get("inlay") or ()):
+        painter.setOpacity(float(opacity))
+        painter.setBrush(brush)
+        painter.drawPath(path)
         painter.setOpacity(1.0)
     for path, brush in (fill.get("lens") or ()):
         painter.setBrush(brush)
@@ -101,9 +107,10 @@ def paint_catalog(painter: QPainter, page_w_mm: float, page_h_mm: float,
 
     components: {"front"|"temple_r"|"temple_l": [Curve, ...]} in scene mm.
     caption:    file-name string (already stripped of extension); "" = none.
-    fills:      optional {component key: {"frame": …, "lens": [...]}} of the
-                display-only overlays to print beneath the line work, in the
-                same scene mm (see _draw_fill). None/{} = line work only.
+    fills:      optional {component key: {"frame": …, "inlay": [...],
+                "lens": [...]}} of the display-only overlays to print
+                beneath the line work, in the same scene mm (see
+                _draw_fill). None/{} = line work only.
     """
     lw   = float(settings.get("line_weight_mm", 0.6))
     font_name = settings.get("caption_font", "Courier New")

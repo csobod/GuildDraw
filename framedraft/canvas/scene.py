@@ -181,6 +181,60 @@ def slider_from_intensity(intensity: float) -> int:
     return round(100.0 * math.log(k / LENS_FILL_INTENSITY_MIN) / math.log(span))
 
 
+# Inlay Fill shipped defaults (BUILDPLAN *Road to 2.0*, item 7). Turquoise
+# reads apart from the frame fill's steel blue and from the INLAY layer's gold
+# line; an inlay is a solid piece of stone, shell or metal, so it starts well
+# opaque.
+DEFAULT_INLAY_FILL_COLOR   = "#3fb0a5"
+DEFAULT_INLAY_FILL_OPACITY = 0.85
+
+# Tumble bodies: body n's copy of the image turns by n golden angles, every
+# other copy is mirrored, and each slides by a low-discrepancy step within the
+# slack the overscale leaves around the body's turned bounds.
+_TUMBLE_GOLDEN_ANGLE_DEG = 137.50776405003785
+_TUMBLE_OVERSCALE        = 1.25
+_TUMBLE_STEP_U           = 0.6180339887498949   # 1/φ
+_TUMBLE_STEP_V           = 0.7548776662466927   # 1/ρ, the plastic number
+
+
+def inlay_image_transform(rect: QRectF, img_w: float, img_h: float,
+                          rank: int | None = None) -> QTransform:
+    """Image pixels → scene mm for one inlay body whose bounds are *rect*.
+
+    Without a rank the image covers the bounds, centered on them, as a
+    picture is cropped to a frame. With *rank* (Tumble bodies) it is the
+    tumbled copy for the body at that rank: turned, mirrored on every other
+    rank, and slid within its slack. A function of the rank and the bounds
+    alone, so a drawing tumbles the same way on every repaint and every
+    reopening."""
+    cx, cy = rect.center().x(), rect.center().y()
+    t = QTransform().translate(cx, cy)
+    if rank is None:
+        s = max(rect.width() / img_w, rect.height() / img_h)
+        t.scale(s, s)
+        t.translate(-img_w / 2.0, -img_h / 2.0)
+        return t
+    n = rank + 1                                 # rank 0 tumbles too
+    angle = (n * _TUMBLE_GOLDEN_ANGLE_DEG) % 360.0
+    c = abs(math.cos(math.radians(angle)))
+    sn = abs(math.sin(math.radians(angle)))
+    # The body's bounds as the turned image sees them: the extent it must
+    # cover along each of its own axes, in mm.
+    ext_w = rect.width() * c + rect.height() * sn
+    ext_h = rect.width() * sn + rect.height() * c
+    s = _TUMBLE_OVERSCALE * max(ext_w / img_w, ext_h / img_h)
+    # How far the image's center may sit off the body's and still cover
+    # those extents, in image pixels.
+    slack_x = max(0.0, (img_w - ext_w / s) / 2.0)
+    slack_y = max(0.0, (img_h - ext_h / s) / 2.0)
+    u = 2.0 * ((n * _TUMBLE_STEP_U) % 1.0) - 1.0
+    v = 2.0 * ((n * _TUMBLE_STEP_V) % 1.0) - 1.0
+    t.rotate(angle)
+    t.scale(-s if n % 2 == 0 else s, s)
+    t.translate(-img_w / 2.0 - u * slack_x, -img_h / 2.0 - v * slack_y)
+    return t
+
+
 def _polygonize_lines(coord_lists: list) -> tuple[list, bool]:
     """Stitch flattened polylines into faces, tolerating snapped endpoints.
 
@@ -292,6 +346,19 @@ class FrameScene(QGraphicsScene):
         self._lens_fill_items: list[QGraphicsPathItem] = []
         # (status) -> None; same contract as fill_auto_disabled, for the lenses.
         self.lens_fill_auto_disabled = None
+        # Inlay fill overlay (display-only; never exported). One item per
+        # closed INLAY body, above the frame fill: an inlay is taken to sit on
+        # the anterior, over the material around it. A color, or an image
+        # cropped to each body (a stone photo, a shell), optionally tumbled.
+        self._inlay_fill_visible: bool = False
+        self._inlay_fill_color = QColor(DEFAULT_INLAY_FILL_COLOR)
+        self._inlay_fill_opacity: float = DEFAULT_INLAY_FILL_OPACITY
+        self._inlay_fill_image_path: str = ""
+        self._inlay_fill_image_pixmap: QPixmap | None = None
+        self._inlay_fill_tumble: bool = False
+        self._inlay_fill_items: list[QGraphicsPathItem] = []
+        # (status) -> None; same contract as fill_auto_disabled, for inlays.
+        self.inlay_fill_auto_disabled = None
         # Coalesces hot-path fill rebuilds (add/remove/refresh fire per mouse
         # move during drags) into one boolean-ops pass per event-loop tick.
         # Child timer so a pending tick dies with the scene.
@@ -711,13 +778,15 @@ class FrameScene(QGraphicsScene):
 
     def _schedule_fill_rebuild(self):
         """Deferred overlay rebuild for the hot paths (curve add/remove/refresh)."""
-        if self._fill_visible or self._lens_fill_visible:
+        if (self._fill_visible or self._lens_fill_visible
+                or self._inlay_fill_visible):
             self._fill_timer.start()
 
     def _rebuild_overlays(self):
         """Timer target: repaint whichever display-only fills are showing."""
         self.rebuild_fill()
         self.rebuild_lens_fill()
+        self.rebuild_inlay_fill()
 
     def _fill_layer_lines(self, layer: Layer) -> list:
         """Flattened polylines for one layer's contribution to the fill: each
@@ -969,6 +1038,210 @@ class FrameScene(QGraphicsScene):
                 self.lens_fill_auto_disabled(status)
             return
         self._apply_lens_fill_paths(paths)
+
+    # ------------------------------------------------------------------
+    # Inlay fill overlay (display-only — never exported; Road to 2.0 item 7)
+    # ------------------------------------------------------------------
+
+    def set_inlay_fill_visible(self, on: bool) -> str:
+        """Show or hide the inlay fill. Returns the readiness status it was
+        resolved at: ``"ok"`` (shown), ``"leak"`` (INLAY geometry is present
+        but no body closes), or ``"empty"`` (no INLAY geometry yet). Hiding
+        always returns ``"ok"``."""
+        if not on:
+            self._inlay_fill_visible = False
+            self._clear_inlay_fill_items()
+            return "ok"
+        if self._inlay_fill_visible and self._inlay_fill_items:
+            return "ok"                          # already up (see set_fill_visible)
+        bodies, status = self._compute_inlay_fill()
+        if status == "empty" and not self.is_layer_visible(Layer.INLAY):
+            self._inlay_fill_visible = True      # hidden with its layer
+            self._clear_inlay_fill_items()
+            return "ok"
+        if status != "ok":
+            self._inlay_fill_visible = False
+            self._clear_inlay_fill_items()
+            return status
+        self._inlay_fill_visible = True
+        self._apply_inlay_fill(bodies)
+        return "ok"
+
+    def set_inlay_fill_color(self, color):
+        """color: QColor or '#rrggbb' string."""
+        self._inlay_fill_color = QColor(color)
+        if not self._restyle_inlay_fill():
+            self.rebuild_inlay_fill()
+
+    def set_inlay_fill_opacity(self, opacity: float):
+        self._inlay_fill_opacity = max(0.0, min(1.0, opacity))
+        if not self._restyle_inlay_fill():
+            self.rebuild_inlay_fill()
+
+    def set_inlay_fill_tumble(self, on: bool):
+        """Turn each body's copy of the image differently (an image only;
+        a color has nothing to turn)."""
+        self._inlay_fill_tumble = bool(on)
+        if not self._restyle_inlay_fill():
+            self.rebuild_inlay_fill()
+
+    def set_inlay_fill_image(self, path: str, reload: bool = False) -> bool:
+        """Paint each inlay body with an image instead of the color: a stone,
+        a shell, a wood or a metal. Returns False when the file can't be read
+        as an image, leaving the color untouched; an empty path clears back
+        to the color. Same caching and size cap as the Frame Fill swatch."""
+        if not path:
+            self.clear_inlay_fill_image()
+            return True
+        if (not reload and path == self._inlay_fill_image_path
+                and self._inlay_fill_image_pixmap is not None):
+            return True
+        pm = QPixmap(path)
+        if pm.isNull():
+            return False
+        if max(pm.width(), pm.height()) > FILL_IMAGE_MAX_PX:
+            pm = pm.scaled(FILL_IMAGE_MAX_PX, FILL_IMAGE_MAX_PX,
+                           Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+        self._inlay_fill_image_path = path
+        self._inlay_fill_image_pixmap = pm
+        if not self._restyle_inlay_fill():
+            self.rebuild_inlay_fill()
+        return True
+
+    def clear_inlay_fill_image(self):
+        """Back to the color, keeping the color as it was picked."""
+        if self._inlay_fill_image_pixmap is None and not self._inlay_fill_image_path:
+            return
+        self._inlay_fill_image_path = ""
+        self._inlay_fill_image_pixmap = None
+        if not self._restyle_inlay_fill():
+            self.rebuild_inlay_fill()
+
+    def has_inlay_fill_image(self) -> bool:
+        return self._inlay_fill_image_pixmap is not None
+
+    def inlay_fill_image_path(self) -> str:
+        return self._inlay_fill_image_path
+
+    def inlay_fill_state(self) -> dict:
+        return {"visible": self._inlay_fill_visible,
+                "color":   self._inlay_fill_color.name(),
+                "opacity": self._inlay_fill_opacity,
+                "image":   self._inlay_fill_image_path,
+                "tumble":  self._inlay_fill_tumble}
+
+    def inlay_body_count(self) -> int:
+        """How many closed INLAY bodies there are to fill (0 while the layer
+        is hidden): what decides whether Tumble bodies has anything to do."""
+        bodies, status = self._compute_inlay_fill()
+        return len(bodies) if status == "ok" else 0
+
+    def inlay_fill_paint_spec(self) -> list:
+        """``[(QPainterPath, QBrush, opacity), ...]``, one per body in scene
+        mm, or ``[]`` while the inlay fill is hidden or nothing closes.
+        Companion to fill_paint_spec for off-scene painters."""
+        if not self._inlay_fill_visible:
+            return []
+        bodies, status = self._compute_inlay_fill()
+        if status != "ok":
+            return []
+        opacity = self._inlay_fill_opacity if self.has_inlay_fill_image() else 1.0
+        return [(path, self._inlay_brush(path.boundingRect(), rank), opacity)
+                for rank, path in enumerate(bodies)]
+
+    def _compute_inlay_fill(self):
+        """Resolve the inlay bodies. Returns ``(list[QPainterPath] | None,
+        status)``: one path per face the INLAY curves enclose, ranked by
+        where it sits (left to right, then top to bottom), which is what the
+        tumble keys on. A seat inside a seat (a step) comes back as two
+        bodies, the outer one with the inner punched out, so neither paints
+        over the other. As for the lenses, an open curve beside a closed one
+        is a seat under construction, not a leak."""
+        lines = self._fill_layer_lines(Layer.INLAY)
+        if not lines:
+            return None, "empty"
+        faces, _leak = _polygonize_lines(lines)
+        if not faces:
+            return None, "leak"
+
+        def rank_key(face):
+            p = face.representative_point()
+            return (round(p.x, 2), round(p.y, 2))
+
+        return [_shapely_to_qpath(f) for f in sorted(faces, key=rank_key)], "ok"
+
+    def _inlay_brush(self, rect: QRectF, rank: int) -> QBrush:
+        """Brush for the body at *rank* whose bounds are *rect*: the image
+        cropped to the body (tumbled when asked), or the flat color at its
+        own alpha."""
+        pm = self._inlay_fill_image_pixmap
+        if pm is None or pm.width() <= 0 or pm.height() <= 0:
+            color = QColor(self._inlay_fill_color)
+            color.setAlphaF(self._inlay_fill_opacity)
+            return QBrush(color)
+        brush = QBrush(pm)
+        brush.setTransform(inlay_image_transform(
+            rect, float(pm.width()), float(pm.height()),
+            rank if self._inlay_fill_tumble else None))
+        return brush
+
+    def _clear_inlay_fill_items(self):
+        for it in self._inlay_fill_items:
+            self.removeItem(it)
+        self._inlay_fill_items.clear()
+
+    def _apply_inlay_fill(self, bodies: list):
+        """Paint one item per body, rebuilt outright as the lens fill's are."""
+        self._clear_inlay_fill_items()
+        opacity = self._inlay_fill_opacity if self.has_inlay_fill_image() else 1.0
+        for rank, path in enumerate(bodies):
+            if path.isEmpty():
+                continue
+            it = QGraphicsPathItem()
+            # Above the frame fill (-500): the inlay sits on the anterior.
+            # Below the lens fill (-495), which an inlay never meets, and the
+            # origin cross (0) and geometry (10).
+            it.setZValue(-497)
+            it.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable, False)
+            it.setBrush(self._inlay_brush(path.boundingRect(), rank))
+            # A texture brush has no alpha of its own (see _apply_fill_path).
+            it.setOpacity(opacity)
+            it.setPen(QPen(Qt.PenStyle.NoPen))
+            it.setPath(path)
+            it.setData(0, rank)
+            self.addItem(it)
+            self._inlay_fill_items.append(it)
+
+    def _restyle_inlay_fill(self) -> bool:
+        """New brushes on the bodies already shown, keeping their paths (see
+        _restyle_fill). False when none are on show."""
+        if not (self._inlay_fill_visible and self._inlay_fill_items):
+            return False
+        opacity = self._inlay_fill_opacity if self.has_inlay_fill_image() else 1.0
+        for it in self._inlay_fill_items:
+            it.setBrush(self._inlay_brush(it.path().boundingRect(), it.data(0)))
+            it.setOpacity(opacity)
+        return True
+
+    def rebuild_inlay_fill(self):
+        """Recompute and repaint the inlay fill while it's visible. If an edit
+        has opened every body there is nothing honest to paint: turn the fill
+        off and tell the app (inlay_fill_auto_disabled). No-op while hidden."""
+        if not self._inlay_fill_visible:
+            self._clear_inlay_fill_items()
+            return
+        bodies, status = self._compute_inlay_fill()
+        if status == "empty" and not self.is_layer_visible(Layer.INLAY):
+            self._clear_inlay_fill_items()     # hidden with its layer, not off
+            return
+        if status != "ok":
+            self._inlay_fill_visible = False
+            self._clear_inlay_fill_items()
+            if self.inlay_fill_auto_disabled is not None:
+                self.inlay_fill_auto_disabled(status)
+            return
+        self._apply_inlay_fill(bodies)
 
     # ------------------------------------------------------------------
     # Curve management

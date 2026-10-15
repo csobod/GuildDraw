@@ -228,12 +228,30 @@ symmetric contour (draw half, then Mirror Close or bake + join).
     a corner of the sheet, and on a big frame they will end up on the design.
   - Display-only, like the tint: no fill ever reaches exported DXF/SVG
     geometry, but it does appear in a PNG render, and on the catalog PDF if
-    you tick *Print frame and lens fills* in *Preferences ▸ Print & PDF*. Saved
-    `.gdraw` files
-    **embed** the swatch the same way they embed a face photo, so a shared
-    project shows the material on the recipient's machine.
+    you tick *Print frame, inlay and lens fills* in *Preferences ▸ Print &
+    PDF*. Saved `.gdraw` files **embed** the swatch the same way they embed a
+    face photo, so a shared project shows the material on the recipient's
+    machine.
   - Needs a perimeter that closes. If the OUTLINE leaks, GuildDraw says so
     instead of filling something half-formed.
+- **Inlay Fill** (Guides panel, Frame Front and both temples): fills each
+  closed `INLAY` body over the frame fill, since an inlay is taken to sit on
+  the anterior. A seat inside a seat (a step) is a body of its own, and the
+  outer body keeps a hole where the step is. **Style** picks the fill:
+  - **Color**: a flat tint at the **Opacity** you set. It starts turquoise at
+    85%; set your own starting color and opacity in *Preferences ▸ General ▸
+    Inlay Fill*.
+  - **Image**: a photo of the material, such as a turquoise stone, a shell or
+    a wood. Each body gets its own copy, scaled to cover the body and
+    centered on it.
+  - **Tumble bodies**, for an image on two or more bodies: each body's copy
+    is turned differently, every other one is mirrored and the crop moves,
+    so one photo reads as several stones. The arrangement depends only on
+    where the bodies sit, so the drawing looks the same each time you open
+    it.
+  - Each tab keeps its own Inlay Fill. It is display-only, like the other
+    fills: it never reaches the DXF, but it appears in a PNG render and on
+    the catalog PDF, and the `.gdraw` embeds the image.
 - **Lens Fill** (Guides panel, Frame Front): tints each closed LENS aperture
   with a vertical **Top → Bottom** gradient, the way a dyed lens runs. Every
   lens gets its own run of the gradient, so a pair reads as two matching
@@ -368,10 +386,10 @@ For rimless / drill-mount lenses (flat, no bevel), use the **DRILL** layer:
   outline. The design open in GuildDraw is untouched: the run happens in a
   second window that is never shown. The same run is available from the
   command line as `scripts/batch_catalog.py`.
-  - **Print frame and lens fills** (same preferences page, off by default)
-    lays those overlays under the line work, per workspace, exactly as that
-    workspace shows them — the material swatch or tint in the frame profile
-    and the gradient in each aperture. Off is the cutting-room sheet; on is
+  - **Print frame, inlay and lens fills** (same preferences page, off by
+    default) lays those overlays under the line work, per workspace, exactly
+    as that workspace shows them: the material swatch or tint in the frame
+    profile, the inlay fill in each seat, and the gradient in each aperture. Off is the cutting-room sheet; on is
     the showroom page. A workspace with its fill switched off, or whose
     outline doesn't close, prints line work only.
 - **File → Export → PNG…** renders at a chosen print resolution

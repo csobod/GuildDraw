@@ -82,7 +82,8 @@ def _portable_path(p: str, doc_dir: str) -> str:
 def portable_fill(fill: dict | None, doc_path: str) -> dict | None:
     """Return a copy of the *fill* block whose swatch path is portable — same
     rule the face photos get, since a Frame Fill image is likewise a file on
-    the author's machine that a standalone .svg can only point at."""
+    the author's machine that a standalone .svg can only point at. The Inlay
+    Fill's block has the same shape and goes through here too."""
     if not fill or not fill.get("image"):
         return fill
     img = fill["image"]
@@ -237,6 +238,7 @@ def save_svg(
     layers:           dict | None = None,   # {layer name: {"visible","locked"}}
     fill:             dict | None = None,   # {"visible","color","opacity","style","image"}
     lens_fill:        dict | None = None,   # {"visible","top","bottom","linked","opacity"}
+    inlay_fill:       dict | None = None,   # fill's keys plus "tumble" (2.0)
     texts:            list | None = None,   # list[TextObject]
     bevel:            BevelSpec | None = None,
 ) -> None:
@@ -298,6 +300,8 @@ def save_svg(
         state["fill"] = fill
     if lens_fill:
         state["lens_fill"] = lens_fill
+    if inlay_fill:
+        state["inlay_fill"] = inlay_fill
     if bevel:
         state["bevel"] = {"preset": bevel.preset, "depth_mm": bevel.depth_mm}
     if texts:
@@ -415,8 +419,8 @@ def load_svg(path: str) -> dict:
     """
     Return a dict with keys: curves, dims, texts, calibration, mirror,
     forming, machined_bridge, face_images, bookmarks, layers, fill,
-    lens_fill, bevel.  Keys absent from an older file come back as their
-    empty defaults.  Raises on parse error.
+    lens_fill, inlay_fill, bevel.  Keys absent from an older file come back
+    as their empty defaults.  Raises on parse error.
     """
     root = ET.fromstring(_read_checked_svg(path))
 
@@ -467,6 +471,7 @@ def load_svg(path: str) -> dict:
         "layers": state.get("layers", {}),
         "fill": state.get("fill"),   # None when absent (pre-0.9.8 files)
         "lens_fill": state.get("lens_fill"),   # None when absent (pre-1.2 files)
+        "inlay_fill": state.get("inlay_fill"), # None when absent (pre-2.0 files)
         "bevel": (
             BevelSpec(preset=state["bevel"].get("preset", "acetate"),
                       depth_mm=state["bevel"].get("depth_mm", 1.0))

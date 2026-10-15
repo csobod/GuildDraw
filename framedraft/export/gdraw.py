@@ -57,6 +57,7 @@ def _empty_ws_data() -> dict:
         "layers": {},
         "fill": None,
         "lens_fill": None,
+        "inlay_fill": None,
         "texts": [],
         "bevel": None,
     }
@@ -90,11 +91,13 @@ def _member_too_large(zf: zipfile.ZipFile, name: str, cap: int) -> bool:
 _MAX_IMAGE_BYTES = 64 * 1024 * 1024
 
 
-def _embed_fill_image(zf: zipfile.ZipFile, tab: str, fill: dict | None) -> dict | None:
+def _embed_fill_image(zf: zipfile.ZipFile, tab: str, fill: dict | None,
+                      kind: str = "fill") -> dict | None:
     """Copy the Frame Fill material swatch into *zf*, returning a fill dict
     whose ``image`` is the archive member name. Same contract as the face
     photos: the author's absolute path never enters a shared file, and the
-    recipient sees the material rather than a broken reference."""
+    recipient sees the material rather than a broken reference. *kind*
+    "inlay_fill" does the same for the Inlay Fill's image."""
     if not fill or not fill.get("image"):
         return fill
     src = fill["image"]
@@ -106,7 +109,7 @@ def _embed_fill_image(zf: zipfile.ZipFile, tab: str, fill: dict | None) -> dict 
         out["image"] = base
         return out
     if os.path.isfile(src):
-        member = f"{_IMAGE_PREFIX}{tab}_fill_{base}"
+        member = f"{_IMAGE_PREFIX}{tab}_{kind}_{base}"
         with open(src, "rb") as f:
             zf.writestr(member, f.read())
         out["image"] = member
@@ -119,14 +122,15 @@ def _embed_fill_image(zf: zipfile.ZipFile, tab: str, fill: dict | None) -> dict 
 
 
 def _extract_fill_image(zf: zipfile.ZipFile, names: list, doc_path: str,
-                        tab: str, fill: dict | None) -> None:
+                        tab: str, fill: dict | None, kind: str = "fill") -> None:
     """Point an embedded Frame Fill swatch at a file under the image cache,
     in place; resolve a bare name against the document's folder (only when the
     result stays inside it). Absolute paths pass through.
 
     Unlike a face photo, the swatch's filename is what names the *material* in
     the sidebar ("UB-0614.jpeg"), so it is extracted into a per-tab subfolder
-    under its original name rather than under the prefixed member name."""
+    under its original name rather than under the prefixed member name.
+    *kind* as for _embed_fill_image."""
     if not fill:
         return
     p = fill.get("image")
@@ -138,10 +142,10 @@ def _extract_fill_image(zf: zipfile.ZipFile, names: list, doc_path: str,
                 fill["image"] = ""            # damaged archive — color fill
                 return
             member = os.path.basename(p)
-            prefix = f"{tab}_fill_"
+            prefix = f"{tab}_{kind}_"
             base   = (member[len(prefix):] if member.startswith(prefix)
                       else member) or member
-            sub    = _cache_dir_for(doc_path) / f"{tab}_fill"
+            sub    = _cache_dir_for(doc_path) / f"{tab}_{kind}"
             sub.mkdir(parents=True, exist_ok=True)
             out = sub / base
             out.write_bytes(zf.read(p))
@@ -239,6 +243,8 @@ def save_gdraw(workspace_data: dict, path: str, active_tab: str = "front") -> No
             face_images = _embed_face_images(
                 zf, tab, data.get("face_images", []))
             fill = _embed_fill_image(zf, tab, data.get("fill"))
+            inlay_fill = _embed_fill_image(zf, tab, data.get("inlay_fill"),
+                                           kind="inlay_fill")
             fd, tmp_path = tempfile.mkstemp(suffix=".svg")
             os.close(fd)
             try:
@@ -255,6 +261,7 @@ def save_gdraw(workspace_data: dict, path: str, active_tab: str = "front") -> No
                     layers          = data.get("layers"),
                     fill            = fill,
                     lens_fill       = data.get("lens_fill"),
+                    inlay_fill      = inlay_fill,
                     texts           = data.get("texts", []),
                     bevel           = data.get("bevel"),
                 )
@@ -323,6 +330,9 @@ def load_gdraw(path: str) -> dict:
                                      result[tab].get("face_images", []))
                 _extract_fill_image(zf, names, path, tab,
                                     result[tab].get("fill"))
+                _extract_fill_image(zf, names, path, tab,
+                                    result[tab].get("inlay_fill"),
+                                    kind="inlay_fill")
             except Exception as exc:
                 result["errors"].append(f"{tab}: {exc}")   # tab stays empty
             finally:

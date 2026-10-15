@@ -35,7 +35,8 @@ from .canvas.measure_bar import MeasureBar
 from .canvas.readiness_dot import ReadinessDot, readiness_state
 from .canvas.scene import (FrameScene, TextItem, DEFAULT_LENS_FILL_TOP,
                            DEFAULT_LENS_FILL_BOTTOM, DEFAULT_LENS_FILL_OPACITY,
-                           DEFAULT_LENS_FILL_INTENSITY, deepen_tint,
+                           DEFAULT_LENS_FILL_INTENSITY, DEFAULT_INLAY_FILL_COLOR,
+                           DEFAULT_INLAY_FILL_OPACITY, deepen_tint,
                            intensity_from_slider, slider_from_intensity,
                            LENS_FILL_INTENSITY_MIN, LENS_FILL_INTENSITY_MAX,
                            _GHOST_LAYERS)
@@ -1099,6 +1100,13 @@ class WorkspaceState:
         self.lens_fill_linked:  bool  = False     # both stops held equal (flat tint)
         self.lens_fill_opacity: float = DEFAULT_LENS_FILL_OPACITY
         self.lens_fill_intensity: float = DEFAULT_LENS_FILL_INTENSITY
+        # Inlay fill overlay (2.0): the front's and each temple's own.
+        self.inlay_fill_visible: bool  = False
+        self.inlay_fill_color:   str   = DEFAULT_INLAY_FILL_COLOR
+        self.inlay_fill_opacity: float = DEFAULT_INLAY_FILL_OPACITY
+        self.inlay_fill_style:   str   = "color"   # "color" | "image"
+        self.inlay_fill_image:   str   = ""        # kept while the color shows
+        self.inlay_fill_tumble:  bool  = False     # turn each body's copy
         self.selected_face_idx: int       = -1
         self.face_image_paths:  list[str] = []
         self.fitted:            bool      = False   # True once fitInView has been called
@@ -1586,6 +1594,25 @@ class SettingsDialog(QDialog):
         lens_form.addRow("Default intensity:", self._lens_intensity_spin)
         gen_lay.addWidget(lens_box)
 
+        inlay_box  = QGroupBox("Inlay Fill")
+        inlay_form = QFormLayout(inlay_box)
+        self._inlay_default_color = _hex_or(prefs.get("inlay_fill_color"),
+                                            DEFAULT_INLAY_FILL_COLOR)
+        self._inlay_color_btn = QPushButton("Color…")
+        self._inlay_color_btn.setToolTip(
+            "The color an inlay fill starts at. Each design keeps its own "
+            "fill, image and tumble.")
+        self._inlay_color_btn.clicked.connect(self._pick_inlay_default_color)
+        self._update_inlay_default_swatch()
+        inlay_form.addRow("Default color:", self._inlay_color_btn)
+        self._inlay_opacity_spin = _spinbox(
+            0, 100, 5, prefs.get("inlay_fill_opacity_pct", 85),
+            suffix=" %", decimals=0)
+        self._inlay_opacity_spin.setToolTip(
+            "The opacity an inlay fill starts at.")
+        inlay_form.addRow("Default opacity:", self._inlay_opacity_spin)
+        gen_lay.addWidget(inlay_box)
+
         gen_lay.addStretch()
 
         # ═══════════════════════════════════════════════════════════════════
@@ -1988,12 +2015,12 @@ class SettingsDialog(QDialog):
         self._cat_scale_chk.setChecked(bool(cat_cfg["show_scale"]))
         cat_form.addRow(self._cat_scale_chk)
 
-        self._cat_fill_chk = QCheckBox("Print frame and lens fills")
+        self._cat_fill_chk = QCheckBox("Print frame, inlay and lens fills")
         self._cat_fill_chk.setChecked(bool(cat_cfg.get("include_fill", False)))
         self._cat_fill_chk.setToolTip(
-            "Lays the Frame Fill and Lens Fill under the line work, as each "
-            "workspace shows them. A workspace with its fill off, or whose "
-            "outline doesn't close, prints line work only.\n\n"
+            "Lays the Frame Fill, Inlay Fill and Lens Fill under the line "
+            "work, as each workspace shows them. A workspace with its fill "
+            "off, or whose outline doesn't close, prints line work only.\n\n"
             "Off is the cutting-room sheet; on is the showroom page.")
         cat_form.addRow(self._cat_fill_chk)
 
@@ -2142,6 +2169,18 @@ class SettingsDialog(QDialog):
     # Appearance-tab helpers
     # ------------------------------------------------------------------
 
+    def _pick_inlay_default_color(self):
+        c = QColorDialog.getColor(QColor(self._inlay_default_color), self,
+                                  "Inlay fill color")
+        if c.isValid():
+            self._inlay_default_color = c.name()
+            self._update_inlay_default_swatch()
+
+    def _update_inlay_default_swatch(self):
+        pm = QPixmap(16, 16)
+        pm.fill(QColor(self._inlay_default_color))
+        self._inlay_color_btn.setIcon(QIcon(pm))
+
     def _on_vp_preset_changed(self, idx: int):
         self._vp_color_btn.setEnabled(self._vp_choices[idx][0] == "custom")
 
@@ -2267,6 +2306,8 @@ class SettingsDialog(QDialog):
             "pad_height_mm":        self._pad_h.value(),
             "lens_fill_opacity_pct": int(self._lens_opacity_spin.value()),
             "lens_fill_intensity":   self._lens_intensity_spin.value(),
+            "inlay_fill_color":       self._inlay_default_color,
+            "inlay_fill_opacity_pct": int(self._inlay_opacity_spin.value()),
             "toolbar":              toolbar,
             "hotkeys":              hotkeys,
             "catalog_pdf": {
@@ -2716,6 +2757,8 @@ class MainWindow(QMainWindow):
                 lambda status, ws=ws: self._on_fill_auto_disabled(status, ws))
             ws.scene.lens_fill_auto_disabled = (
                 lambda status, ws=ws: self._on_lens_fill_auto_disabled(status, ws))
+            ws.scene.inlay_fill_auto_disabled = (
+                lambda status, ws=ws: self._on_inlay_fill_auto_disabled(status, ws))
 
         # ── Toggle actions wired to dispatch helpers (lambdas evaluate _active_ws) ─
         self._act_mirror.toggled.connect(self._on_mirror_toggled)
@@ -2779,6 +2822,10 @@ class MainWindow(QMainWindow):
             ws.lens_fill_intensity = self._default_lens_fill_intensity()
             ws.scene.set_lens_fill_opacity(ws.lens_fill_opacity)
             ws.scene.set_lens_fill_intensity(ws.lens_fill_intensity)
+            ws.inlay_fill_color   = self._default_inlay_fill_color()
+            ws.inlay_fill_opacity = self._default_inlay_fill_opacity()
+            ws.scene.set_inlay_fill_color(QColor(ws.inlay_fill_color))
+            ws.scene.set_inlay_fill_opacity(ws.inlay_fill_opacity)
         front0 = self._workspaces[0]
         self._lens_fill_opacity_slider.blockSignals(True)
         self._lens_fill_opacity_slider.setValue(round(front0.lens_fill_opacity * 100))
@@ -2790,6 +2837,11 @@ class MainWindow(QMainWindow):
         self._update_lens_fill_swatches(front0.lens_fill_top,
                                         front0.lens_fill_bottom,
                                         front0.lens_fill_intensity)
+        self._inlay_fill_opacity_slider.blockSignals(True)
+        self._inlay_fill_opacity_slider.setValue(
+            round(front0.inlay_fill_opacity * 100))
+        self._inlay_fill_opacity_slider.blockSignals(False)
+        self._update_inlay_fill_swatch(front0.inlay_fill_color)
 
         # Workspace-specific default overrides (override prefs for non-front tabs)
         # The temple blank is its own preference; the guide carries the core
@@ -3598,37 +3650,11 @@ class MainWindow(QMainWindow):
         self._update_fill_swatch("#2a6099")
         fill_lay.addRow("Color:", self._fill_color_btn)
 
-        img_row = QWidget()
-        img_lay = QHBoxLayout(img_row)
-        img_lay.setContentsMargins(0, 0, 0, 0)
-        img_lay.setSpacing(4)
-        self._fill_image_btn = QPushButton("Choose…")
-        # Swatch names run long ("TORTOISE-DEMI-AMBER-3MM-SHEET.png"); let the
-        # button take whatever the row leaves it and elide what won't fit,
-        # rather than dragging the whole sidebar wider.
-        self._fill_image_btn.setSizePolicy(QSizePolicy.Policy.Ignored,
-                                           QSizePolicy.Policy.Fixed)
-        self._fill_image_btn.installEventFilter(self)
-        self._fill_image_full_text = "Choose…"
-        self._fill_image_btn.clicked.connect(self._on_fill_image_clicked)
-        self._fill_image_clear_btn = QPushButton("✕")
-        # The app stylesheet gives every QPushButton min-width: 54px, which Qt
-        # promotes over a plain setFixedWidth — the clear button came out 76px
-        # wide and ate the filename beside it. Pin it square in a local rule
-        # instead: a stylesheet width is re-applied over the widget's own
-        # minimum, so setFixedWidth alone gets overruled and a bare
-        # `min-width: 0` lets a narrow panel squeeze the button to a sliver.
-        # The rule sizes the CONTENT box, so the theme's 1px border on each
-        # side comes off the target — see build_qss.
-        _clear_box = max(8, self._fill_image_btn.sizeHint().height() - 2)
-        self._fill_image_clear_btn.setStyleSheet(
-            f"QPushButton {{ min-width: {_clear_box}px;"
-            f" max-width: {_clear_box}px; min-height: {_clear_box}px;"
-            f" max-height: {_clear_box}px; padding: 0px; }}")
-        self._fill_image_clear_btn.setToolTip("Forget the swatch and go back to the color.")
-        self._fill_image_clear_btn.clicked.connect(self._on_fill_image_cleared)
-        img_lay.addWidget(self._fill_image_btn, 1)
-        img_lay.addWidget(self._fill_image_clear_btn)
+        self._swatch_btn_texts: dict = {}   # image button -> its full label
+        img_row, self._fill_image_btn, self._fill_image_clear_btn = (
+            self._swatch_row(self._on_fill_image_clicked,
+                             self._on_fill_image_cleared,
+                             "Forget the swatch and go back to the color."))
         fill_lay.addRow("Image:", img_row)
 
         self._fill_opacity_slider = QSlider(Qt.Orientation.Horizontal)
@@ -3639,6 +3665,66 @@ class MainWindow(QMainWindow):
 
         guides_lay.addWidget(fill_box)
         self._fill_box = fill_box   # ref for section show/hide
+
+        # ── Inlay Fill (display-only render overlay, Road to 2.0 item 7) ──
+        inlay_box = QGroupBox("Inlay Fill")
+        inlay_lay = QFormLayout(inlay_box)
+        inlay_lay.setSpacing(6)
+
+        self._inlay_fill_show_chk = QCheckBox("Show inlay fill")
+        self._inlay_fill_show_chk.setToolTip(
+            "Fill each closed INLAY body with a color or an image, over the\n"
+            "frame fill: an inlay sits on the anterior. Display-only — never\n"
+            "exported to DXF/SVG geometry."
+        )
+        self._inlay_fill_show_chk.toggled.connect(
+            self._on_inlay_fill_visible_toggled)
+        inlay_lay.addRow(self._inlay_fill_show_chk)
+
+        self._inlay_fill_style_combo = QComboBox()
+        self._inlay_fill_style_combo.addItem("Color", "color")
+        self._inlay_fill_style_combo.addItem("Image", "image")
+        self._inlay_fill_style_combo.setToolTip(
+            "Color: a flat tint.\n"
+            "Image: a photo of the material (a turquoise stone, a shell, a\n"
+            "wood), scaled to cover each body and centered on it."
+        )
+        self._inlay_fill_style_combo.currentIndexChanged.connect(
+            self._on_inlay_fill_style_changed)
+        inlay_lay.addRow("Style:", self._inlay_fill_style_combo)
+
+        self._inlay_fill_color_btn = QPushButton("Color…")
+        self._inlay_fill_color_btn.clicked.connect(
+            self._on_inlay_fill_color_clicked)
+        self._update_inlay_fill_swatch(DEFAULT_INLAY_FILL_COLOR)
+        inlay_lay.addRow("Color:", self._inlay_fill_color_btn)
+
+        inlay_img_row, self._inlay_fill_image_btn, self._inlay_fill_image_clear_btn = (
+            self._swatch_row(self._on_inlay_fill_image_clicked,
+                             self._on_inlay_fill_image_cleared,
+                             "Forget the image and go back to the color."))
+        inlay_lay.addRow("Image:", inlay_img_row)
+
+        self._inlay_fill_tumble_chk = QCheckBox("Tumble bodies")
+        self._inlay_fill_tumble_chk.setToolTip(
+            "Turn each body's copy of the image differently, so one photo\n"
+            "reads as several stones; the same way each time the file opens.\n"
+            "For an image on two or more closed INLAY bodies."
+        )
+        self._inlay_fill_tumble_chk.toggled.connect(
+            self._on_inlay_fill_tumble_toggled)
+        inlay_lay.addRow(self._inlay_fill_tumble_chk)
+
+        self._inlay_fill_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self._inlay_fill_opacity_slider.setRange(0, 100)
+        self._inlay_fill_opacity_slider.setValue(
+            round(DEFAULT_INLAY_FILL_OPACITY * 100))
+        self._inlay_fill_opacity_slider.valueChanged.connect(
+            self._on_inlay_fill_opacity_changed)
+        inlay_lay.addRow("Opacity:", self._inlay_fill_opacity_slider)
+
+        guides_lay.addWidget(inlay_box)
+        self._inlay_fill_box = inlay_box   # ref for section show/hide
 
         # ── Lens Fill (display-only render overlay, v1.2) ─────────────────
         lens_fill_box = QGroupBox("Lens Fill")
@@ -3969,6 +4055,7 @@ class MainWindow(QMainWindow):
         self._layer_refresh_pending = False
         self._refresh_layer_panel()
         self._update_readiness()
+        self._sync_inlay_tumble_enabled()   # follows the INLAY body count
         # Live measurements in the Properties tab track the geometry on every
         # document change (add/remove/undo/load) — no manual Refresh needed.
         self._refresh_measurements()
@@ -4422,6 +4509,10 @@ class MainWindow(QMainWindow):
         ws.lens_fill_visible = self._lens_fill_show_chk.isChecked()
         ws.lens_fill_linked  = self._lens_link_btn.isChecked()
         ws.lens_fill_opacity = self._lens_fill_opacity_slider.value() / 100.0
+        ws.inlay_fill_visible = self._inlay_fill_show_chk.isChecked()
+        ws.inlay_fill_opacity = self._inlay_fill_opacity_slider.value() / 100.0
+        ws.inlay_fill_tumble  = self._inlay_fill_tumble_chk.isChecked()
+        # (inlay_fill_color, _style and _image are written by their handlers)
         # NOT re-derived from the intensity slider: that mapping is geometric,
         # so position is a lossy encoding of the value (3.0 comes back 3.03) and
         # every tab switch would nudge a loaded document off its saved depth.
@@ -4538,6 +4629,25 @@ class MainWindow(QMainWindow):
         self._fill_show_chk.blockSignals(True)
         self._fill_show_chk.setChecked(ws.fill_visible)
         self._fill_show_chk.blockSignals(False)
+
+        # ── Inlay fill ──────────────────────────────────────────────────
+        self._inlay_fill_opacity_slider.blockSignals(True)
+        self._inlay_fill_opacity_slider.setValue(round(ws.inlay_fill_opacity * 100))
+        self._inlay_fill_opacity_slider.blockSignals(False)
+        self._inlay_fill_tumble_chk.blockSignals(True)
+        self._inlay_fill_tumble_chk.setChecked(ws.inlay_fill_tumble)
+        self._inlay_fill_tumble_chk.blockSignals(False)
+        self._update_inlay_fill_swatch(ws.inlay_fill_color)
+        ws.scene.set_inlay_fill_color(QColor(ws.inlay_fill_color))
+        ws.scene.set_inlay_fill_opacity(ws.inlay_fill_opacity)
+        self._apply_inlay_fill_material(ws)
+        status = ws.scene.set_inlay_fill_visible(ws.inlay_fill_visible)
+        if ws.inlay_fill_visible and status != "ok":
+            ws.inlay_fill_visible = False   # saved fill-on no longer encloses
+        self._sync_inlay_fill_style_widgets(ws)
+        self._inlay_fill_show_chk.blockSignals(True)
+        self._inlay_fill_show_chk.setChecked(ws.inlay_fill_visible)
+        self._inlay_fill_show_chk.blockSignals(False)
 
         # ── Lens fill ───────────────────────────────────────────────────
         self._lens_fill_opacity_slider.blockSignals(True)
@@ -4706,23 +4816,57 @@ class MainWindow(QMainWindow):
         self._fill_image_btn.setEnabled(is_image)
         self._fill_image_clear_btn.setEnabled(is_image and bool(ws.fill_image))
         if ws.fill_image:
-            self._set_fill_image_btn_text(os.path.basename(ws.fill_image))
+            self._set_swatch_btn_text(self._fill_image_btn,
+                                      os.path.basename(ws.fill_image))
             self._fill_image_btn.setToolTip(ws.fill_image)
         else:
-            self._set_fill_image_btn_text("Choose…")
+            self._set_swatch_btn_text(self._fill_image_btn, "Choose…")
             self._fill_image_btn.setToolTip(
                 "Pick a material swatch — a supplier's acetate sample sheet.")
 
-    def _set_fill_image_btn_text(self, text: str):
-        """Label the swatch button, middle-eliding a name too long for the
-        row so the extension stays readable (full path in the tooltip)."""
-        self._fill_image_full_text = text
-        self._elide_fill_image_btn()
+    def _swatch_row(self, on_choose, on_clear, clear_tip: str):
+        """A fill's image row: a Choose… button and a square ✕ that forgets
+        the image. Returns ``(row, choose, clear)``."""
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        choose = QPushButton("Choose…")
+        # Swatch names run long ("TORTOISE-DEMI-AMBER-3MM-SHEET.png"); let the
+        # button take whatever the row leaves it and elide what won't fit,
+        # rather than dragging the whole sidebar wider.
+        choose.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._swatch_btn_texts[choose] = "Choose…"
+        choose.installEventFilter(self)
+        choose.clicked.connect(on_choose)
+        clear = QPushButton("✕")
+        # The app stylesheet gives every QPushButton min-width: 54px, which Qt
+        # promotes over a plain setFixedWidth — the clear button came out 76px
+        # wide and ate the filename beside it. Pin it square in a local rule
+        # instead: a stylesheet width is re-applied over the widget's own
+        # minimum, so setFixedWidth alone gets overruled and a bare
+        # `min-width: 0` lets a narrow panel squeeze the button to a sliver.
+        # The rule sizes the CONTENT box, so the theme's 1px border on each
+        # side comes off the target — see build_qss.
+        box = max(8, choose.sizeHint().height() - 2)
+        clear.setStyleSheet(
+            f"QPushButton {{ min-width: {box}px; max-width: {box}px;"
+            f" min-height: {box}px; max-height: {box}px; padding: 0px; }}")
+        clear.setToolTip(clear_tip)
+        clear.clicked.connect(on_clear)
+        lay.addWidget(choose, 1)
+        lay.addWidget(clear)
+        return row, choose, clear
 
-    def _elide_fill_image_btn(self):
-        btn   = self._fill_image_btn
+    def _set_swatch_btn_text(self, btn, text: str):
+        """Label an image button, middle-eliding a name too long for the
+        row so the extension stays readable (full path in the tooltip)."""
+        self._swatch_btn_texts[btn] = text
+        self._elide_swatch_btn(btn)
+
+    def _elide_swatch_btn(self, btn):
         avail = btn.width() - 12          # the frame the label sits inside
-        text  = self._fill_image_full_text
+        text  = self._swatch_btn_texts.get(btn, "")
         if avail > 0:
             text = QFontMetrics(btn.font()).elidedText(
                 text, Qt.TextElideMode.ElideMiddle, avail)
@@ -4790,6 +4934,194 @@ class MainWindow(QMainWindow):
         travel with it). Say so once and leave the color showing."""
         self._status.showMessage(
             f"Frame Fill: {os.path.basename(ws.fill_image) or 'the material swatch'}"
+            " couldn't be read — showing the color instead.", 6000)
+
+    # ── Inlay fill controls (Road to 2.0, item 7) ───────────────────────
+
+    def _default_inlay_fill_color(self) -> str:
+        """Preferred starting color for an inlay fill (Preferences ▸ General)."""
+        return _hex_or(self._prefs.get("inlay_fill_color"),
+                       DEFAULT_INLAY_FILL_COLOR)
+
+    def _default_inlay_fill_opacity(self) -> float:
+        """Preferred starting opacity for an inlay fill, 0…1."""
+        pct = self._prefs.get("inlay_fill_opacity_pct",
+                              round(DEFAULT_INLAY_FILL_OPACITY * 100))
+        try:
+            return max(0.0, min(1.0, float(pct) / 100.0))
+        except (TypeError, ValueError):
+            return DEFAULT_INLAY_FILL_OPACITY
+
+    def _update_inlay_fill_swatch(self, color_hex: str):
+        pm = QPixmap(16, 16)
+        pm.fill(QColor(color_hex))
+        self._inlay_fill_color_btn.setIcon(QIcon(pm))
+
+    def _on_inlay_fill_visible_toggled(self, on: bool):
+        ws = self._active_ws
+        if on:
+            status = ws.scene.set_inlay_fill_visible(True)
+            if status != "ok":
+                # Nothing enclosable to fill — revert the tick and explain.
+                self._inlay_fill_show_chk.blockSignals(True)
+                self._inlay_fill_show_chk.setChecked(False)
+                self._inlay_fill_show_chk.blockSignals(False)
+                ws.inlay_fill_visible = False
+                if status == "leak":
+                    QMessageBox.information(
+                        self, "Inlay Fill",
+                        "No INLAY curve closes into a body, so there's "
+                        "nothing to fill.\n\nClose the seat — select it and "
+                        "press Join to fuse its ends — then turn Inlay Fill "
+                        "on again.")
+                else:  # "empty"
+                    QMessageBox.information(
+                        self, "Inlay Fill",
+                        "There are no inlays to fill yet. Draw a closed seat "
+                        "on the INLAY layer first, then turn Inlay Fill on.")
+                return
+            ws.inlay_fill_visible = True
+        else:
+            ws.inlay_fill_visible = False
+            ws.scene.set_inlay_fill_visible(False)
+        self._mark_dirty()   # the fill is saved with the design
+
+    def _on_inlay_fill_auto_disabled(self, status: str, ws):
+        """A geometry edit opened every INLAY body while the fill was on; the
+        scene turned it off. Sync the checkbox and note it quietly."""
+        ws.inlay_fill_visible = False
+        if ws is self._active_ws:
+            self._inlay_fill_show_chk.blockSignals(True)
+            self._inlay_fill_show_chk.setChecked(False)
+            self._inlay_fill_show_chk.blockSignals(False)
+        if status == "leak":
+            self._status.showMessage(
+                "Inlay Fill turned off — no inlay closes any more.", 5000)
+
+    def _on_inlay_fill_color_clicked(self):
+        ws = self._active_ws
+        c = QColorDialog.getColor(QColor(ws.inlay_fill_color), self,
+                                  "Inlay fill color")
+        if not c.isValid():
+            return
+        ws.inlay_fill_color = c.name()
+        ws.scene.set_inlay_fill_color(c)
+        self._update_inlay_fill_swatch(ws.inlay_fill_color)
+        self._mark_dirty()
+
+    def _on_inlay_fill_opacity_changed(self, value: int):
+        ws = self._active_ws
+        ws.inlay_fill_opacity = value / 100.0
+        ws.scene.set_inlay_fill_opacity(ws.inlay_fill_opacity)
+        self._mark_dirty()
+
+    def _on_inlay_fill_tumble_toggled(self, on: bool):
+        ws = self._active_ws
+        ws.inlay_fill_tumble = on
+        ws.scene.set_inlay_fill_tumble(on)
+        self._mark_dirty()
+
+    def _apply_inlay_fill_material(self, ws: "WorkspaceState") -> bool:
+        """Push ws.inlay_fill_style / _image / _tumble onto its scene. False
+        when an image was asked for but the file couldn't be read; the style
+        is left on "color" either way (see _apply_fill_material)."""
+        ws.scene.set_inlay_fill_tumble(ws.inlay_fill_tumble)
+        if ws.inlay_fill_style == "image" and ws.inlay_fill_image:
+            if ws.scene.set_inlay_fill_image(ws.inlay_fill_image):
+                return True
+            ws.inlay_fill_style = "color"
+            ws.scene.clear_inlay_fill_image()
+            return False
+        ws.inlay_fill_style = "color"
+        ws.scene.clear_inlay_fill_image()
+        return True
+
+    def _sync_inlay_fill_style_widgets(self, ws: "WorkspaceState"):
+        """Combo, image button label and per-style enablement, from *ws*."""
+        idx = self._inlay_fill_style_combo.findData(ws.inlay_fill_style)
+        self._inlay_fill_style_combo.blockSignals(True)
+        self._inlay_fill_style_combo.setCurrentIndex(max(0, idx))
+        self._inlay_fill_style_combo.blockSignals(False)
+        is_image = (ws.inlay_fill_style == "image")
+        self._inlay_fill_color_btn.setEnabled(not is_image)
+        self._inlay_fill_image_btn.setEnabled(is_image)
+        self._inlay_fill_image_clear_btn.setEnabled(
+            is_image and bool(ws.inlay_fill_image))
+        if ws.inlay_fill_image:
+            self._set_swatch_btn_text(self._inlay_fill_image_btn,
+                                      os.path.basename(ws.inlay_fill_image))
+            self._inlay_fill_image_btn.setToolTip(ws.inlay_fill_image)
+        else:
+            self._set_swatch_btn_text(self._inlay_fill_image_btn, "Choose…")
+            self._inlay_fill_image_btn.setToolTip(
+                "Pick a photo of the inlay's material — a turquoise stone, a "
+                "shell, a wood.")
+        self._sync_inlay_tumble_enabled(ws)
+
+    def _sync_inlay_tumble_enabled(self, ws: "WorkspaceState | None" = None):
+        """Tumble bodies has something to do only for an image on two or
+        more bodies. Its tick is kept while it is disabled."""
+        ws = ws or self._active_ws
+        if Layer.INLAY not in WORKSPACE_LAYERS[ws.workspace_type]:
+            return
+        self._inlay_fill_tumble_chk.setEnabled(
+            ws.inlay_fill_style == "image" and ws.scene.inlay_body_count() > 1)
+
+    def _on_inlay_fill_style_changed(self, _index: int):
+        ws = self._active_ws
+        ws.inlay_fill_style = self._inlay_fill_style_combo.currentData() or "color"
+        # Switching to Image with nothing chosen yet: open the picker (see
+        # _on_fill_style_changed).
+        if ws.inlay_fill_style == "image" and not ws.inlay_fill_image:
+            self._sync_inlay_fill_style_widgets(ws)
+            self._on_inlay_fill_image_clicked()
+            return
+        if not self._apply_inlay_fill_material(ws):
+            self._inlay_fill_image_missing(ws)
+        self._sync_inlay_fill_style_widgets(ws)
+        self._mark_dirty()
+
+    def _on_inlay_fill_image_clicked(self):
+        ws = self._active_ws
+        start = os.path.dirname(ws.inlay_fill_image) if ws.inlay_fill_image else ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Inlay fill image", start,
+            "Images (*.jpg *.jpeg *.png *.bmp *.tiff *.tif)")
+        def back_to_color_if_empty():
+            # Leaving the auto-opened picker without an image puts the style
+            # back (see _on_fill_image_clicked).
+            if not ws.inlay_fill_image:
+                ws.inlay_fill_style = "color"
+                self._apply_inlay_fill_material(ws)
+                self._sync_inlay_fill_style_widgets(ws)
+        if not path:
+            back_to_color_if_empty()
+            return
+        if not ws.scene.set_inlay_fill_image(path, reload=True):
+            QMessageBox.warning(
+                self, "Inlay Fill",
+                f"{os.path.basename(path)} couldn't be read as an image.")
+            back_to_color_if_empty()
+            return
+        ws.inlay_fill_image = path
+        ws.inlay_fill_style = "image"
+        self._sync_inlay_fill_style_widgets(ws)
+        self._mark_dirty()
+        self._status.showMessage(
+            f"Inlay Fill image: {os.path.basename(path)}", 5000)
+
+    def _on_inlay_fill_image_cleared(self):
+        ws = self._active_ws
+        ws.inlay_fill_image = ""
+        ws.inlay_fill_style = "color"
+        self._apply_inlay_fill_material(ws)
+        self._sync_inlay_fill_style_widgets(ws)
+        self._mark_dirty()
+
+    def _inlay_fill_image_missing(self, ws: "WorkspaceState"):
+        """The saved image is gone; say so once and leave the color showing."""
+        self._status.showMessage(
+            f"Inlay Fill: {os.path.basename(ws.inlay_fill_image) or 'the image'}"
             " couldn't be read — showing the color instead.", 6000)
 
     # ── Lens fill controls ──────────────────────────────────────────────
@@ -4943,6 +5275,7 @@ class MainWindow(QMainWindow):
         self._stock_guide_box.setVisible(True)   # all workspaces have a stock rect
         self._pad_guide_box.setVisible(is_front) # pad block only meaningful for front
         self._fill_box.setVisible(is_front or is_temple)  # fill needs an OUTLINE
+        self._inlay_fill_box.setVisible(is_front or is_temple)  # the INLAY layer's tabs
         self._lens_fill_box.setVisible(is_front)          # only the front has lenses
         # Toolbar buttons: combined prefs + workspace rules in one place
         self._apply_toolbar_visibility(self._toolbar_prefs, ws_type)
@@ -5720,8 +6053,8 @@ class MainWindow(QMainWindow):
                     and self._insert_square_char()):
                 return True
         elif (etype == QEvent.Type.Resize
-                and obj is getattr(self, "_fill_image_btn", None)):
-            self._elide_fill_image_btn()
+                and obj in getattr(self, "_swatch_btn_texts", ())):
+            self._elide_swatch_btn(obj)
         return super().eventFilter(obj, event)
 
     def _insert_square_char(self) -> bool:
@@ -7472,6 +7805,8 @@ class MainWindow(QMainWindow):
         apply logic without executing the modal dialog."""
         old_lens_opacity   = self._default_lens_fill_opacity()
         old_lens_intensity = self._default_lens_fill_intensity()
+        old_inlay_color    = self._default_inlay_fill_color()
+        old_inlay_opacity  = self._default_inlay_fill_opacity()
         old_prefs = dict(self._prefs)
         self._prefs.update(p)   # dialog is the sole writer of startup defaults
 
@@ -7619,6 +7954,26 @@ class MainWindow(QMainWindow):
             self._update_lens_fill_swatches(self._active_ws.lens_fill_top,
                                             self._active_ws.lens_fill_bottom,
                                             self._active_ws.lens_fill_intensity)
+        # Inlay Fill defaults: the same rule, for the color and the opacity.
+        new_inlay_color = self._default_inlay_fill_color()
+        if new_inlay_color != old_inlay_color:
+            for ws in self._workspaces:
+                if ws.inlay_fill_color == old_inlay_color:
+                    ws.inlay_fill_color = new_inlay_color
+                    ws.scene.set_inlay_fill_color(QColor(new_inlay_color))
+                    moved_a_design |= bool(ws.doc_curves)
+            self._update_inlay_fill_swatch(self._active_ws.inlay_fill_color)
+        new_inlay_opacity = self._default_inlay_fill_opacity()
+        if new_inlay_opacity != old_inlay_opacity:
+            for ws in self._workspaces:
+                if abs(ws.inlay_fill_opacity - old_inlay_opacity) < 1e-9:
+                    ws.inlay_fill_opacity = new_inlay_opacity
+                    ws.scene.set_inlay_fill_opacity(new_inlay_opacity)
+                    moved_a_design |= bool(ws.doc_curves)
+            self._inlay_fill_opacity_slider.blockSignals(True)
+            self._inlay_fill_opacity_slider.setValue(
+                round(self._active_ws.inlay_fill_opacity * 100))
+            self._inlay_fill_opacity_slider.blockSignals(False)
         if moved_a_design:
             self._mark_dirty()
 
@@ -8608,6 +8963,17 @@ class MainWindow(QMainWindow):
             ws.scene.set_fill_opacity(ws.fill_opacity)
             ws.scene.clear_fill_image()
             ws.scene.set_fill_visible(False)
+            ws.inlay_fill_visible = False
+            ws.inlay_fill_color   = self._default_inlay_fill_color()
+            ws.inlay_fill_opacity = self._default_inlay_fill_opacity()
+            ws.inlay_fill_style   = "color"
+            ws.inlay_fill_image   = ""
+            ws.inlay_fill_tumble  = False
+            ws.scene.set_inlay_fill_color(QColor(ws.inlay_fill_color))
+            ws.scene.set_inlay_fill_opacity(ws.inlay_fill_opacity)
+            ws.scene.clear_inlay_fill_image()
+            ws.scene.set_inlay_fill_tumble(False)
+            ws.scene.set_inlay_fill_visible(False)
             ws.lens_fill_visible = False
             ws.lens_fill_top     = DEFAULT_LENS_FILL_TOP
             ws.lens_fill_bottom  = DEFAULT_LENS_FILL_BOTTOM
@@ -8659,6 +9025,7 @@ class MainWindow(QMainWindow):
             data = load_svg(path)
             resolve_face_images(data.get("face_images", []), path)
             resolve_fill_image(data.get("fill"), path)
+            resolve_fill_image(data.get("inlay_fill"), path)
         except Exception as e:
             QMessageBox.critical(self, "Open failed", str(e))
             return
@@ -8849,6 +9216,27 @@ class MainWindow(QMainWindow):
             self._fill_image_missing(ws)
         if ws.scene.set_fill_visible(ws.fill_visible) != "ok":
             ws.fill_visible = False   # a saved fill-on that no longer encloses
+
+        # Inlay fill (2.0). Absent in older files: off, at the color and
+        # opacity the maker prefers for a fresh fill.
+        inlay_fill = data.get("inlay_fill") or {}
+        ws.inlay_fill_visible = bool(inlay_fill.get("visible", False))
+        ws.inlay_fill_color   = _hex_or(inlay_fill.get("color"),
+                                        self._default_inlay_fill_color())
+        ws.inlay_fill_opacity = _num_or(inlay_fill.get("opacity"),
+                                        self._default_inlay_fill_opacity(),
+                                        0.0, 1.0)
+        img = inlay_fill.get("image")
+        ws.inlay_fill_image  = img if isinstance(img, str) else ""
+        ws.inlay_fill_style  = ("image" if inlay_fill.get("style") == "image"
+                                else "color")
+        ws.inlay_fill_tumble = bool(inlay_fill.get("tumble", False))
+        ws.scene.set_inlay_fill_color(QColor(ws.inlay_fill_color))
+        ws.scene.set_inlay_fill_opacity(ws.inlay_fill_opacity)
+        if not self._apply_inlay_fill_material(ws):
+            self._inlay_fill_image_missing(ws)
+        if ws.scene.set_inlay_fill_visible(ws.inlay_fill_visible) != "ok":
+            ws.inlay_fill_visible = False
 
         # Lens fill. Absent in pre-1.2 files: the tint stays off at the shipped
         # colors, with the opacity the maker prefers for a fresh tint.
@@ -9081,6 +9469,14 @@ class MainWindow(QMainWindow):
                 # Image after a reload finds the swatch still attached.
                 "image":   ws.fill_image,
             },
+            "inlay_fill": {
+                "visible": ws.inlay_fill_visible,
+                "color":   ws.inlay_fill_color,
+                "opacity": ws.inlay_fill_opacity,
+                "style":   ws.inlay_fill_style,
+                "image":   ws.inlay_fill_image,   # kept while the color shows
+                "tumble":  ws.inlay_fill_tumble,
+            },
             "lens_fill": {
                 "visible": ws.lens_fill_visible,
                 "top":     ws.lens_fill_top,
@@ -9115,6 +9511,7 @@ class MainWindow(QMainWindow):
             dims            = d["dims"],
             layers          = d["layers"],
             fill            = portable_fill(d["fill"], path),
+            inlay_fill      = portable_fill(d["inlay_fill"], path),
             lens_fill       = d["lens_fill"],
             texts           = d["texts"],
             bevel           = d["bevel"],
@@ -10070,7 +10467,7 @@ class MainWindow(QMainWindow):
         }
 
     def _gather_catalog_fills(self) -> dict:
-        """Per-component Frame Fill / Lens Fill overlays for the catalog sheet,
+        """Per-component Frame, Inlay and Lens Fill overlays for the catalog sheet,
         taken from each workspace's own live scene so the page shows the tint
         that workspace shows. {} unless Settings ▸ PDF asks for them; a
         workspace with its fill off simply contributes nothing."""
@@ -10080,9 +10477,10 @@ class MainWindow(QMainWindow):
         for key, ws in zip(("front", "temple_r", "temple_l"),
                            self._workspaces[:3], strict=True):
             frame = ws.scene.fill_paint_spec()
+            inlay = ws.scene.inlay_fill_paint_spec()
             lens  = ws.scene.lens_fill_paint_spec()
-            if frame or lens:
-                out[key] = {"frame": frame, "lens": lens}
+            if frame or inlay or lens:
+                out[key] = {"frame": frame, "inlay": inlay, "lens": lens}
         return out
 
     def _export_pdf_catalog(self):
