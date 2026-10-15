@@ -28,3 +28,8 @@ Thumbs.db
 /*.dxf
 /*.svg
 /*.oma
+
+# Copies of a few library designs chosen for the limits they test, read by
+# tests/test_frame_corpus.py (GuildModel's suite reads the same set). Never
+# committed: the designs are the maker's.
+/tests/corpus/
