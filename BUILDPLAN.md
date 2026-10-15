@@ -49,6 +49,14 @@ overlay, re-editable ENGRAVING `TextObject`s (`textpath.py`, Text tool,
 DXF-time outline conversion), and 1:1 print/PDF with a 50 mm verification
 ruler (suite: 88). Next: M9 GuildModel validation + release.
 
+*2026-10-15.* v1.3.1 is published (`b9bdef7`, 2026-10-05); the tree is clean
+but for two of the maintainer's scripts under `scripts/`: `batch_catalog.py`,
+rolled into the app in the *Road to 1.4* round below, and `build_archive.py`,
+the maintainer's own, never tracked. 738 tests collect. GuildModel's
+2026-10-14 round is committed (`05b84bc`, shipping as 1.8.2) and changed what
+the handoff assumes; *Road to 1.4* records it and is the next work, released
+beside GuildModel 1.8.2 with a video update.
+
 ---
 
 ## 1. Goal & scope *(unchanged — archive §1)*
@@ -78,6 +86,24 @@ editing, anything not related to eyewear drafting.
 **Open contract question (carried over):** asymmetric frames — does importing two
 distinct LENS entities set `symmetric = False` in GuildModel, or does it overwrite
 the OS lens? Resolve during M8 hardware validation.
+
+**2026-10-15 addendum — the `.gdraw` and the origin.** Since GuildModel 1.8.1
+the `.gdraw` itself is the handoff, not only the DXF: GuildModel's
+`core/io_import/gdraw.py` reads `front` / `temple_r` / `temple_l`, each with
+`curves` (`kind`, `layer`, `closed`, `nodes` of `x`, `y`, `cp_in`, `cp_out`;
+`radius`, `start_angle`, `end_angle` for circles and arcs), `texts`,
+`forming`, `mirror`, `enabled`, and the file's `active_tab`. These keys are
+frozen as the DXF layers are; a rename needs GuildModel's reader changed first
+and a round-trip test. GuildModel 1.8.2 places a part by the drawing's origin:
+its blank is centered on the design origin, a temple's y = 0 is kept on the
+blank's center line (the core), and a front is taken as drawn against that
+blank. The stock and pad guides are centered on the origin already; that is
+the contract, now stated. ENGRAVING, since 1.8.1: a closed drawn curve is a
+filled shape, a closed curve inside it an island, an open curve a traced
+stroke, text as stroke centerlines (a `.gdraw` keeps text as text; a DXF
+temple is unchanged). GuildModel watches the open drawing for a save;
+GuildDraw's save is atomic (a temp file replaced into place beside the
+`.bak`), so the watcher sees one complete file. Do not regress it.
 
 ---
 
@@ -1944,6 +1970,83 @@ top-level widget at the end of each module (`nothing_outlives_its_module`).
 The flush found one real fault: `QTimer.singleShot` without a context object
 fires into a deleted view; every single-shot in `app.py` now names its
 owner.
+
+---
+
+# Road to 1.4 — what GuildModel 1.8.2 asks of GuildDraw (2026-10-15)
+
+> GuildModel's 2026-10-14 round, committed as `05b84bc` and shipping as v1.8.2
+> beside a video update, moved three things that touch the handoff: a part is
+> placed by the drawing's origin; the Worktable was redone, with Reload Drawing,
+> a watcher on the drawing, drop-to-open and build-on-open; and the Windows
+> installer offers GuildModel under *Open with* for `.gdraw`. The `.gdraw` has
+> been read natively since 1.8.1 (§2 addendum). This round makes what GuildModel
+> now assumes visible in GuildDraw and rolls in the maintainer's batch catalog
+> script. Target **v1.4.0**, released beside GuildModel 1.8.2.
+
+## What GuildModel now assumes, and what follows
+
+| GuildModel | GuildDraw |
+|---|---|
+| The blank is centered on the design origin; a temple's y = 0 is the core line; a front is placed as drawn. | Show it and check it (item 1). A temple's x does not matter: GuildModel snaps the hinge end to the blank end. |
+| Reads the `.gdraw` itself. | The file's keys are the contract (§2 addendum); a writer test pins them (item 4). |
+| Watches the drawing and reloads on request; opens a drawing dropped on its window. | Saves are atomic already. *Open in GuildModel* closes the loop from this side (item 2). |
+| A closed ENGRAVING curve is a filled shape (1.8.1). | Say so where the maker draws it (item 4). |
+| Its stock list carries length, width and thickness; the drawing's guides never travel. | Guide sizes in the `.gdraw` are a candidate, not a contract change, until GuildModel reads them (item 5). |
+| M22 "sculpts" are STL meshes dropped in GuildModel; M24 (2.0) machines the anterior. | SCULPT stays the castle's section cuts. BRIDGE (Proposal B) waits for M24. |
+| M20 landed collapsible groups, icon buttons with their words in the tooltips, quiet numeric fields. | Parity where the dock wants it (item 6), after the release. |
+
+## What lands
+
+1. **The origin, visible and checked.** A core line across the temple stock
+   guide at y = 0, where the wire runs (GuildModel's core guide draws the same
+   line on its blank), and an origin cross in every workspace, shown and hidden
+   with the guides. Two validator warnings, never errors, so the dot stays
+   green "with warnings": a temple whose OUTLINE does not straddle y = 0
+   ("drawn off the core line; GuildModel keeps the drawing's zero on the
+   blank's center line"), and an OUTLINE that leaves the stock guide, front or
+   temple, with the overrun in mm. The guide's size comes from the workspace,
+   so a shop with longer blanks sets its guide once. Tests in
+   `tests/test_validate.py`; the USER-GUIDE's handoff section states the
+   origin rule.
+2. **File ▸ Open in GuildModel.** Saves first, then launches GuildModel on the
+   file: the installed app (Windows, where the installer put it; macOS,
+   `/Applications/GuildModel.app`), a checkout beside this one through its
+   venv, or a path set in Preferences ▸ General. Mirrors GuildModel's *Open in
+   GuildSend*. The drawing stays open here; GuildModel reloads on the next
+   save. Disabled, with the reason in the tooltip, when nothing is found.
+3. **Batch catalog export in the app.** `scripts/batch_catalog.py` (every
+   `.gdraw` at the top of a library folder through a hidden window: Frame Fill
+   on at a color and opacity, saved back when that changed anything, PDF for
+   Catalog from the saved preferences, originals backed up first) becomes
+   **File ▸ Export ▸ Catalog PDFs for a folder…**: a folder picker, the fill
+   color and opacity, a progress dialog with a per-file verdict, the same
+   backup rule. The engine moves to `export/batch_catalog.py`, the Qt-free
+   parts (file selection, the backup copy, the report) under test; the script
+   stays as the command-line entry, tracked. `scripts/build_archive.py` is the
+   maintainer's own and is never tracked or folded in.
+4. **The contract pinned and explained.** A test that a written `.gdraw`
+   carries every key GuildModel reads (the §2 list), so a rename fails here
+   before it fails there; the Layers panel's ENGRAVING tooltip and the
+   USER-GUIDE say what a closed curve, an inner curve, an open curve and text
+   each become.
+5. **Candidate, decided at the round's end:** the guide sizes saved in the
+   `.gdraw` under an optional key, so GuildModel can seed a new project's
+   stock from the drawing. GuildModel's reader comes first, and its stock has
+   a thickness GuildDraw does not know.
+6. **Interface parity from GuildModel M20**, in the session after the
+   release: collapsible group headers for the Properties dock, icon buttons
+   where a row of text buttons overflows, the wheel guard kept (the dock has
+   it).
+
+## Release
+
+v1.4.0 beside GuildModel 1.8.2. `docs/RELEASE-v1.4.0.md` after 1.3.1's
+pattern, with one paragraph on the origin rule (what a maker who drew a temple
+off the zero line sees in GuildModel, and the box that restores the old
+placement); the two apps' notes link each other; the README's status
+paragraph; the version in `framedraft/__init__.py` and `pyproject.toml`;
+Windows and macOS builds from GitHub Actions; the installer unchanged.
 
 ---
 
