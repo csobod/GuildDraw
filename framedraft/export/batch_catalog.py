@@ -4,7 +4,8 @@ behind File ▸ Export ▸ Catalog PDFs for a Folder… and ``scripts/batch_cata
 For every top-level ``*.gdraw`` in a library folder (subfolders such as
 ``bespoke/`` are left alone) a run opens the file in a GuildDraw window that is
 never shown (the app's own loader), turns the Frame Fill on in the front and
-both temple workspaces at one color and opacity (style "color"), saves the file
+both temple workspaces at one color and opacity (style "color"), and, when
+asked, the Inlay Fill on every tab with a closed seat, saves the file
 back when that changed anything — the originals that will change are copied to
 ``<library>/_backup/<timestamp>/`` first — and writes ``<design name>.pdf`` with
 PDF for Catalog's own code, using the saved PDF preferences with *Include fill*
@@ -42,6 +43,10 @@ class BatchCatalogOptions:
     temple_ghost_off: bool = False # switch off a Ghost left on in a temple tab
     backup:   bool = True          # copy the originals that change first
     only:     tuple = ()           # file-name globs; empty = every file
+    # The Inlay Fill too (2.0), on each tab with a closed INLAY seat: a
+    # #rrggbb color, or None to leave every design's Inlay Fill as it is.
+    inlay_color:   str | None = None
+    inlay_opacity: float = 0.85    # 0..1
 
 
 @dataclass
@@ -129,6 +134,14 @@ def wanted_fill(opts: BatchCatalogOptions) -> dict:
             "opacity": round(float(opts.opacity), 4), "style": "color"}
 
 
+def inlay_record(ws) -> dict:
+    """The Inlay Fill as a workspace shows it (see fill_record)."""
+    return {"visible": bool(ws.inlay_fill_visible),
+            "color":   str(ws.inlay_fill_color).lower(),
+            "opacity": round(float(ws.inlay_fill_opacity), 4),
+            "style":   ws.inlay_fill_style}
+
+
 # ── The run ────────────────────────────────────────────────────────────────
 
 def prepare_window(win) -> dict:
@@ -186,6 +199,7 @@ def run_batch_catalog(win, library, opts: BatchCatalogOptions,
                 raise RuntimeError(
                     f"did not open cleanly ({status or 'unreadable'}); left untouched")
             before = {t: fill_record(tab_ws[t]) for t in opts.tabs}
+            before_inlay = {t: inlay_record(tab_ws[t]) for t in opts.tabs}
             lens_on = [t for t in FILL_TABS if tab_ws[t].lens_fill_visible]
             ghost_on = [t for t in ("temple_r", "temple_l")
                         if tab_ws[t].mirror_enabled]
@@ -226,16 +240,35 @@ def run_batch_catalog(win, library, opts: BatchCatalogOptions,
                 else:
                     ws.fill_visible = False
                     failed.append(f"{t}: outline {result}")
+            # The Inlay Fill, as its panel sets it, on the tabs that have a
+            # closed seat; a tab without one is left as it is.
+            inlaid = []
+            if opts.inlay_color:
+                for t in opts.tabs:
+                    ws = tab_ws[t]
+                    if ws.scene.inlay_body_count() == 0:
+                        continue
+                    inlaid.append(t)
+                    ws.inlay_fill_style = "color"
+                    ws.inlay_fill_color = opts.inlay_color.lower()
+                    ws.inlay_fill_opacity = round(float(opts.inlay_opacity), 4)
+                    ws.scene.set_inlay_fill_color(QColor(ws.inlay_fill_color))
+                    ws.scene.set_inlay_fill_opacity(ws.inlay_fill_opacity)
+                    win._apply_inlay_fill_material(ws)
+                    ws.inlay_fill_visible = (
+                        ws.scene.set_inlay_fill_visible(True) == "ok")
             # Push the new state into the sidebar so the save path's sidebar
             # flush reads it back instead of the old values.
             win._restore_ws_sidebar_state(win._active_ws)
             before = {t: before[t] for t in filled}
             after = {t: fill_record(tab_ws[t]) for t in filled}
+            inlay_changed = any(inlay_record(tab_ws[t]) != before_inlay[t]
+                                for t in inlaid)
             if failed:
                 raise RuntimeError("fill can't close — " + "; ".join(failed)
                                    + " (left untouched)")
 
-            changed = before != after or ghost_cleared
+            changed = before != after or ghost_cleared or inlay_changed
             if changed and opts.save and not opts.dry_run:
                 if report.backup_dir is not None:
                     backup_original(path, report.backup_dir)
@@ -270,6 +303,8 @@ def run_batch_catalog(win, library, opts: BatchCatalogOptions,
             elif ghost_on:
                 verdict.notes.append(f"(Ghost on in {', '.join(ghost_on)})")
                 report.ghost_files.append(path.name)
+            if inlaid:
+                verdict.notes.append(f"(inlay fill: {', '.join(inlaid)})")
             if lens_on:
                 verdict.notes.append(f"(lens fill on: {', '.join(lens_on)})")
             if empty:

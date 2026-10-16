@@ -306,3 +306,72 @@ def _dxf_entities(path):
                    tuple(round(v, 6) for v in e.dxf.end)]
         out.append((e.dxftype(), e.dxf.layer, tuple(pts)))
     return sorted(out)
+
+
+# ── The PNG follows the view ───────────────────────────────────────────────
+
+def test_a_mirrored_png_is_the_plain_one_reversed(win, tmp_path):
+    from PySide6.QtGui import QImage
+    from framedraft.export.png import render_png
+    ws = _front(win)
+    rect = QRectF(-50, -50, 100, 100)
+    plain, turned = tmp_path / "plain.png", tmp_path / "turned.png"
+    render_png(ws.scene, str(plain), dpi=40, rect=rect)
+    render_png(ws.scene, str(turned), dpi=40, rect=rect, mirrored=True)
+    a, b = QImage(str(plain)), QImage(str(turned))
+    assert a.size() == b.size()
+    w, h = a.width(), a.height()
+
+    def near(p, q) -> bool:
+        return max(abs(p.red() - q.red()), abs(p.green() - q.green()),
+                   abs(p.blue() - q.blue())) <= 40
+
+    def off(img, other):
+        """Share of pixels where *other*, read right to left, is not *img*.
+        A hairline may land a column over once reversed (sub-pixel rounding),
+        so a pixel matches anything within one column of its mirror."""
+        bad = 0
+        for y in range(h):
+            for x in range(w):
+                p, m = img.pixelColor(x, y), w - 1 - x
+                if not any(near(p, other.pixelColor(c, y))
+                           for c in (m - 1, m, m + 1) if 0 <= c < w):
+                    bad += 1
+        return bad / (w * h)
+
+    assert off(a, b) < 0.002              # the turned PNG is the plain one reversed
+    assert off(a, a) > 0.002              # and the drawing is not symmetric itself
+
+
+def test_the_png_export_follows_view_obverse(win, tmp_path, monkeypatch):
+    import framedraft.export.png as png_mod
+    from PySide6.QtWidgets import QFileDialog, QInputDialog
+    _front(win)
+    seen = []
+    monkeypatch.setattr(png_mod, "render_png",
+                        lambda *a, mirrored=False, **k: seen.append(mirrored))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(tmp_path / "f.png"), "")))
+    monkeypatch.setattr(QInputDialog, "getItem",
+                        staticmethod(lambda *a, **k: (a[3][2], True)))
+    win._export_png()
+    win._act_obverse.trigger()
+    win._export_png()
+    assert seen == [False, True]
+    assert "as View Obverse shows it" in win._status.currentMessage()
+
+
+def test_the_quiet_label_names_the_face_of_the_default_view(win):
+    _front(win)
+    label = win.view.face_label
+    assert label.isVisible() and label.text() == "anterior"
+    assert label.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    win._act_obverse.trigger()                     # the badge takes the corner
+    assert not label.isVisible() and win.view.obverse_badge.isVisible()
+    win._act_obverse.trigger()
+    assert label.isVisible()
+    temple = _tab(win, 1)
+    assert temple.view.face_label.isVisible()
+    assert temple.view.face_label.text() == "posterior"
+    hinge = _tab(win, 3)
+    assert not hinge.view.face_label.isVisible()   # no face to name

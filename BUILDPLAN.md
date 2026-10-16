@@ -2255,6 +2255,11 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
    does. The catalog page prints the inlay over the frame fill, and its
    option reads *Print frame, inlay and lens fills*; the folder catalog run
    still sets the Frame Fill only. Forty-six tests.
+   **Follow-up, 2026-10-15, the maker's go-ahead:** the folder catalog run
+   sets the Inlay Fill too when asked, from a box with its own color and
+   opacity in the options dialog, or `--inlay-color` and `--inlay-opacity`
+   on the script; every tab with a closed seat takes it, and the rest stay as
+   each design has them. Three tests.
 8. **View Obverse**, the maker's item (2026-10-15): a view toggle per
    workspace that shows the other face. A front is drawn facing the
    anterior, as its reference photo is; a temple faces the posterior, the
@@ -2281,6 +2286,11 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
    tab on its default face. Eleven tests, among them a band drag and a line
    drawn in the turned view, and the `.gdraw` members and the DXF entities
    compared with the view turned and not.
+   **Follow-ups, 2026-10-15:** PNG export follows the view, mirrored as View
+   Obverse shows the canvas (`render_png(mirrored=…)`). In the default view
+   a quiet label in the badge's corner names the face the drawing is seen
+   from, a 10 px word in the muted chrome color; the maker keeps it on trial,
+   to drop if it is not quiet enough. Three tests.
 9. **Release 2.0.0, both apps together.** The versions in
    `framedraft/__init__.py` and `pyproject.toml`; `docs/RELEASE-v2.0.0.md`
    with the 1.4 round's notes folded in (the origin rule, the folder catalog,

@@ -6,7 +6,8 @@ chip sits in the canvas's top-left corner: the View Obverse glyph, the word
 *Obverse*, and under it the face now toward the viewer (a front's posterior,
 a temple's anterior). It is a child of the view, outside the scene and its
 transform, so it never mirrors with the drawing, and it lets every click
-through to the canvas.
+through to the canvas. In the default view a quiet label in the same corner
+names the face the drawing is seen from.
 """
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QFont
@@ -78,4 +79,32 @@ class ObverseBadge(QWidget):
         self.adjustSize()
         vp = view.viewport().geometry()
         self.move(vp.left() + _MARGIN_PX, vp.top() + _MARGIN_PX)
+        self.raise_()
+
+
+class QuietFaceLabel(QLabel):
+    """The default view's face, said quietly where the Obverse badge appears:
+    a front's "anterior", a temple's "posterior". Small, muted, no chip, and
+    transparent to the mouse; hidden while the badge shows."""
+
+    def __init__(self, view):
+        super().__init__(view)
+        self.setObjectName("QuietFaceLabel")
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.refresh_theme()
+        self.hide()
+
+    def refresh_theme(self):
+        self.setStyleSheet(
+            "#QuietFaceLabel { background: transparent; font-size: 10px; "
+            f"color: {theme.color('chrome.muted')}; }}")
+        self.adjustSize()
+
+    def reposition(self):
+        view = self.parent()
+        if view is None:
+            return
+        self.adjustSize()
+        vp = view.viewport().geometry()
+        self.move(vp.left() + _MARGIN_PX + 2, vp.top() + _MARGIN_PX - 2)
         self.raise_()

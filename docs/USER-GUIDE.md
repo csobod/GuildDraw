@@ -35,7 +35,8 @@ show the other face. The whole canvas is mirrored left to right: the face
 photo, the grid and the dimension lines turn with the drawing, and engraved
 text reads mirrored, while dimension values stay readable. A badge in the
 canvas's top-left corner says *Obverse* and, under it, the face toward you:
-*posterior* on a front, *anterior* on a temple. Use it to see a temple's
+*posterior* on a front, *anterior* on a temple; in the default view a small
+word in the same corner names the face you see. Use it to see a temple's
 inlays from the outside, or a front from behind. It is a view only: you draw,
 edit and snap as usual, the file and every export keep the drawing as drawn,
 and GuildModel still makes its single flip when it reads the file. Each tab
@@ -402,8 +403,11 @@ For rimless / drill-mount lenses (flat, no bevel), use the **DRILL** layer:
   does not close, is reported and left as it was. *Report only* shows what
   would change without writing anything, and the box for the Ghost switches
   off a mirror left on in a temple tab, which would print a flipped second
-  outline. The design open in GuildDraw is untouched: the run happens in a
-  second window that is never shown. The same run is available from the
+  outline. With the Inlay Fill box ticked, the run also turns the Inlay Fill
+  on, at its own color and opacity, on every tab with a closed `INLAY` seat;
+  otherwise each design's Inlay Fill stays as it is. The design open in
+  GuildDraw is untouched: the run happens in a second window that is never
+  shown. The same run is available from the
   command line as `scripts/batch_catalog.py`.
   - **Print frame, inlay and lens fills** (same preferences page, off by
     default) lays those overlays under the line work, per workspace, exactly
@@ -412,7 +416,8 @@ For rimless / drill-mount lenses (flat, no bevel), use the **DRILL** layer:
     the showroom page. A workspace with its fill switched off, or whose
     outline doesn't close, prints line work only.
 - **File → Export → PNG…** renders at a chosen print resolution
-  (150–1200 dpi), cropped to the drawing.
+  (150–1200 dpi), cropped to the drawing. With View Obverse on, the image is
+  mirrored, as the canvas shows it.
 
 ## 6. Exporting for GuildModel
 

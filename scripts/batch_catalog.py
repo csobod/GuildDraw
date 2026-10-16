@@ -9,8 +9,9 @@ ignored) this:
   1. opens the file in a GuildDraw main window that is never shown (the
      app's own loader),
   2. turns the Frame Fill on in the front and both temple workspaces, at the
-     color and opacity given (style "color"), and saves the file back if that
-     changed anything,
+     color and opacity given (style "color"), and with --inlay-color the
+     Inlay Fill on every tab with a closed INLAY seat, and saves the file
+     back if that changed anything,
   3. writes ``<design name>.pdf`` with PDF for Catalog's own code, using your
      saved PDF preferences (paper, line weight, caption font, layers) with
      "Include fill" forced on for this run only.
@@ -41,6 +42,8 @@ Run with GuildDraw's own virtualenv, from anywhere:
     --tabs ...       workspaces to fill (default: front temple_r temple_l)
     --temple-ghost-off  switch off a mirror Ghost left on in a temple tab
                      (it prints a flipped second outline over the temple)
+    --inlay-color "#3fb0a5"   set the Inlay Fill too, at this color
+    --inlay-opacity 85        and this opacity, 0-100 percent (default 85)
 """
 from __future__ import annotations
 
@@ -80,6 +83,11 @@ def parse_args(argv=None):
                         "outline over the temple on the catalog page)")
     p.add_argument("--no-backup", action="store_true",
                    help="skip the LIBRARY/_backup/<timestamp>/ copy")
+    p.add_argument("--inlay-color", default=None,
+                   help="also set the Inlay Fill, at this #rrggbb color, on "
+                        "every tab with a closed INLAY seat")
+    p.add_argument("--inlay-opacity", type=float, default=85.0,
+                   help="the Inlay Fill's opacity, 0-100 percent (default 85)")
     p.add_argument("--guilddraw", type=Path, default=GUILDDRAW_ROOT,
                    help="GuildDraw source folder (default: this script's repo)")
     a = p.parse_args(argv)
@@ -87,8 +95,15 @@ def parse_args(argv=None):
         p.error(f"--color must look like #rrggbb, got {a.color!r}")
     if not 0.0 <= a.opacity <= 100.0:
         p.error("--opacity is a percentage, 0-100")
+    if a.inlay_color is not None and not re.fullmatch(r"#[0-9a-fA-F]{6}",
+                                                     a.inlay_color):
+        p.error(f"--inlay-color must look like #rrggbb, got {a.inlay_color!r}")
+    if not 0.0 <= a.inlay_opacity <= 100.0:
+        p.error("--inlay-opacity is a percentage, 0-100")
     a.color = a.color.lower()
     a.opacity = round(a.opacity / 100.0, 4)
+    a.inlay_color = a.inlay_color.lower() if a.inlay_color else None
+    a.inlay_opacity = round(a.inlay_opacity / 100.0, 4)
     if not a.library.is_dir():
         p.error(f"no such folder: {a.library}")
     return a
@@ -152,13 +167,16 @@ def main(argv=None) -> int:
         color=args.color, opacity=args.opacity, tabs=tuple(args.tabs),
         out=args.out, dry_run=args.dry_run, save=not args.no_save,
         pdf=not args.no_pdf, temple_ghost_off=args.temple_ghost_off,
-        backup=not args.no_backup, only=tuple(args.only))
+        backup=not args.no_backup, only=tuple(args.only),
+        inlay_color=args.inlay_color, inlay_opacity=args.inlay_opacity)
 
     win = MainWindow()                                # never shown
     cat_cfg = win._prefs.get("catalog_pdf", {})
     mode = "DRY RUN — nothing will be written" if args.dry_run else "live run"
     print(f"GuildDraw {gd_version}  ·  {len(files)} file(s)  ·  {mode}")
-    print(f"Fill {args.color} @ {args.opacity * 100:g}% on {', '.join(args.tabs)}")
+    print(f"Fill {args.color} @ {args.opacity * 100:g}% on {', '.join(args.tabs)}"
+          + (f"; Inlay Fill {args.inlay_color} @ {args.inlay_opacity * 100:g}%"
+             if args.inlay_color else ""))
     if not args.no_pdf:
         out = args.out or (args.library / "catalog")
         print(f"PDFs → {out}  (paper {cat_cfg.get('paper')}, "

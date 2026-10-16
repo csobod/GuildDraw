@@ -32,7 +32,7 @@ from . import theme
 from .canvas.items import CurveItem
 from .canvas.dim import DimItem
 from .canvas.measure_bar import MeasureBar
-from .canvas.obverse_badge import ObverseBadge
+from .canvas.obverse_badge import ObverseBadge, QuietFaceLabel
 from .collapsible import CollapsibleBox
 from .canvas.readiness_dot import ReadinessDot, readiness_state
 from .canvas.scene import (FrameScene, TextItem, DEFAULT_LENS_FILL_TOP,
@@ -232,6 +232,9 @@ _LAYER_TIPS = {
 # text reads naturally there.
 _OBVERSE_FACE = {"front": "posterior", "temple_r": "anterior",
                  "temple_l": "anterior"}
+# …and the face each tab is drawn from, for the quiet label of the default view.
+_DEFAULT_FACE = {"front": "anterior", "temple_r": "posterior",
+                 "temple_l": "posterior"}
 
 # Shortcuts bound outside the hotkey table (menus and window QShortcuts).
 # Preferences ▸ Hotkeys lists every one, and SettingsDialog._RESERVED_KEYS —
@@ -399,8 +402,11 @@ class CanvasView(QGraphicsView):
         # fired into a deleted MeasureBar.
         QTimer.singleShot(0, self, self._reposition_measure_bar)
         # View Obverse's corner chip: a child of the view, never of the
-        # viewport, whose scroll would carry it off with the drawing.
+        # viewport, whose scroll would carry it off with the drawing. The
+        # quiet label names the face in the default view, in the same corner.
         self.obverse_badge = ObverseBadge(self)
+        self.face_label = QuietFaceLabel(self)
+        self._default_face = ""
 
     # ------------------------------------------------------------------
     # Grid overlay (mm grid with major/minor divisions, drawn behind all)
@@ -588,6 +594,7 @@ class CanvasView(QGraphicsView):
         super().resizeEvent(event)
         self._reposition_measure_bar()
         self.obverse_badge.reposition()
+        self.face_label.reposition()
         self._ensure_scroll_room()
 
     def _ensure_scroll_room(self):
@@ -651,6 +658,25 @@ class CanvasView(QGraphicsView):
         self.obverse_badge.setVisible(on)
         if on:
             self.obverse_badge.reposition()
+        self._sync_face_label()
+
+    def set_default_face(self, face: str):
+        """The face the drawing is seen from in the default view, for the
+        quiet label ("" for a tab with no face to name)."""
+        self._default_face = face
+        self._sync_face_label()
+
+    def _sync_face_label(self):
+        show = bool(self._default_face) and not self.is_obverse()
+        self.face_label.setText(self._default_face)
+        self.face_label.setVisible(show)
+        if show:
+            self.face_label.reposition()
+
+    def refresh_face_marks(self):
+        """The badge's and the quiet label's colors, after a theme change."""
+        self.obverse_badge.refresh_theme()
+        self.face_label.refresh_theme()
 
     def fit_view(self, rect):
         """fitInView, then re-clamp into the wheel-zoom bounds — a tiny (or
@@ -2811,6 +2837,7 @@ class MainWindow(QMainWindow):
                 lambda status, ws=ws: self._on_lens_fill_auto_disabled(status, ws))
             ws.scene.inlay_fill_auto_disabled = (
                 lambda status, ws=ws: self._on_inlay_fill_auto_disabled(status, ws))
+            ws.view.set_default_face(_DEFAULT_FACE.get(ws.workspace_type, ""))
 
         # ── Toggle actions wired to dispatch helpers (lambdas evaluate _active_ws) ─
         self._act_mirror.toggled.connect(self._on_mirror_toggled)
@@ -9888,10 +9915,16 @@ class MainWindow(QMainWindow):
             self._save_prefs()
         try:
             from .export.png import render_png
+            # WYSIWYG, View Obverse included: the image is the canvas as seen.
+            obverse = self.view.is_obverse()
             render_png(self.scene, path, dpi=dpi,
                        rect=self._png_content_rect(),
-                       background=theme.color("canvas.bg"))
-            self._status.showMessage(f"PNG exported: {os.path.basename(path)}")
+                       background=theme.color("canvas.bg"),
+                       mirrored=obverse)
+            self._status.showMessage(
+                f"PNG exported: {os.path.basename(path)}"
+                + (f"  ·  the {_OBVERSE_FACE[self._active_ws.workspace_type]}, "
+                   "as View Obverse shows it" if obverse else ""))
         except Exception as e:
             QMessageBox.critical(self, "PNG export failed", str(e))
 
@@ -10766,6 +10799,7 @@ class MainWindow(QMainWindow):
             ws.stock_guide.set_dark_mode(dark)
             ws.pad_guide.set_dark_mode(dark)
             ws.edit_tool.refresh_theme()
+            ws.view.refresh_face_marks()
         self._apply_toolbar_icons(dark)
         self._toolbar.set_dark(dark)  # overflow pop-out panel matches theme
         if getattr(self, "_snap_palette", None) is not None:

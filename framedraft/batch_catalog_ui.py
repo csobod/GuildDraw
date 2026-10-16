@@ -13,19 +13,23 @@ from PySide6.QtWidgets import (
     QProgressBar, QPushButton, QSpinBox, QVBoxLayout,
 )
 
+from .canvas.scene import DEFAULT_INLAY_FILL_COLOR
 from .export.batch_catalog import BatchCatalogOptions
 
 
 class BatchCatalogOptionsDialog(QDialog):
     """What to do with the folder just picked: the fill color and opacity,
-    where the PDFs go, whether the fill is saved into the files (originals
-    backed up first) and whether a temple's Ghost is switched off."""
+    the Inlay Fill's if it is set too, where the PDFs go, whether the fills
+    are saved into the files (originals backed up first) and whether a
+    temple's Ghost is switched off."""
 
     def __init__(self, parent, library: str, last: dict):
         super().__init__(parent)
         self.setWindowTitle("Catalog PDFs for a Folder")
         self._library = library
         self._color = str(last.get("color", "#000000")).lower()
+        self._inlay_color = str(last.get("inlay_color",
+                                         DEFAULT_INLAY_FILL_COLOR)).lower()
 
         form = QFormLayout(self)
         form.setSpacing(8)
@@ -62,6 +66,31 @@ class BatchCatalogOptionsDialog(QDialog):
         fill_row.addWidget(self._opacity)
         fill_row.addStretch(1)
         form.addRow("Frame Fill:", fill_row)
+
+        inlay_row = QHBoxLayout()
+        self._inlay_chk = QCheckBox("Set")
+        self._inlay_chk.setChecked(bool(last.get("inlay_fill", False)))
+        self._inlay_chk.setToolTip(
+            "Also turn the Inlay Fill on, at this color and opacity, on every "
+            "tab with a closed INLAY seat. Off: each design's Inlay Fill stays "
+            "as it is.")
+        self._inlay_color_btn = QPushButton("Color…")
+        self._inlay_color_btn.setToolTip("The Inlay Fill color.")
+        self._inlay_color_btn.clicked.connect(self._pick_inlay_color)
+        self._update_inlay_swatch()
+        self._inlay_opacity = QSpinBox()
+        self._inlay_opacity.setRange(0, 100)
+        self._inlay_opacity.setSuffix(" %")
+        self._inlay_opacity.setValue(int(last.get("inlay_opacity_pct", 85)))
+        self._inlay_opacity.setToolTip("The Inlay Fill's opacity.")
+        inlay_row.addWidget(self._inlay_chk)
+        inlay_row.addWidget(self._inlay_color_btn)
+        inlay_row.addWidget(QLabel("at"))
+        inlay_row.addWidget(self._inlay_opacity)
+        inlay_row.addStretch(1)
+        form.addRow("Inlay Fill:", inlay_row)
+        self._inlay_chk.toggled.connect(self._sync_inlay_row)
+        self._sync_inlay_row(self._inlay_chk.isChecked())
 
         self._save_chk = QCheckBox("Save the fill into the files (originals "
                                    "backed up first)")
@@ -100,6 +129,23 @@ class BatchCatalogOptionsDialog(QDialog):
             self._color = c.name().lower()
             self._update_swatch()
 
+    def _update_inlay_swatch(self):
+        pm = QPixmap(16, 16)
+        pm.fill(QColor(self._inlay_color))
+        self._inlay_color_btn.setIcon(QIcon(pm))
+        self._inlay_color_btn.setText(self._inlay_color)
+
+    def _pick_inlay_color(self):
+        c = QColorDialog.getColor(QColor(self._inlay_color), self,
+                                  "Inlay Fill color")
+        if c.isValid():
+            self._inlay_color = c.name().lower()
+            self._update_inlay_swatch()
+
+    def _sync_inlay_row(self, on: bool):
+        self._inlay_color_btn.setEnabled(on)
+        self._inlay_opacity.setEnabled(on)
+
     def _browse_out(self):
         start = self._out_edit.text().strip() or self._library
         d = QFileDialog.getExistingDirectory(self, "Folder for the PDFs", start)
@@ -115,6 +161,8 @@ class BatchCatalogOptionsDialog(QDialog):
             dry_run=self._dry_chk.isChecked(),
             save=self._save_chk.isChecked(),
             temple_ghost_off=self._ghost_chk.isChecked(),
+            inlay_color=self._inlay_color if self._inlay_chk.isChecked() else None,
+            inlay_opacity=round(self._inlay_opacity.value() / 100.0, 4),
         )
 
     def remembered(self) -> dict:
@@ -124,7 +172,10 @@ class BatchCatalogOptionsDialog(QDialog):
                 "color": self._color,
                 "opacity_pct": int(self._opacity.value()),
                 "save_fill": self._save_chk.isChecked(),
-                "temple_ghost_off": self._ghost_chk.isChecked()}
+                "temple_ghost_off": self._ghost_chk.isChecked(),
+                "inlay_fill": self._inlay_chk.isChecked(),
+                "inlay_color": self._inlay_color,
+                "inlay_opacity_pct": int(self._inlay_opacity.value())}
 
 
 class BatchCatalogProgressDialog(QDialog):

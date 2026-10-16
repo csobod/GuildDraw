@@ -10,7 +10,8 @@ _MAX_SIDE_PX = 8192
 
 def render_png(scene, path: str, dpi: float = 300.0,
                rect: QRectF | None = None,
-               background: str = "#faf6ee") -> None:
+               background: str = "#faf6ee",
+               mirrored: bool = False) -> None:
     """
     Render *rect* (scene coords; defaults to the full sceneRect) to a PNG.
 
@@ -21,7 +22,8 @@ def render_png(scene, path: str, dpi: float = 300.0,
 
     WYSIWYG: whatever items are visible in the scene (geometry, guides,
     ghosts, face photos) are included — callers pass a tight content rect
-    and hide anything they don't want first.
+    and hide anything they don't want first. ``mirrored`` renders it left to
+    right reversed, as View Obverse shows the canvas.
     """
     if rect is None or rect.isEmpty():
         rect = scene.sceneRect()
@@ -40,6 +42,9 @@ def render_png(scene, path: str, dpi: float = 300.0,
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    if mirrored:
+        painter.translate(px_w, 0)
+        painter.scale(-1.0, 1.0)
     scene.render(painter, QRectF(0, 0, px_w, px_h), rect)
     painter.end()
 

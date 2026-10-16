@@ -88,6 +88,9 @@ DEFAULTS: dict = {
         "opacity_pct":      100,
         "save_fill":        True,
         "temple_ghost_off": False,
+        "inlay_fill":        False,      # set the Inlay Fill too
+        "inlay_color":       "#3fb0a5",
+        "inlay_opacity_pct": 85,
     },
     # Print Front + Temples: 1:1 cutting templates on the maker's own paper
     # (File ▸ Print Front + Temples… / Export ▸ PDF Front + Temples…).

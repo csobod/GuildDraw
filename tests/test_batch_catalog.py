@@ -225,3 +225,67 @@ def test_closing_the_progress_window_mid_run_cancels_and_keeps_it_open():
     assert not dlg.isVisible()
     assert dlg.result() == QDialog.DialogCode.Accepted
     dlg.deleteLater()
+
+
+# ── The Inlay Fill too (2.0) ───────────────────────────────────────────────
+
+def test_a_run_can_set_the_inlay_fill_too(win, tmp_path):
+    from framedraft.export.gdraw import load_gdraw
+    lib = tmp_path / "Inlays"
+    lib.mkdir()
+    ws = win._active_ws
+    for c in (closed_diamond(0, 0, 40), circle(-15, 0, 10), circle(15, 0, 10),
+              closed_diamond(0, -30, 4, layer=Layer.INLAY)):
+        ws.add_curve(c)
+    assert win._do_save(str(lib / "seat.gdraw"))
+    win._new()
+    win._active_ws.add_curve(closed_diamond(0, 0, 40))
+    win._active_ws.add_curve(circle(-15, 0, 10))
+    assert win._do_save(str(lib / "plain.gdraw"))
+
+    # Not asked: the Inlay Fill stays as each design has it.
+    win._run_catalog_batch(str(lib), BatchCatalogOptions(pdf=False))
+    assert load_gdraw(str(lib / "seat.gdraw"))["front"]["inlay_fill"]["visible"] is False
+
+    opts = BatchCatalogOptions(pdf=False, inlay_color="#AA5500", inlay_opacity=0.6)
+    report = win._run_catalog_batch(str(lib), opts)
+    inlay = load_gdraw(str(lib / "seat.gdraw"))["front"]["inlay_fill"]
+    assert (inlay["visible"], inlay["color"], inlay["opacity"], inlay["style"]) == \
+        (True, "#aa5500", 0.6, "color")
+    by_name = {v.name: v for v in report.verdicts}
+    assert "(inlay fill: front)" in by_name["seat.gdraw"].notes
+    assert not any("inlay" in n for n in by_name["plain.gdraw"].notes)
+    assert report.updated == 1                       # only the design with a seat
+    again = win._run_catalog_batch(str(lib), opts)
+    assert again.updated == 0 and again.unchanged == 2
+
+
+def test_the_dialog_sets_the_inlay_fill_only_when_asked(tmp_path):
+    from framedraft.batch_catalog_ui import BatchCatalogOptionsDialog
+    dlg = BatchCatalogOptionsDialog(None, str(tmp_path), {})
+    assert dlg.options().inlay_color is None          # off by default
+    assert not dlg._inlay_color_btn.isEnabled()
+    dlg._inlay_chk.setChecked(True)
+    dlg._inlay_opacity.setValue(70)
+    opts = dlg.options()
+    assert (opts.inlay_color, opts.inlay_opacity) == ("#3fb0a5", 0.7)
+    r = dlg.remembered()
+    assert (r["inlay_fill"], r["inlay_color"], r["inlay_opacity_pct"]) == \
+        (True, "#3fb0a5", 70)
+    dlg.deleteLater()
+
+
+def test_the_command_line_takes_the_inlay_fill(tmp_path):
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "batch_catalog_cli",
+        Path(__file__).resolve().parent.parent / "scripts" / "batch_catalog.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    a = cli.parse_args([str(tmp_path), "--inlay-color", "#AA5500",
+                        "--inlay-opacity", "60"])
+    assert (a.inlay_color, a.inlay_opacity) == ("#aa5500", 0.6)
+    assert cli.parse_args([str(tmp_path)]).inlay_color is None
+    with pytest.raises(SystemExit):
+        cli.parse_args([str(tmp_path), "--inlay-color", "teal"])
