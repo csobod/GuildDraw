@@ -10,7 +10,7 @@ layers, guides, and undo history:
 
 | Tab | Purpose | Machined layers |
 |---|---|---|
-| **Frame Front** | The front: outline + lenses | `OUTLINE` ×1, `LENS` ≥1, optional `DRILL`, `INLAY` |
+| **Frame Front** | The front: outline + lenses | `OUTLINE` ×1 (one per rim for a combination frame), `LENS` ≥1, optional `DRILL`, `INLAY` |
 | **Temple R / L** | Each temple arm | `OUTLINE` ×1, optional `HINGE`, `ENGRAVING`, `INLAY` |
 | **Hinge Pocket** | Hinge recess geometry | `HINGE` ≥1 |
 
@@ -183,9 +183,11 @@ Each layer row's tooltip says what the layer becomes in GuildModel:
   keeps per inlay, the visible face by default. On a temple that is the
   anterior, the face **View Obverse** shows. An inlay inside an inlay is a
   **step**; an inlay inside the `HINGE` curve is a step in the hinge pocket's
-  floor. Inlays never cross a lens, a drill hole, a hinge curve or a
-  decorative opening, and two inlays either nest or stay apart. They are not
-  mirrored: draw each seat, or Mirror (bake) a pair.
+  floor. A seat may run off the part's edge, where it is cut as a step open
+  there (a front-mounted bridge's seat, see *Combination frames*). Inlays
+  never cross a lens, a drill hole, a hinge curve or a decorative opening,
+  and two inlays either nest or stay apart. They are not mirrored: draw each
+  seat, or Mirror (bake) a pair.
 - `REF` is reference geometry: never exported, and GuildModel ignores it.
 
 ### Mirror system (frame front)
@@ -198,6 +200,24 @@ Each layer row's tooltip says what the layer becomes in GuildModel:
 
 `OUTLINE` and `BRIDGE` are never auto-mirrored: draw the outline as the full
 symmetric contour (draw half, then Mirror Close or bake + join).
+
+### Combination frames (separated rims)
+
+A combination frame's acetate rims ride on a metal bridge, so its front is
+two rims, each holding its lens. Draw the left rim as one closed `OUTLINE`
+curve; a rim drawn in pieces, such as a spline and a straight temple edge,
+wants **Join** first, and the readiness dot says so. Draw its lens. With the
+Ghost on, the right rim is previewed and Frame Fill fills both. Then select
+the rim and its lens and use **Mirror** (bake): both rims must be real curves
+for GuildModel, and the readiness dot stays amber while the right rim is the
+Ghost's only.
+
+Then draw the bridge's seat as one closed shape across the gap, reaching into
+each rim's nasal end. On the `HINGE` layer it is a pocket in the back, for a
+bridge that mounts from behind; on the `INLAY` layer it is a seat in the face,
+for one that mounts from the front. Either way GuildModel cuts it where it
+meets each rim, as a step open at the rim's edge. For GuildModel the front is
+one part with a body per rim, cut from the same blank.
 
 ## 3. Guides & face photos
 
@@ -457,15 +477,22 @@ notes; since 1.0 it never blocks an export — you decide when the geometry is
 complete, and GuildModel's intake is the final gate):
 
 - Frame Front: at least 1 `OUTLINE` (the largest contour is the profile;
-  closed contours inside it are decorative openings) and at least 1 `LENS`
-  (the mirror ghost counts when Ghost is on; aviators carry more than two).
+  closed contours inside it are decorative openings, and one beside it that
+  holds a lens is a separated rim) and at least 1 `LENS` (the mirror ghost
+  counts when Ghost is on; aviators carry more than two). Every lens lies
+  inside the profile or a rim. With the Ghost on, a front whose rims all lie
+  to one side of the axis is not ready: the other rim is the Ghost's only, so
+  bake it.
 - Temples: at least 1 `OUTLINE`, no `LENS`.
 - Hinge Pocket: at least 1 `HINGE`, no `OUTLINE`/`LENS`.
 - Machined contours must be closed (a gap ≤ 0.1 mm is auto-closed at export
-  and warned about; a larger one is reported as not ready).
-- `INLAY` seats lie inside the profile, never cross a `LENS`, `DRILL` or
-  `HINGE` curve (inside a hinge curve is a step) or a decorative opening, and
-  either nest or stay apart.
+  and warned about; a larger one is reported as not ready). A contour drawn in
+  pieces that meet end to end is reported once, with the fix: Join them, since
+  GuildModel reads each piece on its own.
+- `INLAY` seats meet the part (one may run off a body's edge, a step open
+  there, as a front-mounted bridge's seat does), never cross a `LENS`, `DRILL`
+  or `HINGE` curve (inside a hinge curve is a step) or a decorative opening,
+  and either nest or stay apart.
 - Warnings only: an `OUTLINE` that leaves the stock guide (front or temple,
   with the overrun in mm; set the guide to your blank once, in Preferences),
   and a temple `OUTLINE` that does not cross the core line (y = 0), with the

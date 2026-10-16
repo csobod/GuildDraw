@@ -22,21 +22,118 @@ def _endpoint_gap_mm(curve: Curve) -> float:
     return math.hypot(n1.x - n0.x, n1.y - n0.y)
 
 
-def _classify_extra_outlines(outlines: list) -> tuple[int, int]:
-    """Classify a multi-curve OUTLINE layer the way GuildModel's intake does
-    (``io_import/normalize.assemble_outline``): the largest-area contour is
-    the profile; every other curve whose interior falls inside it is a
-    decorative opening (Hole1…), and one outside it is a stray.
+def _outline_bodies(polys: list, lenses: list = ()) -> tuple[list, list, list]:
+    """The OUTLINE contours (polygons) sorted into ``(bodies, holes, strays)``.
 
-    Returns ``(n_holes, n_stray)``. Degenerate contours (fewer than 3 sample
-    points or zero area) count as neither — GuildModel drops slivers too.
-    """
-    polys = _area_polys(outlines)
-    if len(polys) < 2:
-        return 0, 0
-    shell = max(polys, key=lambda p: p.area)
-    holes = len(_openings(polys, shell))
-    return holes, len(polys) - 1 - holes
+    A contour inside another is a decorative opening (Hole1…), cut through.
+    Of the contours inside no other, the largest is a body (the profile), and
+    so is any that holds a lens (*lenses*, polygons): a separated rim of a
+    combination frame, whose two rims are both drawn, the mirror baked (Road
+    to 2.0, item 9). A contour that holds no lens is a stray, which
+    GuildModel ignores. Degenerate contours never get here (see _area_polys)."""
+    def inside_another(p) -> bool:
+        return any(q is not p and q.area > p.area
+                   and q.contains(p.representative_point()) for q in polys)
+
+    tops = [p for p in polys if not inside_another(p)]
+    holes = [p for p in polys if not any(p is t for t in tops)]
+    if not tops:
+        return [], holes, []
+    largest = max(tops, key=lambda p: p.area)
+    bodies = [t for t in tops if t is largest or any(
+        t.contains(lens.representative_point()) for lens in lenses)]
+    strays = [t for t in tops if not any(t is b for b in bodies)]
+    return bodies, holes, strays
+
+
+def _curve_ends(curve: Curve):
+    """The first and last points of *curve* as drawn (an arc's from its
+    angles, which its single node, the center, does not give)."""
+    from ..geometry import sample_curve
+    pts = sample_curve(curve)
+    if not pts:
+        return None
+    return (pts[0][0], pts[0][1]), (pts[-1][0], pts[-1][1])
+
+
+def _closed_chains(curves: list) -> list[list]:
+    """Open curves that meet end to end, within the closure tolerance, into
+    closed rings: a rim drawn as a spline and a straight line, say. Each ring
+    is the list of its pieces (two or more), in order; a curve in no ring is
+    left out."""
+    ends = {}
+    for i, c in enumerate(curves):
+        e = _curve_ends(c)
+        if e is not None:
+            ends[i] = e
+
+    def near(a, b) -> bool:
+        return math.hypot(a[0] - b[0], a[1] - b[1]) <= _CLOSURE_TOL_MM
+
+    used: set = set()
+    chains = []
+    for i in ends:
+        if i in used:
+            continue
+        start, tip = ends[i]
+        chain = [i]
+        while not near(tip, start):
+            step = None
+            for j, (a, b) in ends.items():
+                if j in used or j in chain:
+                    continue
+                if near(tip, a):
+                    step, tip = j, b
+                elif near(tip, b):
+                    step, tip = j, a
+                if step is not None:
+                    break
+            if step is None:
+                break
+            chain.append(step)
+        if len(chain) >= 2 and near(tip, start):
+            used.update(chain)
+            chains.append([curves[k] for k in chain])
+    return chains
+
+
+def _chain_points(chain: list) -> list:
+    """One ring's points from its pieces, each turned to run on from the last."""
+    from ..geometry import sample_curve
+    out: list = []
+    for c in chain:
+        pts = [(x, y) for x, y, _t in sample_curve(c)]
+        if out and pts and (math.hypot(pts[-1][0] - out[-1][0], pts[-1][1] - out[-1][1])
+                            < math.hypot(pts[0][0] - out[-1][0], pts[0][1] - out[-1][1])):
+            pts.reverse()
+        out.extend(pts)
+    return out
+
+
+def _outline_polys(curves: list) -> list:
+    """Polygons for the OUTLINE: one per closed curve, and one per ring of
+    pieces that meet end to end (see _closed_chains), so a rim drawn in
+    pieces reads as the rim it is. A piece in no ring is read on its own, as
+    _area_polys reads any curve."""
+    from shapely.geometry import Polygon
+    chains = _closed_chains([c for c in curves if not c.closed])
+    in_chain = {id(c) for chain in chains for c in chain}
+    polys = _area_polys([c for c in curves if id(c) not in in_chain])
+    for chain in chains:
+        pts = _chain_points(chain)
+        if len(pts) < 3:
+            continue
+        try:
+            poly = Polygon(pts)
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            if poly.geom_type == "MultiPolygon":
+                poly = max(poly.geoms, key=lambda g: g.area)
+        except Exception:
+            continue
+        if poly.area > 0:
+            polys.append(poly)
+    return polys
 
 
 def _area_polys(curves: list) -> list:
@@ -63,15 +160,6 @@ def _area_polys(curves: list) -> list:
         if poly.area > 0:
             polys.append(poly)
     return polys
-
-
-def _openings(polys: list, shell) -> list:
-    """The polygons other than ``shell`` that lie inside it: the decorative
-    openings GuildModel cuts through. representative_point() is guaranteed
-    inside its polygon, so this is a true containment test even when the
-    curves share a tangent point."""
-    return [p for p in polys
-            if p is not shell and shell.contains(p.representative_point())]
 
 
 def _outline_bounds(outlines: list):
@@ -154,8 +242,10 @@ def _inlay_checks(export: list, mirror_on: bool, workspace_type: str,
                   errors: list) -> None:
     """INLAY (2.0): a closed seat for a plaque, a laminate or a plate, which
     GuildModel cuts to a depth and on a face it keeps per inlay. The drawing
-    carries the geometry only, and these rules keep it cuttable: a seat lies
-    inside the profile; it never crosses a LENS aperture, a DRILL hole or a
+    carries the geometry only, and these rules keep it cuttable: a seat meets
+    the part, and where it runs off a body's edge it is a step open there, as
+    a HINGE pocket is (a front-mounted bridge's seat, spanning the gap between
+    separated rims; Road to 2.0, item 9); it never crosses a LENS aperture, a DRILL hole or a
     decorative opening (a closed OUTLINE curve inside the profile), all cut
     through; it never crosses a HINGE curve, though inside one it is a step
     in the hinge pocket's floor; and two inlays nest (a step) or stay apart,
@@ -176,19 +266,21 @@ def _inlay_checks(export: list, mirror_on: bool, workspace_type: str,
         return _area_polys(curves)
 
     seats = _area_polys(inlays)
-    outlines = layer_polys(Layer.OUTLINE)
-    profile = max(outlines, key=lambda p: p.area) if outlines else None
-    apertures = [("a LENS curve", p) for p in layer_polys(Layer.LENS)]
+    lenses = layer_polys(Layer.LENS)
+    bodies, holes, _strays = _outline_bodies(
+        _outline_polys([c for c in export if c.layer == Layer.OUTLINE]), lenses)
+    apertures = [("a LENS curve", p) for p in lenses]
     apertures += [("a DRILL curve", p) for p in layer_polys(Layer.DRILL)]
-    if profile is not None:
-        apertures += [("a decorative opening (a closed OUTLINE curve inside "
-                       "the profile)", p) for p in _openings(outlines, profile)]
+    apertures += [("a decorative opening (a closed OUTLINE curve inside "
+                   "the profile)", p) for p in holes]
     hinges = layer_polys(Layer.HINGE)
 
     for i, seat in enumerate(seats, 1):
-        if profile is not None and not _inside(seat, profile):
+        if bodies and not any(seat.intersection(b).area > _AREA_TOL_MM2
+                              for b in bodies):
             errors.append(
-                f"INLAY {i} leaves the OUTLINE profile; a seat lies inside the part.")
+                f"INLAY {i} lies off the part; a seat cuts only where it meets "
+                "an OUTLINE body.")
         for what, cut in apertures:
             if seat.intersection(cut).area > _AREA_TOL_MM2:
                 errors.append(f"INLAY {i} crosses {what}.")
@@ -206,15 +298,15 @@ def _inlay_checks(export: list, mirror_on: bool, workspace_type: str,
 
 
 def _outline_layer_check(outlines: list, errors: list, warnings: list,
-                         label: str) -> None:
+                         label: str, lenses: list = ()) -> list:
     """Shared OUTLINE rule: at least one contour; extra contours are fine and
-    classified as openings (inside the profile) or strays (outside)."""
+    classified as openings (inside a body), rims (holding a lens) or strays.
+    Returns the bodies, for the checks that follow."""
     if not outlines:
         errors.append(f"{label} 1 OUTLINE contour, found 0.")
-        return
-    if len(outlines) == 1:
-        return
-    holes, stray = _classify_extra_outlines(outlines)
+        return []
+    bodies, holes, strays = _outline_bodies(_outline_polys(outlines), lenses)
+    holes, stray = len(holes), len(strays)
     if holes:
         warnings.append(
             f"{holes} closed OUTLINE curve(s) inside the profile — "
@@ -225,6 +317,30 @@ def _outline_layer_check(outlines: list, errors: list, warnings: list,
             f"{stray} OUTLINE curve(s) fall outside the profile — "
             "GuildModel ignores them; the largest curve is the profile."
         )
+    return bodies
+
+
+def _rim_checks(bodies: list, real_lenses: list, mirror_on: bool,
+                errors: list) -> None:
+    """A front's bodies against its lenses and the Ghost (Road to 2.0, item
+    9). A separated rim is handed off baked: with the Ghost on and every
+    body to one side of the axis, the other rim is the Ghost's only, and
+    GuildModel would get one rim. And a lens lies in a body, since only a
+    body's lens is cut."""
+    if not bodies:
+        return
+    tol = _CLOSURE_TOL_MM
+    if mirror_on and (all(b.bounds[2] < -tol for b in bodies)
+                      or all(b.bounds[0] > tol for b in bodies)):
+        errors.append(
+            "The other rim is the Ghost's only: select the rim and its lens "
+            "and Mirror (bake) them, so both rims are real for GuildModel.")
+        return
+    for i, lens in enumerate(real_lenses, 1):
+        if not any(b.contains(lens.representative_point()) for b in bodies):
+            errors.append(
+                f"LENS {i} lies outside every OUTLINE body; GuildModel cuts a "
+                "lens only inside the frame.")
 
 
 def validate(
@@ -266,13 +382,38 @@ def validate(
     for c in export:
         by_layer[c.layer] += 1
 
+    # A contour drawn in pieces that meet end to end is one contour, but
+    # GuildModel reads each piece alone: say so once, with the fix, instead of
+    # a gap per piece. First, as it is the first fix: a rim is joined
+    # before its mirror is baked, or the bake copies the pieces too.
+    pieces: set = set()
+    for layer in MACHINED_LAYERS:
+        drawn = [c for c in curves if not c.mirrored and c.layer == layer
+                 and not c.closed]
+        for chain in _closed_chains(drawn):
+            pieces.update(id(c) for c in chain)
+            errors.append(
+                f"{layer.value} contour is drawn in {len(chain)} pieces that "
+                "meet end to end, and GuildModel reads each piece alone: "
+                "select them and Join them into one closed curve.")
+
     outlines = [c for c in export if c.layer == Layer.OUTLINE]
     if workspace_type == "front":
-        _outline_layer_check(outlines, errors, warnings, "Need at least")
+        real_lenses = _area_polys(
+            [c for c in curves if not c.mirrored and c.layer == Layer.LENS])
+        lenses = real_lenses
+        if mirror_on:
+            from ..geometry import mirror_curve
+            lenses = real_lenses + _area_polys(
+                [mirror_curve(c, 0.0) for c in curves
+                 if not c.mirrored and c.layer == Layer.LENS])
+        bodies = _outline_layer_check(outlines, errors, warnings,
+                                      "Need at least", lenses)
         if by_layer[Layer.LENS] < 1:
             errors.append(
                 f"Need at least 1 LENS contour, found {by_layer[Layer.LENS]}."
             )
+        _rim_checks(bodies, real_lenses, mirror_on, errors)
         _origin_checks(outlines, workspace_type, stock_mm, warnings)
         _inlay_checks(export, mirror_on, workspace_type, errors)
     elif workspace_type in ("temple_r", "temple_l"):
@@ -295,7 +436,7 @@ def validate(
                 )
 
     for c in export:
-        if c.layer not in MACHINED_LAYERS:
+        if c.layer not in MACHINED_LAYERS or id(c) in pieces:
             continue
         if not c.closed:
             gap = _endpoint_gap_mm(c)

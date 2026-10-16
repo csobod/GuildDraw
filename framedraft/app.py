@@ -195,7 +195,8 @@ _LAYER_TIPS = {
     Layer.OUTLINE: (
         "The profile GuildModel cuts. The largest closed curve is the profile; "
         "a closed curve inside it is a decorative opening (Hole1…); one outside "
-        "it is ignored. Never mirrored: draw the whole contour."),
+        "it is ignored, unless it holds a lens: a combination frame's separated "
+        "rim. Never mirrored: draw the whole contour, and bake both rims."),
     Layer.LENS: (
         "The lens apertures (Frame Front). Any count: the classic pair, or more "
         "for an aviator. Doubled across the Ghost axis at export."),
@@ -219,7 +220,8 @@ _LAYER_TIPS = {
         "GuildModel cuts it to a depth and on a face it keeps per inlay, the "
         "visible face by default; on a temple that is the anterior, which "
         "View Obverse shows. An inlay inside another is a step; inside "
-        "the HINGE curve, a step in the hinge pocket's floor. It never crosses "
+        "the HINGE curve, a step in the hinge pocket's floor; past the part's "
+        "edge, a step open there (a front-mounted bridge). It never crosses "
         "a LENS, DRILL or HINGE curve or a decorative opening, and two inlays "
         "nest or stay apart. Not mirrored: draw each seat, or Mirror (bake) a "
         "pair."),

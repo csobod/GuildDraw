@@ -98,7 +98,7 @@ def test_open_machined_contour_with_gap_is_error():
 def test_open_contour_within_tolerance_is_warning():
     near_closed = line([(0, 0), (40, 0), (40, 30), (0, 30), (0, 0.05)],
                        layer=Layer.OUTLINE)           # 0.05 mm gap
-    curves = [near_closed, circle(-15, 10, 8), circle(15, 10, 8)]
+    curves = [near_closed, circle(10, 15, 6), circle(30, 15, 6)]
     errors, warnings = validate(curves, mirror_on=False)
     assert errors == []
     assert any("auto-close" in w for w in warnings)
@@ -246,7 +246,7 @@ def test_an_inlay_inside_the_profile_is_quiet():
 
 def test_an_inlay_outside_the_profile_is_an_error():
     errors, _ = validate(front_with(seat(60, 0)), mirror_on=False)
-    assert any("INLAY 1 leaves the OUTLINE profile" in e for e in errors)
+    assert any("INLAY 1 lies off the part" in e for e in errors)
 
 
 def test_an_inlay_never_crosses_a_lens_or_a_drill_hole():

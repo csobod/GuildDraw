@@ -80,8 +80,15 @@ writer: Inlay Fill, View Obverse, the guide sizes in the `.gdraw` (read back
 on open), and the dock's folding sections, committed one item each after
 review. The maker passed on item 6, the drafting round. 855 tests. Next:
 GuildModel's reader of the `guides` key, in a GuildModel session; items 2
-and 4 wait on GuildModel; the release, item 9, comes last, beside
+and 4 wait on GuildModel; the release, item 10, comes last, beside
 GuildModel's.
+
+*2026-10-15, late.* Separated rims evaluated in both apps (item 9):
+GuildDraw's side landed and GuildModel's was handed off, the Ghost in its
+reader first. With it landed the folder catalog's Inlay Fill, PNG export
+through View Obverse, and a quiet face label on trial; the maker's example of
+a bridge mount followed on 2026-10-16. Committed as two commits. 875 tests.
+Next: GuildModel's session.
 
 ---
 
@@ -2291,21 +2298,77 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
    a quiet label in the badge's corner names the face the drawing is seen
    from, a 10 px word in the muted chrome color; the maker keeps it on trial,
    to drop if it is not quiet enough. Three tests.
-9. **Release 2.0.0, both apps together.** The versions in
-   `framedraft/__init__.py` and `pyproject.toml`; `docs/RELEASE-v2.0.0.md`
-   with the 1.4 round's notes folded in (the origin rule, the folder catalog,
-   the layer tooltips) and the INLAY layer; the README's status paragraph and
-   contract list; the USER-GUIDE's version; builds from GitHub Actions; the
-   installer unchanged. The notes say that a 2.0 drawing with inlays does not
-   open in 1.3.x.
+9. **Separated rims (combination frames)**, the maker's item (2026-10-15):
+   acetate rims on a metal bridge and temples, drawn in GuildDraw and built
+   in GuildModel. Evaluated on a bespoke drawing, kept outside both
+   repositories in `Programs/_bespoke/` and never committed or named. In
+   GuildDraw, its rim, a spline and a straight temple edge meeting end to
+   end, read as two unclosed contours; the right rim was the Ghost's only,
+   since OUTLINE is never mirrored at export; a second real rim read as a
+   stray; and Frame Fill filled one rim. GuildModel's intake, run read-only
+   on the file, showed three gaps. Its `.gdraw` reader ignores the Ghost
+   altogether, so a front drawn as a half reaches it with one lens and
+   builds as a base-curve template while GuildDraw's readiness dot says
+   ready; every library design is baked, which is why it never showed. It
+   closes each open piece on its own with a straight chord. And a front is
+   one body, the largest contour, so a second rim is a stray and its lens
+   falls outside the part. The bridge's mount points drawn as HINGE pockets
+   are sound: GuildModel pockets each HINGE shape whole and subtracts its
+   prism from the body already trimmed to the outline, so a pocket that runs
+   past a rim's edge is a step open there. Its floor follows the front's
+   rule, the endpiece thickness less the pocket depth, wherever the pocket
+   sits; the maker's example will say whether a nasal mount wants another
+   reference. The maker's decisions: rims are handed off baked, both real
+   curves; GuildModel builds one front with a body per rim, cut from the
+   same blank; GuildModel's side is a GuildModel session's, handed off in
+   `Programs/HANDOFF-GuildModel-2026-10-15.md`.
+   ✅ **GuildDraw's side landed 2026-10-15.** The validator sorts the OUTLINE
+   into bodies, openings and strays (`_outline_bodies`): of the contours
+   inside no other, the largest is a body, and so is any that holds a lens.
+   A contour drawn in pieces that meet end to end (`_closed_chains`, its
+   ends read from the drawn curve, an arc's from its angles) is one error,
+   reported first, with the fix: Join them. With the Ghost on and every body
+   to one side of the axis, the other rim is the Ghost's only, an error that
+   says to bake; and a lens lies inside a body. INLAY seats may sit on any
+   body. Frame Fill fills the profile and every face that holds a lens, and
+   the Ghost previews a closed contour wholly to one side of a front's axis.
+   The OUTLINE tooltip and the guide's new *Combination frames* section say
+   how. The Frame Library's 54 designs raise no error under the new rules.
+   Eleven tests, among them the join-then-bake flow in the app.
+   **The maker's example, 2026-10-16.** The bespoke drawing, updated: both
+   rims joined and baked, each with its lens and five SCULPT lines, and the
+   bridge's mount as one HINGE shape across the gap, reaching about 4 mm into
+   each rim's nasal end, for a bridge that mounts from behind. A bridge that
+   mounts from the front takes the same shape on INLAY, which GuildModel
+   cuts on the visible face. GuildDraw reads the drawing clean. GuildModel,
+   as it stands, builds one rim and a stray, so the pocket would be cut on one
+   rim only (15 of its 87 mm² overlap the built body), and it reports the
+   castle ready with the second lens outside the body. To let the INLAY seat
+   do what the HINGE pocket does, the validator's seat rule changed: a seat
+   meets the part, and where it runs off a body's edge it is a step open
+   there, as GuildModel already cuts it (its inlay toolpath and model take the
+   seat as drawn); a seat that meets no body is still an error. Three tests.
+   The maker's screenshot of the file in GuildModel shows its partition
+   calling the zones a non-standard layout, which lifts the sculpt; the
+   hand-off asks that each rim partition as a standard half, along with
+   building both rims.
+10. **Release 2.0.0, both apps together.** The versions in
+    `framedraft/__init__.py` and `pyproject.toml`; `docs/RELEASE-v2.0.0.md`
+    with the 1.4 round's notes folded in (the origin rule, the folder catalog,
+    the layer tooltips) and the INLAY layer; the README's status paragraph and
+    contract list; the USER-GUIDE's version; builds from GitHub Actions; the
+    installer unchanged. The notes say that a 2.0 drawing with inlays does not
+    open in 1.3.x.
 
 ## Order
 
-Items 1, 5, 7 and 8 are done, and item 3's writer, ahead of GuildModel's
-reader; item 6 was passed. Item 2 waits on GuildModel reading a front's
+Items 1, 5, 7 and 8 are done, item 3's writer ahead of GuildModel's reader,
+and GuildDraw's side of item 9; item 6 was passed. GuildModel's side of item 9
+opens its next session, the Ghost in its reader first, since that misbuilds
+any front drawn as a half. Item 2 waits on GuildModel reading a front's
 engraving with a face, and item 4 on its bridge decision and anterior bridge
-cut. The release is last, with GuildModel's,
-whose own gates (a shipped-bed redesign and a video) come first.
+cut. The release, item 10, is last, with GuildModel's, whose own gates (a
+shipped-bed redesign and a video) come first.
 
 ---
 

@@ -817,10 +817,14 @@ class FrameScene(QGraphicsScene):
         faces: the face with the largest outer ring is the frame profile, and
         because a nested opening comes back already punched into that face's
         interior, decorative holes — an aviator's bridge keyhole — fall out for
-        free. Rings that don't close leave the perimeter leaking (status
-        ``"leak"``) rather than filling something half-formed. LENS apertures
-        (also real + ghost) are then subtracted."""
+        free. Any other face inside no other that holds a lens is a separated
+        rim of a combination frame (Road to 2.0, item 9) and is filled too; a
+        face holding no lens is a stray, which GuildModel ignores. Rings that
+        don't close leave the perimeter leaking (status ``"leak"``) rather
+        than filling something half-formed. LENS apertures (also real + ghost)
+        are then subtracted."""
         from shapely.geometry import Polygon
+        from shapely.ops import unary_union
 
         outline_lines = self._fill_layer_lines(Layer.OUTLINE)
         if not outline_lines:
@@ -829,8 +833,16 @@ class FrameScene(QGraphicsScene):
         if leak or not faces:
             return None, "leak"
 
-        fill = max(faces, key=lambda f: Polygon(f.exterior).area)
         lens_faces, _ = _polygonize_lines(self._fill_layer_lines(Layer.LENS))
+        shells = [Polygon(f.exterior) for f in faces]
+        tops = [f for f, sh in zip(faces, shells, strict=True)
+                if not any(o is not sh and o.contains(f.representative_point())
+                           for o in shells)]
+        largest = max(tops, key=lambda f: Polygon(f.exterior).area)
+        bodies = [f for f in tops if f is largest or any(
+            Polygon(f.exterior).contains(lf.representative_point())
+            for lf in lens_faces)]
+        fill = unary_union(bodies)
         for lf in lens_faces:
             fill = fill.difference(lf)
         return _shapely_to_qpath(fill), "ok"
@@ -1296,8 +1308,28 @@ class FrameScene(QGraphicsScene):
         if curve.mirrored or curve.layer not in _GHOST_LAYERS:
             return False
         if curve.layer == Layer.OUTLINE and curve.closed:
-            return False
+            # A whole profile is drawn whole. A closed contour wholly to one
+            # side of a front's axis is a separated rim, whose twin the Ghost
+            # previews until the rim is baked (Road to 2.0, item 9).
+            return self._rim_beside_axis(curve)
         return True
+
+    def _rim_beside_axis(self, curve: Curve) -> bool:
+        """True when *curve* lies wholly to one side of a vertical mirror
+        axis: its nodes and handles are (a Bezier stays inside their hull),
+        or a circle's or an arc's whole disc. Never on a temple's axis."""
+        if getattr(self.mirror, "_horizontal", False):
+            return False
+        if curve.kind in ("circle", "arc") and curve.radius and curve.nodes:
+            cx = curve.nodes[0].x
+            xs = [cx - curve.radius, cx + curve.radius]
+        else:
+            xs = [n.x for n in curve.nodes]
+            xs += [h.x for n in curve.nodes for h in (n.cp_in, n.cp_out)
+                   if h is not None]
+        x = self.mirror.x
+        return bool(xs) and (max(xs) < x - _FILL_STITCH_TOL_MM
+                             or min(xs) > x + _FILL_STITCH_TOL_MM)
 
     def _update_ghost_for(self, curve: Curve):
         """Create, update, or remove the ghost for one curve in place.

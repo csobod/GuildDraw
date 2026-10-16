@@ -580,11 +580,13 @@ against the host's system libraries.
 - Units: true mm at 1:1 (`$INSUNITS = 4` by convention).
 - Closed contours: endpoints within 0.1 mm auto-close.
 - Strict layers: `OUTLINE` ≥1 (the largest contour is the profile; closed
-  contours inside it are decorative openings), `LENS` ≥1 (at least one lens
+  contours inside it are decorative openings, and one beside it holding a
+  lens is a combination frame's separated rim), `LENS` ≥1 (at least one lens
   is required; a classic pair is two, but aviators and other shapes may carry
   more), `BRIDGE`/`HINGE` optional, `DRILL` (mirrors with the lens), `REF`
   ignored, `SCULPT` (back-surface), `ENGRAVING` (temples), `INLAY` (2.0: a
-  closed seat inside the profile, nested for steps; never mirrored).
+  closed seat on the part, nested for steps, open where it runs off an
+  edge; never mirrored).
 - Scene is Y-down; DXF is Y-up — Y is negated on export.
 
 ## License
