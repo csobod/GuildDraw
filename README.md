@@ -8,9 +8,15 @@ nothing else.
 Built with Python + PySide6 (Qt 6). Scene units are true millimeters (1 scene
 unit = 1 mm) end to end: what you draw is what gets cut.
 
-**Status: v1.3.1 — stable.** All drafting features are complete and tested,
+**Status: v2.0.0 — stable.** All drafting features are complete and tested,
 and the full hardware round-trip is proven: physical frames have been cut on
-GuildModel from GuildDraw-exported DXF. The 1.3.1 update adds **File ▸ Import
+GuildModel from GuildDraw-exported DXF. The 2.0 round is the drawing side of
+the leap with GuildModel 2.0: an INLAY layer for seats, combination frames
+with two rims on a metal bridge, the HINGE layer become COMPONENT with a
+component library in folders, View Obverse, Inlay Fill, and reference images
+that stay on your computer unless you store them in the design (see *New in
+2.0*). Use it with GuildModel 2.0; GuildModel 1.8.1 skips COMPONENT pockets.
+The 1.3.1 update adds **File ▸ Import
 ▸ SVG…**, so a logo or a colleague's drawing from any editor comes in as exact
 curves at the size you choose, and closes a hidden seam that closed shapes
 from other programs could carry (see *New in 1.3.1*). The 1.3 round serves
@@ -43,7 +49,11 @@ files (see *New in 1.0*).
 - **Snapping**: nodes, handles, midpoints, quadrants, on-curve nearest point,
   mirror axis, and origin.
 - **Face-photo calibration**: load a reference photo, calibrate px-per-mm with
-  two clicks, and design directly over the customer's face.
+  two clicks, and design directly over the customer's face. A photo stays on
+  your computer unless you store it in the design.
+- **Inlays and components**: seats for plaques, laminates and stones on the
+  INLAY layer, and hinge and bridge pockets on COMPONENT from a library you
+  arrange in folders.
 - **OMA/DCS lens-trace interchange**: import a frame tracer's `.oma` file as
   editable LENS geometry ("derive a frame from a traced lens"), export traces
   back to labs/edgers. Round-trips within 0.05 mm.
@@ -60,6 +70,112 @@ files (see *New in 1.0*).
 - **Clean DXF out**: R2000 SPLINE entities (exact Bézier → B-spline, never
   flattened), strict layer vocabulary, per-workspace validation, and batch
   export of all four workspaces in one go.
+
+## New in 2.0
+
+GuildDraw 2.0 ships beside GuildModel 2.0, and the two belong together:
+GuildModel 1.8.1 skips COMPONENT curves without a word, and GuildDraw 1.3.x
+cannot load a tab holding a COMPONENT or INLAY curve. Designs from 1.3 open in
+2.0 as they did.
+
+**What reads differently**
+- **The Ghost is never exported.** GuildModel reads the curves drawn, never
+  the mirror ghost, so the DXF carries exactly the curves drawn, as the
+  `.gdraw` always has. Bake a half-drawn front's twins with Mirror; the
+  readiness dot names each curve without a drawn twin.
+- **A new reference image is not stored in the design** until you click its
+  paperclip. Designs from before 2.0 stored every image, and open so.
+- **y counts upward** in the pointer readout and Point Move, as in the DXF;
+  the Line tool's angle is counter-clockwise and takes a minus sign; the
+  construction guide's crest height is positive above the datum line.
+
+**Inlays**
+- **The INLAY layer** (front and temples): a closed curve is a seat for a
+  plaque, a laminate or a plate, and a curve inside it a step. GuildModel 2.0
+  keeps each seat's depth, face and floor. A seat must meet the part; one
+  that runs off an edge is a step open there. A seat crossing a lens, a drill
+  hole or a component pocket is refused, as are two that overlap without
+  nesting.
+- **Inlay Fill** (Guides panel): a color or an image in each seat, cropped to
+  cover each body; *Tumble bodies* turns each copy so one photo reads as
+  several stones. Saved with the design, printed on the catalog page when
+  asked, never machined.
+
+**Combination frames**
+- **Separated rims**: two real outlines, each holding its lens, built by
+  GuildModel 2.0 as one front with a body per rim. A rim drawn in pieces that
+  meet end to end is one error, with the fix (Join). The bridge's mount is one
+  shape across the gap: COMPONENT when it mounts from behind, INLAY when it
+  mounts from the front.
+
+**Components**
+- **HINGE becomes COMPONENT** for everything that mounts on the posterior;
+  HINGE is read forever. The Component tab replaces the Hinge Pocket tab.
+- **A library in folders.** Create, rename, reorder (drag) and delete
+  folders; Hinges and Bridges start you off. A component placed from a folder
+  carries the folder's name.
+
+**Views and images**
+- **View Obverse** (`V`): the whole tab mirrored left to right, a front's
+  posterior or a temple's anterior. A view only; the corner label names the
+  face, and PNG export follows the view.
+- **Reference images as rows**: an eye (hidden images are out of PNG export
+  and printing), a padlock (place, turn and scale) and a paperclip (stored in
+  the design). Not stored, the design keeps the image's place and a random
+  id, and `~/.guilddraw/image_links.json` on your computer says which file
+  that is; elsewhere the image is listed as *not on this computer* until
+  **Locate…** finds it. Each image keeps its own calibration.
+  *Preferences ▸ General ▸ Clear Image Cache…* deletes the copies unpacked
+  from designs that store their images.
+
+**The handoff**
+- **The origin, shown and checked**: the core line on both temple blanks, and
+  warnings for a temple off it and an outline past the blank.
+- **The blank travels**: each tab's stock guide and the front's pad block are
+  saved in the `.gdraw`, so GuildModel 2.0 seeds a new project's blank from
+  the drawing. The temple blank is its own preference, 170 × 30 mm by
+  default. The construction guide and the free boxing values are saved too.
+- **Layer tooltips** say what GuildModel makes of each layer, ENGRAVING
+  spelled out (filled shape, island, stroke, text centerlines).
+- **The readiness dot checks GuildModel's intake**: two lenses or one, each
+  held whole by its outline; no curve that crosses itself, encloses nothing,
+  or lies on another of its layer.
+- **File ▸ Export ▸ Catalog PDFs for a Folder…**: every design in a folder to
+  a catalog page in one run, setting the Frame Fill and, when asked, the Inlay
+  Fill, with a backup of each design it saves.
+
+**The interface**
+- The Properties panel folds section by section, as GuildModel's.
+- Help ▸ About GuildDraw; Edit ▸ Delete, Move Gizmo and Modify (every
+  operation); a View toggle for every switch, each with its key.
+- Pan with the right mouse button or Space; Fit frames the drawing and its
+  blank; an empty tab says what to draw first; the zoom reads in px/mm; a
+  comma works as a decimal point; sliders show their values.
+- Preferences ▸ General ▸ Prompts turns a silenced question back on;
+  Preferences ask before changing a drawn design's guide sizes.
+- Icons on a selected row keep their ink; spin and combo arrows, list rows
+  and disabled icons are drawn by the theme.
+
+**Fixes in 2.0**
+- Saves go through links, keep the file's permissions, leave a read-only file
+  alone, and ask when the file changed on disk; an unchanged design saves to
+  the same bytes. A part of a file that does not read is left out and named,
+  and Save asks for a new name. A partly read recovery file is kept whole.
+- The photo calibration, the Ghost and the guide sizes no longer carry from
+  one design into the next.
+- Join leaves closed curves and circles alone and wants one layer; Trim,
+  Split, Fillet and Rebuild leave a group alone, and a group survives Join,
+  Close and Offset; node and handle drags wait for 4 px; Mirror (bake) skips
+  a twin that would lie on a drawn curve.
+- DXF import: exact splines to degree 3, the rest fitted within 0.01 mm, a
+  NURBS circle as a circle, plausible units, off and frozen layers left out.
+  SVG import: nested viewBoxes, CSS-hidden classes, Illustrator's 72 per
+  inch. OMA: traces within 0.02 mm, and an import into a front with lenses
+  asks first.
+- Exports start beside the design with its name and refuse an empty tab;
+  Export Every Tab asks before replacing; PNGs record their resolution.
+- Speed: a 1500-node outline's frame fill went from 1.9 s to 7 ms, a half
+  outline with the Ghost from 5.3 s to 24 ms.
 
 ## New in 1.3.1
 
