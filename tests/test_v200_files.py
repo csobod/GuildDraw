@@ -3,6 +3,7 @@ not read is left out and said while the rest opens, numbers that are not
 numbers never reach the drawing or the file, and the OMA trace measures its
 drill holes from the lenses."""
 import gc
+import os
 import json
 import math
 import zipfile
@@ -317,7 +318,8 @@ def test_save_goes_through_a_link_and_keeps_the_files_mode(win, tmp_path):
     win._workspaces[0].add_curve(closed_diamond(50, 0, 10))
     assert win._do_save(str(link))
     assert link.is_symlink()                        # still a link …
-    assert (real.stat().st_mode & 0o777) == 0o664   # … the real file saved, shared
+    if os.name != "nt":                             # (Windows keeps no mode bits)
+        assert (real.stat().st_mode & 0o777) == 0o664   # … the real file saved, shared
     assert (real.parent / "frame.gdraw.bak").exists()
 
 
@@ -526,7 +528,9 @@ def test_a_dropped_file_opens_imports_or_adds(win, tmp_path, monkeypatch, cache_
     photo = _photo(tmp_path, "face.png", 100, 60)
     mime = QMimeData()
     mime.setUrls([QUrl.fromLocalFile(str(dxf))])
-    assert win._dropped_path(mime) == str(dxf)
+    # Qt names a local file with forward slashes on Windows, as its file
+    # dialogs do; the same file either way.
+    assert os.path.normpath(win._dropped_path(mime)) == str(dxf)
     before = len(win._active_ws.doc_curves)
     win._open_dropped(str(dxf))
     assert len(win._active_ws.doc_curves) == before + 1        # imported

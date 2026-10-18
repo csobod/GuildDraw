@@ -282,9 +282,20 @@ def test_hover_ranking_uses_the_coarse_grid():
     pts = [(50 * math.cos(i / 500 * 2 * math.pi), 30 * math.sin(i / 500 * 2 * math.pi))
            for i in range(500)]
     dense = spline(pts, closed=True)
-    t0 = time.perf_counter()
-    for _ in range(10):
-        d = _curve_dist_mm(dense, 55.0, 0.0)
-    per_call = (time.perf_counter() - t0) / 10
+    from framedraft.geometry import point_at_t, t_nearest
+
+    def best_of(fn, n=5):
+        times = []
+        for _ in range(n):
+            t0 = time.perf_counter()
+            fn()
+            times.append(time.perf_counter() - t0)
+        return min(times)
+
+    d = _curve_dist_mm(dense, 55.0, 0.0)
     assert abs(d - 5.0) < 0.05
-    assert per_call < 0.02, per_call                        # was ~37 ms
+    hover = best_of(lambda: _curve_dist_mm(dense, 55.0, 0.0))
+    fine = best_of(lambda: point_at_t(dense, t_nearest(dense, 55.0, 0.0)))
+    # Against the fine search in the same process, not a fixed time: a slow
+    # CI runner took 24 ms where this machine takes 7 (the fine one ~37).
+    assert hover < fine / 2, (hover, fine)

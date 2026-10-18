@@ -2,6 +2,7 @@
 each test names the finding it pins. The validator's own rules are in
 test_validate.py; these are the app's paths."""
 import gc
+import os
 
 import pytest
 from PySide6.QtWidgets import QApplication
@@ -239,7 +240,10 @@ def test_a_grown_name_heals_and_the_old_copies_are_pruned(tmp_path, cache_root):
 
 
 @pytest.mark.parametrize("member, written", [
-    ("images/front_0_..\\..\\evil.png", ".._.._evil.png"),
+    # On Windows a backslash parts the name like a slash, and the bare
+    # "evil.png" is as safe inside the cache.
+    ("images/front_0_..\\..\\evil.png",
+     "evil.png" if os.name == "nt" else ".._.._evil.png"),
     ("images/front_0_CON.png", "_CON.png"),
     ("images/front_0_c:evil.png", "c_evil.png"),
     ("images/front_0_2026-10-17T10:15:22.jpg", "2026-10-17T10_15_22.jpg")])
