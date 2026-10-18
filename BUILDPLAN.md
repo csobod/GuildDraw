@@ -2366,6 +2366,18 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
     only `hinge.svg`, so a 2.0 file saved from 1.3.1 drops the Component tab's
     drawing. Preferences carry two new keys (`last_dir`, `last_image_dir`);
     1.3.1 ignores them.
+    ✅ **GuildDraw's side drafted 2026-10-18.** `docs/RELEASE-v2.0.0.md`
+    (what meets an older app first, then the round by theme; no em-dashes),
+    the README's status paragraph and *New in 2.0*. PySide6 is pinned below
+    6.12, which would raise the macOS floor from 13 to 14.4; the floor
+    moves only by choice, and GuildModel wants the same pin before its
+    build. The first Actions runs found four tests that held on Linux only
+    (a hostile member name, file mode bits and a dropped path on Windows; a
+    fixed timing bound on the Intel Mac) and one fault: Windows' zipfile
+    reads a backslash in a member name as a slash, so a photo named with
+    one on a Mac or Linux did not show there (`_as_member`). All four legs
+    green at `57587a2`; the draft release v2.0.0 carries their seven files.
+    Publishing creates the tag, beside GuildModel 2.0.
 
 11. **The 2.0 bug hunt's GuildDraw findings** (`Programs/HANDOFF-GuildDraw-2026-10-16.md`,
     from a GuildModel session's review of both apps). ✅ **Landed 2026-10-17,
