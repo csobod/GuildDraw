@@ -257,7 +257,10 @@ def test_a_member_name_is_made_safe_and_the_photo_still_opens(
     path = tmp_path / "crafted.gdraw"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("front.svg", _svg_with({"face_images": [{"path": member}]}))
-        zf.write(_png(tmp_path / "src.png"), member)
+        # writestr, not write: write normalizes the name on Windows and
+        # resolves its "..", so the hostile name was never stored.
+        with open(_png(tmp_path / "src.png"), "rb") as f:
+            zf.writestr(zipfile.ZipInfo(member), f.read())
     [face] = load_gdraw(str(path))["front"]["face_images"]
     assert os.path.basename(face.path) == written
     assert os.path.isfile(face.path) and str(cache_root) in face.path

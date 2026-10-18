@@ -226,9 +226,17 @@ def _read_image(src: str) -> tuple[bytes | None, str | None]:
         return None, "could not be read"
 
 
+def _as_member(name: str) -> str:
+    """*name*, a member as a file records it, as zipfile lists it here: on
+    Windows it reads a backslash in a stored name as a slash, so a photo
+    named with one on a Mac or Linux was not found and did not show."""
+    return name.replace("\\", "/") if os.sep == "\\" else name
+
+
 def _carry(zf: zipfile.ZipFile, old: zipfile.ZipFile | None, member: str) -> bool:
     """Copy *member* from the archive being replaced into *zf*, streamed;
     False when it holds none."""
+    member = _as_member(member)
     if old is None or member not in old.namelist():
         return False
     info = zipfile.ZipInfo(member, date_time=_MEMBER_TIME)
@@ -318,6 +326,7 @@ def _extract_fill_image(zf: zipfile.ZipFile, names: list, doc_path: str,
         p = fill["image"] = outside           # looked for beside the document
     try:
         if p.startswith(_IMAGE_PREFIX):
+            p = _as_member(p)
             if p not in names or _member_too_large(zf, p, _MAX_IMAGE_BYTES):
                 fill["image"] = ""            # damaged archive — color fill
                 return
@@ -426,6 +435,7 @@ def _extract_face_images(zf: zipfile.ZipFile, names: list, doc_path: str,
             p = fi.path = outside             # looked for beside the document
         try:
             if p.startswith(_IMAGE_PREFIX):
+                p = _as_member(p)
                 if (p not in names or extracted >= _MAX_PHOTOS_PER_TAB
                         or _member_too_large(zf, p, _MAX_IMAGE_BYTES)):
                     continue                  # left as the member: not shown,
