@@ -27,7 +27,7 @@ from pathlib import Path
 
 from ..document import Layer
 
-TAB_NAMES = ("front", "temple_r", "temple_l", "hinge")
+TAB_NAMES = ("front", "temple_r", "temple_l", "component")
 FILL_TABS = ("front", "temple_r", "temple_l")
 
 
@@ -69,6 +69,7 @@ class BatchCatalogReport:
     ghost_files: list = field(default_factory=list)   # a Ghost on in a temple tab
     verdicts:    list = field(default_factory=list)   # FileVerdict, in order
     backup_dir:  Path | None = None
+    out_dir:     Path | None = None                   # where the PDFs go
     dry_run:     bool = False
     stopped:     bool = False                         # canceled before the end
 
@@ -77,20 +78,32 @@ class BatchCatalogReport:
         return not self.problems
 
     def summary(self) -> str:
-        verb = "would update" if self.dry_run else "updated"
-        lines = [f"{verb} {self.updated}, already set {self.unchanged}, "
-                 f"PDFs {self.pdfs}, problems {len(self.problems)}"
-                 + (" (stopped)" if self.stopped else "")]
+        """In words: it read "updated 0, already set 8, PDFs 8, problems 0",
+        and said nothing of where the PDFs went."""
+        def n(k, one, many):
+            return f"{k} {one if k == 1 else many}"
+        where = f" to {self.out_dir}" if self.out_dir is not None else ""
+        if self.dry_run:
+            first = (f"Report only, nothing written: {n(self.pdfs, 'PDF', 'PDFs')} "
+                     f"would go{where}; {n(self.updated, 'design', 'designs')} "
+                     f"would be updated, {self.unchanged} already "
+                     f"{'has' if self.unchanged == 1 else 'have'} the fill.")
+        else:
+            first = (f"{n(self.pdfs, 'PDF', 'PDFs')} written{where}. "
+                     f"{n(self.updated, 'design', 'designs')} updated; "
+                     f"{self.unchanged} already had the fill.")
+        if self.stopped:
+            first += " Stopped before the end."
+        lines = [first, "No problems." if not self.problems else
+                 f"{n(len(self.problems), 'file needs', 'files need')} attention:"]
+        lines += ["  - " + m for m in self.problems]
         if self.backup_dir is not None and self.backup_dir.exists():
             lines.append(f"Originals backed up to {self.backup_dir}")
         if self.ghost_files:
             lines.append(
-                f"{len(self.ghost_files)} file(s) have the Ghost on in a temple "
-                "tab, so their catalog page shows a flipped second temple "
-                "outline. Run again with the Ghost switched off.")
-        if self.problems:
-            lines.append("Needs attention:")
-            lines += ["  - " + m for m in self.problems]
+                f"{len(self.ghost_files)} file(s) have a temple half-drawn with the "
+                "Ghost on, so their catalog page shows its mirrored other half. "
+                "Run again with the Ghost switched off, or bake the halves.")
         return "\n".join(lines)
 
 
@@ -174,6 +187,7 @@ def run_batch_catalog(win, library, opts: BatchCatalogOptions,
     out = Path(opts.out) if opts.out else library / "catalog"
     cat_cfg = prepare_window(win)
     report = BatchCatalogReport(dry_run=opts.dry_run)
+    report.out_dir = out if opts.pdf else None
     if not files:
         return report
     want = wanted_fill(opts)
@@ -201,8 +215,12 @@ def run_batch_catalog(win, library, opts: BatchCatalogOptions,
             before = {t: fill_record(tab_ws[t]) for t in opts.tabs}
             before_inlay = {t: inlay_record(tab_ws[t]) for t in opts.tabs}
             lens_on = [t for t in FILL_TABS if tab_ws[t].lens_fill_visible]
+            # Only a Ghost that adds to the print: a closed temple outline casts
+            # none since 2.0, and the warning sent every file back for nothing.
             ghost_on = [t for t in ("temple_r", "temple_l")
-                        if tab_ws[t].mirror_enabled]
+                        if tab_ws[t].mirror_enabled and win._ghost_twins(
+                            tab_ws[t], [c for c in tab_ws[t].doc_curves
+                                        if not c.mirrored])]
             ghost_cleared = False
             if ghost_on and opts.temple_ghost_off:
                 # What the Ghost toggle does, applied to a tab that may not
@@ -274,11 +292,14 @@ def run_batch_catalog(win, library, opts: BatchCatalogOptions,
                     backup_original(path, report.backup_dir)
                 tmp = str(path) + ".tmp"
                 try:
-                    win._do_save_gdraw(tmp)
+                    not_carried = win._do_save_gdraw(tmp, carry_from=str(path)) or []
+                    with open(tmp, "r+b") as f:
+                        os.fsync(f.fileno())       # on disk before the swap
                     os.replace(tmp, path)
                 finally:
                     if os.path.exists(tmp):
                         os.unlink(tmp)
+                verdict.notes += [f"image not carried ({n})" for n in not_carried]
             if changed:
                 report.updated += 1
                 verdict.notes.append("fill set" if opts.save

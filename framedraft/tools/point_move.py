@@ -17,6 +17,7 @@ from PySide6.QtGui  import QPen, QColor, QFont, QBrush
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QLineEdit
 
 from .. import theme
+from ..typed import parse_typed
 
 
 _AMBER = "#ffd580"
@@ -68,8 +69,10 @@ class _PointMoveHud(QWidget):
         self.setStyleSheet(theme.build_hud_qss("#pointMoveHud"))
         self._on_commit = on_commit
         self._on_cancel = on_cancel
+        # The fields are y-up, as the status bar's readout and the Holes
+        # fields are: the scene is y-down, and typed Y went the other way.
         self._x.setText(f"{from_x:.3f}")
-        self._y.setText(f"{from_y:.3f}")
+        self._y.setText(f"{-from_y:.3f}")
         self.adjustSize()
         pr = self._view.rect()
         x  = min(vp_x + 14, pr.width()  - self.width()  - 4)
@@ -84,7 +87,7 @@ class _PointMoveHud(QWidget):
         """Reflect hovered snap position in fields (only when neither field has focus)."""
         if not self._x.hasFocus() and not self._y.hasFocus():
             self._x.setText(f"{to_pt.x():.3f}")
-            self._y.setText(f"{to_pt.y():.3f}")
+            self._y.setText(f"{-to_pt.y():.3f}")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -97,13 +100,12 @@ class _PointMoveHud(QWidget):
             super().keyPressEvent(event)
 
     def _commit(self):
-        try:
-            x = float(self._x.text().strip())
-            y = float(self._y.text().strip())
-        except (ValueError, TypeError):
+        x = parse_typed(self._x.text())
+        y = parse_typed(self._y.text())
+        if x is None or y is None:
             return
         if self._on_commit:
-            self._on_commit(QPointF(x, y))
+            self._on_commit(QPointF(x, -y))        # y-up fields → scene
         self.hide()
         self._view.setFocus()
 

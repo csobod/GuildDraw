@@ -52,7 +52,7 @@ from ..document import (
     SplineNode,
     WORKSPACE_LAYERS,
 )
-from ..geometry import sample_curve
+from ..geometry import curve_is_finite, sample_curve
 from .svg import _read_checked_svg
 
 _SVG_NS = "http://www.w3.org/2000/svg"
@@ -85,6 +85,11 @@ _NUM_RE = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 _XFORM_RE = re.compile(r"(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^)]*)\)")
 _LENGTH_RE = re.compile(r"\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*([a-zA-Z%]*)\s*$")
 _HIDDEN_RE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.I)
+# A <style> rule for classes: ".a, .b { … }".
+_CSS_RULE_RE = re.compile(r"([^{}]+)\{([^}]*)\}")
+_CSS_CLASS_RE = re.compile(r"^\s*\.([\w-]+)\s*$")
+# Adobe Illustrator writes its SVG at 72 user units an inch, not CSS's 96.
+_ILLUSTRATOR_RE = re.compile(rb"Generator:\s*Adobe Illustrator|ns_ai\b|adobe\.com/AdobeIllustrator")
 
 Point = tuple[float, float]
 # SVG's matrix(a b c d e f): x' = a·x + c·y + e, y' = b·x + d·y + f
@@ -502,12 +507,55 @@ def _local(tag: str) -> tuple[str, str]:
     return "", tag
 
 
-def _hidden(elem) -> bool:
+def _hidden(elem, hidden_classes: frozenset = frozenset()) -> bool:
     if (elem.get("display") or "").strip() == "none":
         return True
     if (elem.get("visibility") or "").strip() == "hidden":
         return True
+    if hidden_classes and hidden_classes.intersection((elem.get("class") or "").split()):
+        return True
     return bool(_HIDDEN_RE.search(elem.get("style") or ""))
+
+
+def _hidden_classes(root) -> frozenset:
+    """The classes a <style> sheet hides (``.cls { display: none }``): the
+    shapes a file hid that way came in as if shown. Simple class rules only."""
+    out = set()
+    for el in root.iter():
+        if _local(el.tag)[1] != "style" or not el.text:
+            continue
+        for selectors, body in _CSS_RULE_RE.findall(el.text):
+            if not _HIDDEN_RE.search(body):
+                continue
+            for sel in selectors.split(","):
+                m = _CSS_CLASS_RE.match(sel)
+                if m:
+                    out.add(m.group(1))
+    return frozenset(out)
+
+
+def _viewbox_transform(elem) -> Affine | None:
+    """A nested <svg>'s placement of its viewBox in its x, y, width and height
+    (preserveAspectRatio's default, xMidYMid meet, or none). Its content came
+    in at the viewBox's own scale, ten times too large in one file. None when
+    the element has no viewBox or no absolute size."""
+    vb = [float(x) for x in _NUM_RE.findall(elem.get("viewBox") or "")]
+    w, h = _parse_length(elem.get("width")), _parse_length(elem.get("height"))
+    if len(vb) != 4 or vb[2] <= 0 or vb[3] <= 0:
+        return None
+    if w is None or h is None or w[1] == "%" or h[1] == "%" or w[0] <= 0 or h[0] <= 0:
+        return None
+    to_user = {"": 1.0, "px": 1.0}
+    if w[1] not in to_user and w[1] not in _UNIT_MM:
+        return None
+    ww = w[0] * (to_user.get(w[1]) or _UNIT_MM[w[1]] / _MM_PER_PX)
+    hh = h[0] * (to_user.get(h[1]) or _UNIT_MM[h[1]] / _MM_PER_PX)
+    sx, sy = ww / vb[2], hh / vb[3]
+    if (elem.get("preserveAspectRatio") or "").strip().startswith("none"):
+        return _mul(_scale_m(sx, sy), _translate(-vb[0], -vb[1]))
+    k = min(sx, sy)
+    ox, oy = (ww - vb[2] * k) / 2.0, (hh - vb[3] * k) / 2.0
+    return _mul(_translate(ox, oy), _mul(_scale_m(k, k), _translate(-vb[0], -vb[1])))
 
 
 def _layer_label(elem) -> str | None:
@@ -549,6 +597,7 @@ def _document_scale(root) -> tuple[float, bool]:
 class _Walk:
     allowed: set
     active: Layer
+    hidden_classes: frozenset = frozenset()
     curves: list[Curve] = field(default_factory=list)
     refiled: dict[str, int] = field(default_factory=dict)      # recognized name → count
     unsupported: dict[str, int] = field(default_factory=dict)  # tag → count
@@ -612,12 +661,15 @@ def _walk(elem, ctm: Affine, hint: str | None, ctx: _Walk, *, is_root: bool) -> 
     ns, tag = _local(elem.tag)
     if ns not in ("", _SVG_NS):            # sodipodi:namedview and friends
         return
-    if tag in _SKIP or _hidden(elem):
+    if tag in _SKIP or _hidden(elem, ctx.hidden_classes):
         return
     ctm = _mul(ctm, _parse_transform(elem.get("transform")))
     if tag in _CONTAINERS:
         if tag == "svg" and not is_root:   # a nested <svg> places its content at x, y
             ctm = _mul(ctm, _translate(_attr(elem, "x"), _attr(elem, "y")))
+            fit = _viewbox_transform(elem)
+            if fit is not None:
+                ctm = _mul(ctm, fit)
         label = _layer_label(elem)
         if label in ALL_LAYER_NAMES:
             hint = label
@@ -686,14 +738,29 @@ def read_svg(path: str, active_layer: Layer, workspace_type: str = "front") -> S
                          f"<{_local(root.tag)[1]}>, not <svg>.")
 
     mm_per_unit, physical = _document_scale(root)
+    unit_notes = []
+    if not physical and _ILLUSTRATOR_RE.search(data[:4096]):
+        # Illustrator's px is a point: read at 96 an inch, its drawing was
+        # offered at three quarters of its size.
+        mm_per_unit *= 96.0 / 72.0
+        unit_notes.append("An Adobe Illustrator file: read at 72 units an inch, "
+                          "Illustrator's own.")
+    elif any((root.get(k) or "").strip().endswith("%") for k in ("width", "height")):
+        unit_notes.append("The file sizes itself in percent, which names no real "
+                          "size: it was read at 96 px an inch.")
     ctx = _Walk(allowed=set(WORKSPACE_LAYERS.get(workspace_type, list(Layer))),
-                active=active_layer)
+                active=active_layer, hidden_classes=_hidden_classes(root))
     _walk(root, _scale_m(mm_per_unit, mm_per_unit), None, ctx, is_root=True)
+    # A number that overflowed (1e309, a nested scale(1e200)) or is NaN drew
+    # nothing, raised in every paint, and the saved tab read back empty.
+    finite = [c for c in ctx.curves if curve_is_finite(c)]
+    nonfinite = len(ctx.curves) - len(finite)
+    ctx.curves = finite
 
     meta = root.find(f"{{{_SVG_NS}}}metadata")
     native = bool(meta is not None and meta.text and meta.text.lstrip().startswith("{"))
 
-    notes: list[str] = []
+    notes: list[str] = list(unit_notes)
     if ctx.refiled:
         total = sum(ctx.refiled.values())
         names = ", ".join(sorted(ctx.refiled))
@@ -707,6 +774,9 @@ def read_svg(path: str, active_layer: Layer, workspace_type: str = "front") -> S
         for k, v in sorted(ctx.unsupported.items()):
             parts.append(f"{k}×{v}" + (f" ({hints[k]})" if k in hints else ""))
         notes.append("Skipped: " + ", ".join(parts))
+    if nonfinite:
+        notes.append(f"{nonfinite} curve(s) whose numbers are not finite (NaN or "
+                     "too large) were left out.")
     if native:
         notes.append("This is a GuildDraw drawing — File ▸ Open keeps its full state.")
     return SvgDocument(curves=ctx.curves, notes=notes, physical=physical,
@@ -744,7 +814,8 @@ def place_curves(curves: list[Curve], *, scale: float = 1.0,
     cx, cy = (bb[0] + bb[2]) / 2.0, (bb[1] + bb[3]) / 2.0
     tx, ty = center if center is not None else (cx, cy)
     m = _mul(_translate(tx, ty), _mul(_scale_m(scale, scale), _translate(-cx, -cy)))
-    return [_transform_curve(c, m, abs(scale)) for c in curves]
+    placed = [_transform_curve(c, m, abs(scale)) for c in curves]
+    return [c for c in placed if curve_is_finite(c)]     # see read_svg
 
 
 def import_svg(

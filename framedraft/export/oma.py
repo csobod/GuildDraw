@@ -44,7 +44,8 @@ from ..document import Curve, Layer, SplineNode
 from ..geometry import compute_catmull_handles, sample_curve
 
 _R_PER_LINE      = 10     # radii per R record when building (DCS convention)
-_DEFAULT_NODES   = 32     # decimation target — hand-editable node count
+_DEFAULT_NODES   = 32     # decimation start — hand-editable node count
+_TRACE_TOL_MM    = 0.02   # the import's largest miss of a traced point (mm)
 _MIN_TRACE_PTS   = 8      # fewer valid points than this is not a lens shape
 _SAMPLES_PER_SEG = 32     # contour sampling density for curve_to_trace
 
@@ -97,9 +98,11 @@ class OmaJob:
         out: List[float] = []
         for v in vals:
             try:
-                out.append(float(v))
+                f = float(v)
             except ValueError:
                 continue
+            if math.isfinite(f):         # "nan" and "inf" parse as floats
+                out.append(f)
         return out or None
 
     def set_record(self, label: str, value: str) -> None:
@@ -183,8 +186,11 @@ def parse_oma(text: str) -> OmaJob:
             vals = [v.strip() for v in value.split(";")]
             if len(vals) >= 5:
                 try:
+                    x, y, dia = float(vals[2]), float(vals[3]), float(vals[4])
+                    if not all(math.isfinite(v) for v in (x, y, dia)):
+                        raise ValueError("a value is not a finite number")
                     job.drills.append(OmaDrill(
-                        x=float(vals[2]), y=float(vals[3]), dia=float(vals[4]),
+                        x=x, y=y, dia=dia,
                         eye=vals[0] or "B", ftype=vals[1] or "C", raw=vals))
                 except ValueError as e:
                     raise ValueError(f"Bad DRILLE record {value!r}: {e}") from None
@@ -222,8 +228,11 @@ def trace_to_curve(radii_mm: List[float],
 
     Point i sits at angle 360*i/n CCW (y-up OMA frame); scene y is negated.
     Non-positive radii (invalid tracer points) are skipped. The result is
-    decimated to ~target_nodes so it stays hand-editable; the boxing center
-    of the trace lands at the scene origin (callers translate to place it).
+    decimated to ~target_nodes so it stays hand-editable, and given more
+    nodes until no traced point lies over _TRACE_TOL_MM from it: a fixed 32
+    put a tight-cornered rectangle 0.2 mm off, and a re-export to the lab
+    carried the error. The boxing center of the trace lands at the scene
+    origin (callers translate to place it).
     """
     n = len(radii_mm)
     if n < _MIN_TRACE_PTS:
@@ -241,10 +250,22 @@ def trace_to_curve(radii_mm: List[float],
         )
 
     k = min(target_nodes, len(pts))
-    idxs = sorted({int(round(j * len(pts) / k)) % len(pts) for j in range(k)})
-    nodes = [SplineNode(x=pts[i][0], y=pts[i][1]) for i in idxs]
-    compute_catmull_handles(nodes, closed=True)
-    return Curve(kind="spline", layer=layer, nodes=nodes, closed=True)
+    while True:
+        idxs = sorted({int(round(j * len(pts) / k)) % len(pts) for j in range(k)})
+        nodes = [SplineNode(x=pts[i][0], y=pts[i][1]) for i in idxs]
+        compute_catmull_handles(nodes, closed=True)
+        curve = Curve(kind="spline", layer=layer, nodes=nodes, closed=True)
+        if k >= len(pts) or _worst_miss(curve, pts) <= _TRACE_TOL_MM:
+            return curve
+        k = min(len(pts), k + max(8, k // 2))
+
+
+def _worst_miss(curve: Curve, pts: list) -> float:
+    """The largest distance from a traced point to *curve*."""
+    import shapely
+    from shapely.geometry import LineString
+    line = LineString([(x, y) for x, y, _t in sample_curve(curve, 24)])
+    return float(shapely.distance(shapely.points(pts), line).max())
 
 
 # ---------------------------------------------------------------------------

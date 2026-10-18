@@ -3,11 +3,19 @@ from typing import Optional, List
 from enum import Enum
 
 
+# Layer names a drawing may carry for a layer read under another name. HINGE
+# became COMPONENT in 2.0, and every drawing, library entry and DXF made
+# before says HINGE, so the alias is permanent; only COMPONENT is written.
+# GuildModel's core/layers.py keeps the same table.
+LAYER_ALIASES: dict[str, str] = {"HINGE": "COMPONENT"}
+
+
 class Layer(str, Enum):
     OUTLINE   = "OUTLINE"
     LENS      = "LENS"
     BRIDGE    = "BRIDGE"
-    HINGE     = "HINGE"
+    COMPONENT = "COMPONENT"  # a pocket for what mounts on the posterior: hinges,
+                             # bridges, endpieces, bridge bars (HINGE before 2.0)
     DRILL     = "DRILL"      # drill-mount holes (Frame Front; circles → DXF/OMA)
     REF       = "REF"
     SCULPT    = "SCULPT"     # back-surface scallop lines (Frame Front → GuildModel)
@@ -15,31 +23,48 @@ class Layer(str, Enum):
     INLAY     = "INLAY"      # a seat for a plaque, a laminate or a plate (2.0; front
                              # and temples). GuildModel owns its depth and face.
 
+    @classmethod
+    def _missing_(cls, value):
+        """An alias reads as its layer: Layer("HINGE") is COMPONENT, in every
+        reader (the .gdraw, the library, an imported DXF or SVG)."""
+        if isinstance(value, str) and value in LAYER_ALIASES:
+            return cls(LAYER_ALIASES[value])
+        return None
 
-MACHINED_LAYERS = {Layer.OUTLINE, Layer.LENS, Layer.BRIDGE, Layer.HINGE, Layer.DRILL,
+
+MACHINED_LAYERS = {Layer.OUTLINE, Layer.LENS, Layer.BRIDGE, Layer.COMPONENT, Layer.DRILL,
                    Layer.INLAY}
-ALL_LAYER_NAMES = {l.value for l in Layer}
+# Every name a reader recognizes, the aliases included.
+ALL_LAYER_NAMES = {l.value for l in Layer} | set(LAYER_ALIASES)
 
-# Layers whose geometry is duplicated across the mirror axis at DXF export
-# (and therefore ghosted on canvas and previewed while drawing). OUTLINE is
-# handled separately: it spans the full frame, so only an OPEN half ghosts.
-# One set, three users (scene ghosts, draw-tool preview, DXF export) — they
-# drifted apart once and DRILL holes mirrored in the file but not on screen.
-MIRRORED_LAYERS = {Layer.LENS, Layer.HINGE, Layer.SCULPT, Layer.DRILL}
+# Layers the Ghost previews across the mirror axis, on the canvas and while
+# drawing. OUTLINE is handled separately: it spans the full frame, so only an
+# OPEN half ghosts (or, on a front, a closed rim beside the axis). One set for
+# both users, the scene and the draw tool. The Ghost is a drawing aid: since
+# 2.0 nothing exports it, as GuildModel never applies it; the validator names
+# each twin no drawn curve stands for, and the OMA trace pairs lenses and
+# holes on its own.
+MIRRORED_LAYERS = {Layer.LENS, Layer.COMPONENT, Layer.SCULPT, Layer.DRILL}
 
 # Layers available per workspace (strict — layer combo filtered to these).
 # BRIDGE exists in the enum for future GuildModel bridge-path tooling (deferred).
 # INLAY is never mirrored: a seat is drawn where it is cut, and a pair comes
 # from Mirror (bake), the way OUTLINE and ENGRAVING work.
 WORKSPACE_LAYERS: dict[str, list[Layer]] = {
-    "front":    [Layer.OUTLINE, Layer.LENS, Layer.DRILL, Layer.SCULPT, Layer.INLAY,
-                 Layer.HINGE, Layer.REF],
-    "temple_r": [Layer.OUTLINE, Layer.ENGRAVING, Layer.INLAY, Layer.SCULPT, Layer.HINGE,
-                 Layer.REF],
-    "temple_l": [Layer.OUTLINE, Layer.ENGRAVING, Layer.INLAY, Layer.SCULPT, Layer.HINGE,
-                 Layer.REF],
-    "hinge":    [Layer.HINGE,   Layer.REF],
+    "front":     [Layer.OUTLINE, Layer.LENS, Layer.DRILL, Layer.SCULPT, Layer.INLAY,
+                  Layer.COMPONENT, Layer.REF],
+    "temple_r":  [Layer.OUTLINE, Layer.ENGRAVING, Layer.INLAY, Layer.SCULPT,
+                  Layer.COMPONENT, Layer.REF],
+    "temple_l":  [Layer.OUTLINE, Layer.ENGRAVING, Layer.INLAY, Layer.SCULPT,
+                  Layer.COMPONENT, Layer.REF],
+    # The Component tab, where a component is drawn for the library; the
+    # Hinge Pocket tab ("hinge") before 2.0.
+    "component": [Layer.COMPONENT, Layer.REF],
 }
+
+# Workspace names a file may carry for a workspace read under another name:
+# the Component tab was "hinge" (hinge.svg) before 2.0.
+WORKSPACE_ALIASES: dict[str, str] = {"hinge": "component"}
 
 
 @dataclass
@@ -49,6 +74,19 @@ class FaceImage:
     ty: float = 0.0
     rotation: float = 0.0
     opacity: float = 0.7
+    # The photo's own calibration, image px per mm (2.0); None for a photo
+    # never calibrated, or from a file that kept one for the whole design.
+    px_per_mm: Optional[float] = None
+    # Shown on the canvas; fixed in place, turn and scale (2.0).
+    visible: bool = True
+    locked: bool = True
+    # Stored in the design (2.0): the photo goes into the .gdraw and shows on
+    # any computer. Not stored, the file names it by link_id alone, a random
+    # id this computer's image_links table maps to the photo's file, so a
+    # patient's photo never leaves the machine in a design. A file from
+    # before 2.0 stored every photo, and reads so.
+    stored: bool = False
+    link_id: str = ""
 
 
 @dataclass
@@ -137,6 +175,11 @@ class Curve:
     end_angle: Optional[float] = None    # arc end angle (degrees, same convention)
     group_id: Optional[str] = None       # curves sharing a group_id select/move as
                                          # a rigid unit and expose no node editing
+    component_kind: Optional[str] = None # on a COMPONENT curve: the top-level
+                                         # library folder it was placed from
+                                         # ("Hinges", "Bridges"); None when drawn
+                                         # by hand. Saved as "component_kind",
+                                         # since "kind" is the curve's type.
 
 
 @dataclass

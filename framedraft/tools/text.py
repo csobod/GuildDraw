@@ -6,7 +6,7 @@ with anchor coordinates editable for precise placement).
 """
 from PySide6.QtCore import QObject, QPointF, Qt, Signal
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLineEdit,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel, QLineEdit,
 )
 
 from ..document import Layer, TextObject
@@ -16,7 +16,8 @@ from ..fontpicker import FontFilterCombo
 class TextDialog(QDialog):
     """Placement / re-edit dialog for one TextObject."""
 
-    def __init__(self, parent=None, text_obj: TextObject | None = None):
+    def __init__(self, parent=None, text_obj: TextObject | None = None,
+                 obverse: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Engraving Text" if text_obj is None else "Edit Text")
         lay = QFormLayout(self)
@@ -32,6 +33,18 @@ class TextDialog(QDialog):
             "The arrow re-filters\non what's in the box, showing the current "
             "family's siblings.")
         lay.addRow("Font:", self._font_combo)
+        # A font this computer does not have is drawn in a stand-in: said here.
+        self._font_note = QLabel()
+        self._font_note.setObjectName("hintLabel")
+        self._font_note.setWordWrap(True)
+        lay.addRow(self._font_note)
+        self._sync_font_note()
+        changed = getattr(self._font_combo, "family_changed", None)
+        if changed is not None:
+            changed.connect(lambda *_: self._sync_font_note())
+        else:
+            self._font_combo.currentTextChanged.connect(
+                lambda *_: self._sync_font_note())
 
         # Ranges cover what Transform can produce (a 0.1 mm floor, no cap on
         # scale-up or on where a scaled anchor lands); the old 1–50 mm and
@@ -48,8 +61,11 @@ class TextDialog(QDialog):
         self._rot_spin = QDoubleSpinBox()
         self._rot_spin.setRange(-360.0, 360.0)
         self._rot_spin.setSingleStep(5.0)
-        self._rot_spin.setSuffix(" °")
-        self._rot_spin.setToolTip("Positive rotates counter-clockwise.")
+        self._rot_spin.setSuffix("°")
+        self._rot_spin.setToolTip(
+            "Positive rotates counter-clockwise, as the drawing is cut. View "
+            "Obverse is on: on screen the text turns the other way."
+            if obverse else "Positive rotates counter-clockwise.")
         self._rot_spin.setValue(text_obj.rotation if text_obj else 0.0)
         lay.addRow("Rotation:", self._rot_spin)
 
@@ -62,8 +78,9 @@ class TextDialog(QDialog):
         self._y_spin.setDecimals(3)
         self._y_spin.setSuffix(" mm")
         if text_obj:
+            # Y up, as the status bar's readout is; the scene is y-down.
             self._x_spin.setValue(text_obj.anchor_x)
-            self._y_spin.setValue(text_obj.anchor_y)
+            self._y_spin.setValue(-text_obj.anchor_y)
             lay.addRow("Anchor X:", self._x_spin)
             lay.addRow("Anchor Y:", self._y_spin)
 
@@ -76,7 +93,7 @@ class TextDialog(QDialog):
             for key, spin, v in (("size_mm", self._size_spin, text_obj.size_mm),
                                  ("rotation", self._rot_spin, text_obj.rotation),
                                  ("anchor_x", self._x_spin, text_obj.anchor_x),
-                                 ("anchor_y", self._y_spin, text_obj.anchor_y)):
+                                 ("anchor_y", self._y_spin, -text_obj.anchor_y)):
                 self._exact[key] = (spin.value(), v)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
@@ -84,7 +101,24 @@ class TextDialog(QDialog):
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         lay.addRow(btns)
+        # OK waits for some text: an empty OK placed nothing and left the
+        # tool's prompt up.
+        ok = btns.button(QDialogButtonBox.StandardButton.Ok)
+        ok.setEnabled(bool(self._text_edit.text().strip()))
+        self._text_edit.textChanged.connect(
+            lambda t: ok.setEnabled(bool(t.strip())))
         self._text_edit.setFocus()
+
+    def _sync_font_note(self):
+        from ..textpath import font_stand_in
+        family = self._font_combo.current_family()
+        shown = font_stand_in(family)
+        self._font_note.setVisible(bool(shown))
+        if shown:
+            self._font_note.setText(
+                f"“{family}” is not installed on this computer: the text shows "
+                f"and exports in {shown}. GuildModel engraves it in the font "
+                "its own computer has.")
 
     def _value(self, key: str, spin: QDoubleSpinBox) -> float:
         shown, exact = self._exact.get(key, (None, None))
@@ -97,7 +131,7 @@ class TextDialog(QDialog):
             "size_mm":  self._value("size_mm", self._size_spin),
             "rotation": self._value("rotation", self._rot_spin),
             "anchor_x": self._value("anchor_x", self._x_spin),
-            "anchor_y": self._value("anchor_y", self._y_spin),
+            "anchor_y": -self._value("anchor_y", self._y_spin),   # y-up field
         }
 
 
@@ -145,7 +179,9 @@ class TextTool(QObject):
             return
         if self._snap is not None:
             pos = self._snap.snap(pos, [], self._view, use_snap)
-        dlg = TextDialog(self._parent_widget)
+        view = self._view
+        dlg = TextDialog(self._parent_widget, obverse=bool(
+            view is not None and getattr(view, "is_obverse", lambda: False)()))
         accepted = dlg.exec() == QDialog.DialogCode.Accepted
         dlg.deleteLater()        # one use; read below, deleted after this handler
         if not accepted:

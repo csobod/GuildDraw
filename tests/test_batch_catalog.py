@@ -50,11 +50,12 @@ def test_report_summary_names_what_needs_attention(tmp_path):
                            problems=["x.gdraw: fill can't close"],
                            ghost_files=["y.gdraw"], backup_dir=tmp_path)
     s = r.summary()
-    assert s.startswith("updated 2, already set 1, PDFs 3, problems 1")
-    assert "Originals backed up to" in s and "Needs attention" in s
-    assert "Ghost on in a temple tab" in s
+    assert s.startswith("3 PDFs written. 2 designs updated; 1 already had the fill.")
+    assert "Originals backed up to" in s and "1 file needs attention:" in s
+    assert "half-drawn with the Ghost on" in s
     assert not r.ok
-    assert BatchCatalogReport(dry_run=True).summary().startswith("would update 0")
+    assert BatchCatalogReport(dry_run=True).summary().startswith(
+        "Report only, nothing written: 0 PDFs would go")
     assert FileVerdict("a.gdraw", notes=["fill set", "→ a.pdf"]).line() == \
         "ok   a.gdraw: fill set  → a.pdf"
     assert FileVerdict("b.gdraw", ok=False, notes=["bad"]).line().startswith("!!   b.gdraw")
@@ -151,7 +152,7 @@ def test_a_dry_run_writes_nothing(win, library):
     assert not (library / "catalog").exists()
     assert not (library / "_backup").exists()
     assert (library / "a.gdraw").stat().st_mtime_ns == stamp
-    assert report.summary().startswith("would update 1")
+    assert report.summary().startswith("Report only, nothing written: 1 PDF would go")
 
 
 def test_the_pdfs_can_go_elsewhere_and_the_files_can_stay(win, library, tmp_path):
@@ -172,7 +173,7 @@ def test_a_cancel_stops_before_the_next_file(win, library):
         progress=lambda i, n, v: seen.append(v.name),
         should_stop=lambda: len(seen) >= 1)
     assert seen == ["a.gdraw"] and report.stopped
-    assert "(stopped)" in report.summary()
+    assert "Stopped before the end." in report.summary()
 
 
 # ── The dialogs ────────────────────────────────────────────────────────────

@@ -2353,16 +2353,253 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
    hand-off asks that each rim partition as a standard half, along with
    building both rims.
 10. **Release 2.0.0, both apps together.** The versions in
-    `framedraft/__init__.py` and `pyproject.toml`; `docs/RELEASE-v2.0.0.md`
+    `framedraft/__init__.py` and `pyproject.toml` (✅ 2.0.0 since 2026-10-17,
+    with the installer's defaults and the guide's title); `docs/RELEASE-v2.0.0.md`
     with the 1.4 round's notes folded in (the origin rule, the folder catalog,
     the layer tooltips) and the INLAY layer; the README's status paragraph and
     contract list; the USER-GUIDE's version; builds from GitHub Actions; the
     installer unchanged. The notes say that a 2.0 drawing with inlays does not
-    open in 1.3.x.
+    open in 1.3.x, and what else meets an older app (the polish round's diff
+    review): GuildModel 1.8.1 skips COMPONENT curves without a word, so a 2.0
+    drawing or DXF loses its pockets there; GuildDraw 1.3.x fails every tab
+    holding a COMPONENT curve, which is nearly every 2.0 design; 1.3.1 reads
+    only `hinge.svg`, so a 2.0 file saved from 1.3.1 drops the Component tab's
+    drawing. Preferences carry two new keys (`last_dir`, `last_image_dir`);
+    1.3.1 ignores them.
+
+11. **The 2.0 bug hunt's GuildDraw findings** (`Programs/HANDOFF-GuildDraw-2026-10-16.md`,
+    from a GuildModel session's review of both apps). ✅ **Landed 2026-10-17,
+    committed 2026-10-18.** The validator checks exactly the curves saved: GuildModel
+    never applies the Ghost, so the Ghost is never counted. With the Ghost on,
+    a twin no drawn curve stands for is an error with the fix (bake it, or
+    turn the Ghost off): the other lens, the other rim, a COMPONENT or SCULPT
+    curve on one side; a curve on or across the axis is its own twin, and a
+    twin off every OUTLINE contour (a monocle's lens) is let be. The lens
+    rules are GuildModel's intake: two lenses or one, a third refused, one
+    lens in an outline drawn for two refused (`half_drawn_front`, ported), a
+    lens held whole by its body; lens polygons need 1 mm². New errors: a
+    closed curve that crosses itself or encloses no area, a one-node curve, a
+    circle or arc with no radius or angles, two curves of a layer lying one on
+    the other; an open arc's closure is measured from its ends. The DXF now
+    writes the curves drawn, as the `.gdraw` does (the maker's decision is
+    GuildModel's: the Ghost is a drawing aid); the OMA trace still pairs
+    lenses and holes. Mirror (bake) skips a twin that would lie on a curve
+    already drawn or on itself, and a closed curve across the axis. The
+    Component tab's dot is never green. On the file side: `load_svg`
+    type-checks what it reads (geometry that is not what it claims fails the
+    tab; display state falls back to its default); a file that fails while
+    filling the workspaces leaves an empty document with no path; the photo
+    calibration, the Ghost and the guide sizes no longer carry from one
+    document to the next (a file without sizes takes Preferences'); embedded
+    photos keep their own names (a prefix a save added is stripped, old
+    files heal), are stored uncompressed, and the image cache is pruned; a
+    member name that could leave the cache on Windows is refused; a manifest
+    with a byte-order mark opens. Split refuses a circle's center and an end
+    node; guide-size edits mark the design dirty; the snap engine keeps the
+    live curve list; Join leaves closed curves and circles alone (it opened
+    the one and deleted the other); a typed gizmo move follows its arrow in
+    View Obverse; an untouched font box keeps its family; Undo mid-drag drops
+    the drag; a group across a hidden or locked layer is held whole; photos
+    keep their places when one fails to decode; a save keeps the file at its
+    path and fsyncs. The validator waits for a drag's release, a drag tick
+    rebuilds only the fills its layer feeds, a straight polyline is traced at
+    its vertices, and the weight box, Explode and a zero Point Move no longer
+    flood the undo history. The Frame Library's 47 designs stay green as
+    saved; one, with the Ghost forced on, names sculpt lines drawn more than
+    2 mm off their mirror. Not done: starting temple tabs with the Ghost off
+    (the review's "consider"), as the export no longer doubles it.
+    `tests/test_v200_bug_hunt.py` and the validator's own tests.
+12. **View Obverse, a quieter indicator** (the maker, 2026-10-17: the badge
+    was a bit distracting). ✅ **Landed 2026-10-17, committed 2026-10-18.** The chip
+    shows only the face toward the viewer, in the HUD's box and border,
+    without the glyph or the word *Obverse*. Its word and the quiet label's
+    share their place and their size (10 px, the app's family), so the
+    toggle swaps the word and adds or removes the box, and nothing moves.
+    Three tests.
+13. **HINGE becomes COMPONENT** (the maker, 2026-10-17; GuildModel's side
+    done first). ✅ **Landed 2026-10-17, committed 2026-10-18.** `Layer.COMPONENT`, and
+    `LAYER_ALIASES = {"HINGE": "COMPONENT"}` through `Layer._missing_`, so
+    every reader (the `.gdraw`, the library, DXF and SVG import, layer
+    flags) takes HINGE; only COMPONENT is written. The Component tab is
+    workspace `component`, written as `component.svg` with `active_tab`
+    `component`; `hinge.svg` and `hinge` are read forever. Saved prefs move a
+    HINGE layer color and catalog layer choice to COMPONENT. The library is
+    `ComponentLibrary`: folders the maker creates, renames, orders (drag, kept
+    in `components/folders.json`) and deletes (asking when not empty), each
+    entry in one folder; Hinges (the shipped set, moved to
+    `resources/library/components/Hinges/`) and Bridges (empty) are seeded
+    once. A one-time migration moves `~/.guilddraw/library/hinges/*.svg` into
+    Hinges and makes `seeded.json` folder-relative, so a deleted shipped hinge
+    stays deleted. The Library tab is a tree; Save asks for a name and a
+    folder. **The kind:** a component placed from the library carries its
+    folder's name on each COMPONENT curve, written as `"component_kind"`
+    (not `"kind"`, which is the curve's type and which GuildModel's reader
+    takes as line, spline, circle or arc); copy, mirror, undo and the
+    library keep it, and a curve leaving the layer drops it. GuildModel 2.0
+    ignores it; a later GuildModel reads `component_kind`, and the hand-off's
+    rule stands (a kind with "hinge" in it is a hinge, any other a mount, none
+    by place). Read back by GuildModel 2.0's own reader, read-only: a 1.3.1
+    drawing's four HINGE pockets and a 2.0 drawing's two library hinges and
+    a bridge arrive as COMPONENT pockets on the front. Tests isolate the
+    library in a scratch folder. `tests/test_component_layer.py`,
+    `tests/test_shipped_defaults.py`.
+
+14. **The 2.0 polish round** (the maker, 2026-10-17: "one last, long … bug
+    hunt", the interface first). ✅ **Landed 2026-10-17/18, committed 2026-10-18.**
+    Seven read-only reviews: the main window, the dialogs and flows, the
+    tools, the files, the canvas and its speed, the round's own diff, and
+    GuildModel's multi-lens question (item 15). About 190 findings; all are
+    done but the four under *Not done*.
+    - **The window.** Spin and combo arrows, list rows, separators and
+      disabled icons drawn by the theme; menus with mnemonics, Help ▸ About,
+      Edit ▸ Delete, Move Gizmo and Modify (every operation, a hidden button's
+      too), View toggles for every switch with their keys; Title Case
+      dialogs; plain open, save and export errors naming the `.bak`; the
+      unsaved prompt names the design and the action; deletes default to No.
+      An empty tab says what to draw first; the zoom reads in px/mm (as
+      GuildModel's); the readiness tooltip lists every gap and shows with
+      tooltips off; sliders show their values; the Layers tree takes the
+      spare height; the Holes sub-tab is the front's; a wider minimum window.
+    - **The canvas.** Pan with the right button or Space; Fit frames the
+      drawing and the stock guide; each tab refits after an Open; the readout
+      and Point Move are y-up, as the DXF; the Line tool's angle is
+      counter-clockwise, takes a minus and, in View Obverse, is the screen's,
+      as are Transform's and an arc's direction; a comma is a decimal point;
+      a double-click that ends a tool inserts no node; Ctrl+click takes a
+      group whole; a dimension's hit zone is in pixels; node and handle
+      drags wait for 4 px; a smooth handle's sibling keeps its length; grid
+      snap only while the grid shows; E reaches an arc's real end, within
+      the snap reach, on shown layers; Mirror Close refuses far ends and a
+      curve across the axis; Join wants one layer and says what it moved;
+      Trim, Split, Fillet and Rebuild leave a group alone; group and kind
+      survive Join, Close and Offset; a tool on a hidden or locked layer asks
+      first; a library part's foreign layers land on REF; a text stays on
+      ENGRAVING or REF; repeated pastes step; bookmarks keep the Ghost; the
+      fills pause instead of switching off; the frame fill keeps lens
+      openings with LENS hidden; the photo drags through guides and fills; ED
+      is the effective diameter; frame width reads true for an asymmetric
+      outline and a monocle; each reference photo keeps its own calibration.
+    - **The construction guide.** The arms hang from the crest; crest height
+      is positive above the datum line, the optical convention (it was
+      positive down; nothing saved it before, so no file changes meaning).
+      Crest height, crest width, angle height and the free boxing A/B/DBL are
+      saved with the design under `guides` (`construction`, `boxing`; GuildModel's
+      reader takes `stock` and `pad` and passes the rest), mark it unsaved,
+      and reset on New. Snapped with no lens, the boxing read-outs say "—".
+    - **Files.** A curve, dimension, text or bookmark that does not read is
+      left out and named, and the rest of the tab opens (Save asks for a new
+      name); non-finite numbers are refused by every importer and by the
+      writer; a partly read recovery file is kept whole; a recovery older
+      than its file's last save opens without the path. Saves go through
+      links, keep the file's mode, refuse a read-only file, ask when the file
+      changed on disk, write the `.bak` through a temporary file, use a short
+      temporary name, and carry an image the save cannot read (or whose cache
+      copy is gone) over from the file replaced, naming what it could not.
+      A path in a file is never followed outside its folder. A member that is
+      not an image never reaches the cache; 16 photos a tab, 120 Mpx a photo,
+      one decode per file; a photo over 64 MB is refused when chosen and
+      carried, never dropped. Fixed member dates: an unchanged design saves
+      to the same bytes. Preferences: written whole, a wrong-typed value
+      falls back to its default, a damaged file is kept aside and said once.
+      Preferences ask before changing a drawn design's guide sizes and
+      switches ("for New Designs"). DXF import: exact splines of degree 1 to
+      3, others fitted within 0.01 mm with no node cap, a NURBS circle as a
+      circle, one curve per bulged polyline, upright mirrored blocks, each
+      block entity on its own layer, units when plausible, off and frozen
+      layers left out, block depth and size capped. SVG import: nested
+      viewBoxes, CSS-hidden classes, Illustrator at 72 an inch, percent sizes
+      noted. OMA: traces within 0.02 mm, DRILLE measured from the lenses'
+      center line, export from any tab, an import into a front with lenses
+      asks. Exports start beside the design with a name, refuse an empty
+      tab, check a suffixed name, write through temporary files; Export
+      Every Tab asks before replacing; PNGs record their dpi and leave the
+      selection out; the SVG export outlines text with hairlines; the 1:1
+      print measures what it shows for cropping and carries the templates'
+      ruler; a dropped file opens, imports or becomes a photo; a stand-in
+      font is named; the folder catalog run says where its PDFs went.
+    - **Speed.** The validator traces curves to 0.02 mm (not 16 samples a
+      segment), checks a twin at a few hundred points instead of an exact
+      Hausdorff distance, and caches its traces per call; the fills flatten
+      to 0.01 mm and snap free ends only. A 1500-node spline outline's fill
+      went from 1.9 s to 7 ms, a half outline with the Ghost from 5.3 s to
+      24 ms; the Frame Library's 46 designs validate in 0.2 s, all green as
+      saved. Tab arrival rebuilds the Ghost only when it changed; the node
+      dots lost their paint override.
+    - **Not done.** The inlay fill rebuilds every body each tick (24 ms at 200
+      bodies: wants a per-body cache); the image cache never prunes content
+      folders by itself (item 16 gives the maker Clear Image Cache…); the
+      library's Replace writes in place; a photo name that looks
+      like a member prefix (`front_2_x.jpg`) is accepted as is.
+    Tests: `tests/test_v200_polish.py`, `test_v200_canvas.py`,
+    `test_v200_files.py`, `test_v200_prefs.py`, `test_dxf_import_v200.py`,
+    and additions across the suite (1072 tests, offscreen).
+15. **More than two lenses** (the maker, 2026-10-17: a third lens or more
+    should not be refused, and if the fix needs sweeping GuildModel changes,
+    it waits for v2.5). The polish round's GuildModel review found the
+    common case is not sweeping: with the eyes the outermost pair and any
+    other lens a secondary aperture in a one-piece front (a bridge lens, a
+    shield's center piece, four lenses in a row), GuildModel's geometry,
+    kernels, CAM, verdict and two-sided machining already loop over every
+    aperture, and the lift is about one GuildModel session and half a
+    GuildDraw one (the validator's rule, the OMA export of the eyes, docs).
+    One silent defect comes first: GuildModel `relief/edges.py:81`
+    (`ring_for`) takes `lens_os` as the second ring from the right, so with
+    a third lens the anterior bezel and every OS edge feature cut round the
+    wrong ring; OS must be the leftmost ring. Split eyes, a rim holding
+    several lenses, three rims and per-lens settings need eyes as groups and
+    a lens role on LENS curves: the v2.5 design (the review's section 4).
+    **Waiting on the maker:** the narrow lift for 2.0, or all of it at 2.5.
+    Until then GuildDraw refuses a third lens, as GuildModel's intake does.
+16. **Reference images on the Canvas tab** (the maker, 2026-10-18: rows like
+    layers, and the maker decides whether a patient's photo travels in the
+    file). ✅ **Landed and committed 2026-10-18.**
+    - **Three dead controls first.** A click-through of every button and
+      action found Add Image… dead (`clicked` passed `checked=False` to
+      `_add_face`'s new `path`), View ▸ Properties Panel raising on every
+      click (`triggered` bound to the dock's C++ `setVisible` took the
+      no-argument overload) and Reset All Layer Colors raising at BRIDGE,
+      which has no row. All three came from item 14; the suite called the
+      handlers, never the controls. `tests/test_every_control_answers.py` now
+      presses every enabled button and action in an empty window and in a
+      design with a photo and a selection.
+    - **The rows.** A tree like the Layers panel: name, eye, padlock and
+      paperclip; Add Image…, Locate… and Remove above it; opacity and
+      rotation below. The padlock now holds the place, turn and scale (the
+      Scale field, the rotation and the 2-point tool, refused at its first
+      click); a new image starts unlocked, to be placed, turned and
+      calibrated, then locked (the maker, 2026-10-18). The eye hides an image
+      from PNG export, printing and the calibration tool. Both are saved.
+    - **Stored or not.** An image is not stored unless the paperclip stores
+      it, after a question with Don't ask again (Preferences ▸ General ▸
+      Prompts brings it back, as GuildModel's prompts). Not stored, the file
+      carries its place and a random id; `framedraft/image_links.py` keeps
+      `~/.guilddraw/image_links.json`, id to file, written only by Add,
+      Locate… and the copy saved when an image stops being stored. A file
+      names an id, never a path, so neither the V1 privacy rule nor the
+      crafted-file rule bends. An image this computer does not have is
+      listed as *Reference N — not on this computer* for Locate…, which puts
+      it back at its place and scale. Unstoring the only copy (an image from
+      another maker's file) asks for a copy on disk first. Files before 2.0
+      read as stored. The autosave and the .svg save follow the same rule.
+    - **Selected rows.** Icons on a selected row of a list or tree were
+      tinted by the highlight until they nearly vanished (the Layers panel
+      too); `make_icon` takes a selected color.
+    - **The image cache.** Preferences ▸ General ▸ Image Cache shows its size
+      and **Clear Image Cache…** deletes it, all but the files the open
+      design shows (a Save As takes a stored image from its copy). Removing a
+      copy once no saved design uses it was passed over: knowing that means
+      searching the maker's disks for designs (the maker, 2026-10-18).
+    - **The Canvas tab at the dock's least width.** Unwrapped, the
+      calibration status for no image ("Add a reference image first…") made
+      the tab 430 px wide against the dock's 348, and it scrolled sideways;
+      it wraps. A test holds every dock tab inside the dock's least width.
+    Tests: `tests/test_reference_images.py` (15) and
+    `tests/test_every_control_answers.py` (5).
 
 ## Order
 
-Items 1, 5, 7 and 8 are done, item 3's writer ahead of GuildModel's reader,
+Items 11, 12, 13, 14 and 16 landed 2026-10-17/18 and were committed together
+after the maker's review, 2026-10-18; item 15 waits on the maker's decision. Items 1, 5, 7 and 8 are done, item 3's writer ahead of GuildModel's reader,
 and GuildDraw's side of item 9; item 6 was passed. GuildModel's side of item 9
 opens its next session, the Ghost in its reader first, since that misbuilds
 any front drawn as a half. Item 2 waits on GuildModel reading a front's

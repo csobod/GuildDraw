@@ -1,9 +1,11 @@
 import copy
+import dataclasses
 import datetime
 import json
 import math
 import os
 import re
+import shutil
 import sys
 import time
 import uuid
@@ -32,7 +34,7 @@ from . import theme
 from .canvas.items import CurveItem
 from .canvas.dim import DimItem
 from .canvas.measure_bar import MeasureBar
-from .canvas.obverse_badge import ObverseBadge, QuietFaceLabel
+from .canvas.obverse_badge import CanvasHint, ObverseBadge, QuietFaceLabel
 from .collapsible import CollapsibleBox
 from .canvas.readiness_dot import ReadinessDot, readiness_state
 from .canvas.scene import (FrameScene, TextItem, DEFAULT_LENS_FILL_TOP,
@@ -40,19 +42,20 @@ from .canvas.scene import (FrameScene, TextItem, DEFAULT_LENS_FILL_TOP,
                            DEFAULT_LENS_FILL_INTENSITY, DEFAULT_INLAY_FILL_COLOR,
                            DEFAULT_INLAY_FILL_OPACITY, deepen_tint,
                            intensity_from_slider, slider_from_intensity,
-                           LENS_FILL_INTENSITY_MIN, LENS_FILL_INTENSITY_MAX,
-                           _GHOST_LAYERS)
+                           LENS_FILL_INTENSITY_MIN, LENS_FILL_INTENSITY_MAX)
 from .canvas.snapping import SnapEngine
 from .calibration import CalibTool
 from .construction import ConstructionGuides, BoxingGuide, RectGuide
 from . import prefs as _prefs_mod
 from . import bpi_tints as _bpi_tints
+from . import image_links
 from .document import (
     Layer, Calibration, MirrorAxis, FormingMetadata, MachinedBridge, FaceImage,
     Curve, SplineNode, ControlPoint, DimLine, WORKSPACE_LAYERS,
     BevelSpec, BEVEL_PRESETS,
 )
-from .geometry import mirror_curve, circle_to_spline, arc_to_spline
+from .geometry import (mirror_curve, circle_to_spline, arc_to_spline, sample_curve,
+                       drop_end_handles)
 from .tools.draw import DrawTool
 from .tools.edit import EditTool
 from .tools.dim import DimTool
@@ -140,7 +143,7 @@ _TOOLBAR_SECTIONS = [
         ("spline",       "Spline",                  True),
         ("circle",       "Circle",                  True),
         ("arc",          "Arc",                     True),
-        ("arc_sec",      "Arc (3-point)",           True),
+        ("arc_sec",      "Arc (Start–End–Center)",  True),
         ("fillet",       "Fillet",                  True),
         ("dim",          "Dim",                     True),
         ("text",         "Text",                    True),
@@ -151,24 +154,24 @@ _TOOLBAR_SECTIONS = [
         ("point_move",   "Point Move",              True),
     ]),
     ("Guides and Snapping", [
-        ("ghost",        "Ghost (mirror toggle)",   True),
-        ("guides",       "Guides",                  True),
+        ("ghost",        "Ghost",                   True),
+        ("guides",       "Construction Guides",     True),
         ("snap",         "Snap",                    True),
         ("snap_palette", "Snap Palette",            True),
         ("grid",         "Grid",                    True),
         ("smooth",       "Smooth Handles",          True),
-        ("boxing",       "Boxing",                  True),
-        ("stock",        "Stock",                   True),
-        ("pad",          "Pad",                     True),
+        ("boxing",       "Boxing Guide",            True),
+        ("stock",        "Stock Guide",             True),
+        ("pad",          "Pad Guide",               True),
         ("obverse",      "View Obverse",            True),
     ]),
     ("Operations", [
-        ("mirror",       "Mirror (bake)",           True),
-        ("mirror_close", "Mirror-Close",            True),
+        ("mirror",       "Mirror (Bake)",           True),
+        ("mirror_close", "Mirror Close",            True),
         ("copy_temple",  "Temple Copy",             True),
         ("join",         "Join",                    True),
-        ("snap_node",    "Snap Node",               True),
-        ("split",        "Split",                   True),
+        ("snap_node",    "Snap Node to Endpoint",   True),
+        ("split",        "Split at Node",           True),
         ("explode",      "Explode",                 True),
         ("fit",          "Fit",                     True),
     ]),
@@ -182,7 +185,7 @@ _WS_ONLY_ACTIONS = {
     "boxing":      ("front",),
     "pad":         ("front",),
     "copy_temple": ("temple_r", "temple_l"),
-    # A front or a temple has two faces to see; a hinge pocket is cut, and
+    # A front or a temple has two faces to see; a component is cut, and
     # drawn, from one side only.
     "obverse":     ("front", "temple_r", "temple_l"),
     # ENGRAVING only exists in temple workspaces (WORKSPACE_LAYERS)
@@ -198,17 +201,21 @@ _LAYER_TIPS = {
         "it is ignored, unless it holds a lens: a combination frame's separated "
         "rim. Never mirrored: draw the whole contour, and bake both rims."),
     Layer.LENS: (
-        "The lens apertures (Frame Front). Any count: the classic pair, or more "
-        "for an aviator. Doubled across the Ghost axis at export."),
+        "The lens apertures (Frame Front): two, or one for a monocle. The Ghost "
+        "previews the other eye, but GuildModel reads only the lenses drawn: "
+        "bake a twin with Mirror."),
     Layer.DRILL: (
-        "Drill-mount holes (Frame Front): circles, doubled across the Ghost "
-        "axis at export, and written to an OMA trace as DRILLE."),
+        "Drill-mount holes (Frame Front): circles, written to an OMA trace as "
+        "DRILLE and paired there across the Ghost axis. GuildModel does not "
+        "read them."),
     Layer.SCULPT: (
-        "Back-surface section cuts for GuildModel's sculpting. Doubled across "
-        "the Ghost axis at export."),
-    Layer.HINGE: (
-        "The hinge pocket GuildModel cuts, from the hinge library. On the "
-        "front, doubled across the Ghost axis at export."),
+        "Back-surface section cuts for GuildModel's sculpting. The Ghost "
+        "previews them across the axis; GuildModel reads only those drawn."),
+    Layer.COMPONENT: (
+        "A pocket for what mounts on the posterior: a hinge, a bridge, an "
+        "endpiece, a bridge bar. GuildModel cuts each closed curve as a "
+        "pocket. Place one from the Library; the Ghost previews its twin, and "
+        "GuildModel reads only those drawn. HINGE before 2.0."),
     Layer.ENGRAVING: (
         "What GuildModel engraves on a temple (1.8.1 and later). A closed drawn "
         "curve is a filled shape; a closed curve inside it is an island left "
@@ -220,9 +227,9 @@ _LAYER_TIPS = {
         "GuildModel cuts it to a depth and on a face it keeps per inlay, the "
         "visible face by default; on a temple that is the anterior, which "
         "View Obverse shows. An inlay inside another is a step; inside "
-        "the HINGE curve, a step in the hinge pocket's floor; past the part's "
+        "a COMPONENT curve, a step in the pocket's floor; past the part's "
         "edge, a step open there (a front-mounted bridge). It never crosses "
-        "a LENS, DRILL or HINGE curve or a decorative opening, and two inlays "
+        "a LENS, DRILL or COMPONENT curve or a decorative opening, and two inlays "
         "nest or stay apart. Not mirrored: draw each seat, or Mirror (bake) a "
         "pair."),
     Layer.REF: "Reference geometry: never exported, and GuildModel ignores it.",
@@ -277,7 +284,7 @@ _HOTKEY_ACTION_DEFS = [
     ("spline",       "Spline tool"),
     ("circle",       "Circle tool"),
     ("arc",          "Arc tool"),
-    ("arc_sec",      "Arc 3-point tool"),
+    ("arc_sec",      "Arc (Start–End–Center) tool"),
     ("fillet",       "Fillet tool"),
     ("dim",          "Dim tool"),
     ("trim",         "Trim tool"),
@@ -296,6 +303,163 @@ _HOTKEY_ACTION_DEFS = [
 
 # A hotkey as a tooltip names it, "(O)" or "(Ctrl+B)", after the tool's name.
 _TIP_KEY = re.compile(r"\s*\((?:(?:Ctrl|Shift|Alt|Meta)\+)*[A-Z0-9][A-Za-z0-9]*\)\s*$")
+
+
+# The workspaces' names as their tabs show them, by workspace type.
+_TAB_TITLES = {"front": "Frame Front", "temple_r": "Temple R",
+               "temple_l": "Temple L", "component": "Component"}
+
+
+def _and_list(names) -> str:
+    """'A', 'A and B', 'A, B and C': a list said in a sentence."""
+    names = list(names)
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _open_error_text(path: str, reason) -> str:
+    """What to say when *path* cannot be opened: which file, the likely
+    cause, the version a save kept beside it when there is one, and the
+    reader's own words last."""
+    import datetime
+    name = os.path.basename(path)
+    text = (f"{name} could not be opened. It is not a GuildDraw design, or it "
+            "is damaged: a copy that was cut short, for example.")
+    bak = path + ".bak"
+    if os.path.isfile(bak):
+        when = datetime.datetime.fromtimestamp(
+            os.path.getmtime(bak)).strftime("%Y-%m-%d %H:%M")
+        text += (f"\n\nThe version before its last save is kept beside it as "
+                 f"{name}.bak ({when}). To use it, copy it, rename the copy to "
+                 f"end in {os.path.splitext(name)[1]}, and open that.")
+    return text + f"\n\nTechnical detail: {reason}"
+
+
+def _write_error_text(what: str, path: str, reason) -> str:
+    """What to say when *what* ("save", "export the DXF") could not be
+    written to *path*: nothing on disk changed, the likely cause, the way
+    on, and the system's own words last."""
+    folder = os.path.dirname(os.path.abspath(path)) or path
+    if isinstance(reason, ValueError):
+        # Not the folder: the writer refused a value (a NaN from an import).
+        cause = ("The design holds a value that cannot be written (a number "
+                 "that is not a number, perhaps from an import): undo the "
+                 "change that brought it in, then try again.")
+    else:
+        cause = ("The folder may be read-only, full, or not yours to write "
+                 "to: choose another folder.")
+    return (f"GuildDraw could not {what} as {os.path.basename(path)} in "
+            f"{folder}. Nothing there was changed.\n\n{cause}"
+            f"\n\nTechnical detail: {reason}")
+
+
+def _slider_row(slider, fmt) -> "QWidget":
+    """*slider* with its value beside it, as *fmt*(value) says it: no slider
+    in the panel showed its value."""
+    row = QWidget()
+    lay = QHBoxLayout(row)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(8)
+    label = QLabel(fmt(slider.value()))
+    label.setMinimumWidth(label.fontMetrics().horizontalAdvance("100%  "))
+    label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    slider.valueChanged.connect(lambda v: label.setText(fmt(v)))
+    lay.addWidget(slider, 1)
+    lay.addWidget(label)
+    slider.value_label = label           # for tests and enabled state
+    return row
+
+
+def _is_guilddraw_svg(path: str) -> bool:
+    """Whether *path* is a GuildDraw drawing (it carries the metadata block)
+    rather than an SVG from another program, to import."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(1 << 16)
+    except OSError:
+        return False
+    return b"<metadata" in head and b'"curves"' in head
+
+
+def _sibling_tmp(path: str) -> str:
+    """A new, empty temporary file beside *path*, under a short name: the
+    "<name>.tmp" sibling of a name near the 255-byte limit was too long, and
+    the save blamed the folder."""
+    import tempfile
+    folder = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".guilddraw-", suffix=".tmp")
+    os.close(fd)
+    return tmp
+
+
+def _give_default_mode(path: str) -> None:
+    """The mode a new file gets from the umask: mkstemp makes it 0600."""
+    if os.name != "posix":
+        return
+    mask = os.umask(0)
+    os.umask(mask)
+    try:
+        os.chmod(path, 0o666 & ~mask)
+    except OSError:
+        pass
+
+
+def _fsync_folder(path: str) -> None:
+    """POSIX: the rename that put *path* in place, on disk."""
+    if not hasattr(os, "O_DIRECTORY"):
+        return
+    try:
+        fd = os.open(os.path.dirname(os.path.abspath(path)),
+                     os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def _atomic_copy(src: str, dst: str) -> None:
+    """Copy *src* over *dst* through a temporary file and one replace."""
+    tmp = _sibling_tmp(dst)
+    try:
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _atomic_write_result(path: str, write):
+    """_atomic_write, handing back what *write* returned."""
+    out = []
+    _atomic_write(path, lambda tmp: out.append(write(tmp)))
+    return out[0] if out else None
+
+
+def _atomic_write(path: str, write) -> None:
+    """Have *write(tmp_path)* write a file, then put it at *path* in one
+    replace, fsynced: an export that failed half-way left a cut-short file
+    over the good one."""
+    target = os.path.realpath(path)
+    tmp = _sibling_tmp(target)
+    try:
+        write(tmp)
+        with open(tmp, "r+b") as f:
+            os.fsync(f.fileno())
+        if os.path.exists(target):
+            try:
+                shutil.copymode(target, tmp)
+            except OSError:
+                pass
+        else:
+            _give_default_mode(tmp)
+        os.replace(tmp, target)
+        _fsync_folder(target)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def _tip_with_key(tip: str, key: str) -> str:
@@ -341,9 +505,11 @@ def _matches_key_event(seq, event) -> bool:
 
 
 class CanvasView(QGraphicsView):
-    """QGraphicsView: wheel-zoom, middle-click pan, tool event routing."""
+    """QGraphicsView: wheel-zoom, pan (middle- or right-drag, or Space with
+    the left button), tool event routing."""
 
     zoom_changed = Signal(int)  # current zoom as integer percent (100 = 100%)
+    released     = Signal()     # after any mouse release: a drag, if any, is over
 
     _MIN_ZOOM = 0.01    # 1%
     _MAX_ZOOM = 100.0   # 10,000%
@@ -359,7 +525,14 @@ class CanvasView(QGraphicsView):
         self._draw_tool:  DrawTool  | None = None
         self._dim_tool    = None
         self._pan_active = False
+        self._pan_button = Qt.MouseButton.NoButton   # the button that pans
         self._pan_start = QPointF()
+        self._space_held = False     # Space down: the left button pans
+        # The last press went to a tool. The second half of a double-click
+        # whose first press finished the tool (a Line closed on its first
+        # node, an Arc's last click) arrived in Select mode and inserted a
+        # node into the curve under it.
+        self._press_to_tool = False
         self._delete_callback = None
         self._insert_node_callback = None
         self._snap_to_endpoint_callback = None
@@ -408,6 +581,7 @@ class CanvasView(QGraphicsView):
         # quiet label names the face in the default view, in the same corner.
         self.obverse_badge = ObverseBadge(self)
         self.face_label = QuietFaceLabel(self)
+        self.empty_hint = CanvasHint(self)
         self._default_face = ""
 
     # ------------------------------------------------------------------
@@ -597,6 +771,7 @@ class CanvasView(QGraphicsView):
         self._reposition_measure_bar()
         self.obverse_badge.reposition()
         self.face_label.reposition()
+        self.empty_hint.reposition()
         self._ensure_scroll_room()
 
     def _ensure_scroll_room(self):
@@ -632,6 +807,13 @@ class CanvasView(QGraphicsView):
     def zoom_by(self, factor: float):
         """Scale the view by *factor*, clamped to [_MIN_ZOOM, _MAX_ZOOM]."""
         current = self.zoom()
+        if not (math.isfinite(current) and current > 0.0):
+            # A view a non-finite rectangle was fitted to: back to 1 px/mm
+            # (round(NaN) raised here, and every later open in the window too).
+            self.resetTransform()
+            current = 1.0
+        if not math.isfinite(factor) or factor <= 0.0:
+            factor = 1.0
         target  = max(self._MIN_ZOOM, min(self._MAX_ZOOM, current * factor))
         f = target / current
         if abs(f - 1.0) > 1e-9:
@@ -679,10 +861,23 @@ class CanvasView(QGraphicsView):
         """The badge's and the quiet label's colors, after a theme change."""
         self.obverse_badge.refresh_theme()
         self.face_label.refresh_theme()
+        self.empty_hint.refresh_theme()
+
+    def set_empty_hint(self, text: str | None):
+        """Show *text* centered on the canvas, or hide the hint (None)."""
+        if text:
+            self.empty_hint.setText(text)
+            self.empty_hint.show()
+            self.empty_hint.reposition()
+        else:
+            self.empty_hint.hide()
 
     def fit_view(self, rect):
         """fitInView, then re-clamp into the wheel-zoom bounds — a tiny (or
         huge) scene rect must not land outside [_MIN_ZOOM, _MAX_ZOOM]."""
+        if not all(math.isfinite(v) for v in (rect.x(), rect.y(),
+                                               rect.width(), rect.height())):
+            return                       # nothing a view can be fitted to
         self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
         self.zoom_by(1.0)
 
@@ -708,8 +903,25 @@ class CanvasView(QGraphicsView):
             self.verticalScrollBar().value() + round(after.y() - vp_pos.y()))
         event.accept()
 
+    def _pans(self, event) -> bool:
+        """Whether a press pans: the middle or right button (GuildModel pans
+        with either; a trackpad has no middle button), or the left one while
+        Space is held."""
+        b = event.button()
+        return (b in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton)
+                or (b == Qt.MouseButton.LeftButton and self._space_held))
+
+    def _end_pan(self):
+        self._pan_active = False
+        self._pan_button = Qt.MouseButton.NoButton
+        if self._space_held:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        else:
+            self.unsetCursor()
+
     def mousePressEvent(self, event):
         self._faces_at_press = self._face_positions()
+        self._press_to_tool = False
         # A release lost to a modal dialog (a hotkey mid-drag) must not leave
         # a band or a pan armed for the next press.
         if self._rb_origin is not None:
@@ -718,11 +930,14 @@ class CanvasView(QGraphicsView):
             self._rb_origin = None
             self._rb_press_item = None
             self._rb_dragging = False
-        if self._pan_active and event.button() != Qt.MouseButton.MiddleButton:
-            self._pan_active = False
-            self.unsetCursor()
-        if event.button() == Qt.MouseButton.MiddleButton:
+        if self._pan_active and event.button() != self._pan_button:
+            self._end_pan()
+        if self._pans(event):
+            # A right-click with no drag pans nowhere and leaves the selection
+            # alone: it reached Qt's own handler, which cleared the selection
+            # and box-selected on a right-drag.
             self._pan_active = True
+            self._pan_button = event.button()
             self._pan_start = event.position()
             self._ensure_scroll_room()   # once per pan, not per mouse move
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
@@ -734,17 +949,22 @@ class CanvasView(QGraphicsView):
             # A tool answers the left button only: a right-click split or
             # trimmed the curve under it, or placed a node, like a left one.
             event.accept()
+        elif event.button() != Qt.MouseButton.LeftButton:
+            event.accept()               # the back and forward buttons
         elif self._calib_tool and self._calib_tool.active:
+            self._press_to_tool = True
             pos = self.mapToScene(event.position().toPoint())
             self._calib_tool.handle_press(pos, self.scene())
             event.accept()
         elif self._dim_tool and self._dim_tool.active:
+            self._press_to_tool = True
             pos      = self.mapToScene(event.position().toPoint())
             mods     = event.modifiers()
             use_snap = not (mods & Qt.KeyboardModifier.ControlModifier)
             self._dim_tool.handle_press(pos, use_snap)
             event.accept()
         elif self._draw_tool and self._draw_tool.active:
+            self._press_to_tool = True
             pos       = self.mapToScene(event.position().toPoint())
             mods      = event.modifiers()
             use_snap  = not (mods & Qt.KeyboardModifier.ControlModifier)
@@ -828,17 +1048,44 @@ class CanvasView(QGraphicsView):
                     # the stroke itself, so it missed at low zoom.
                     top_item = self._top_pick(event.position().toPoint())
                     if top_item is not None and self._rb_selectable(top_item):
-                        top_item.setSelected(not top_item.isSelected())
+                        self._toggle_selected(top_item)
                         event.accept()
                         return
                 super().mousePressEvent(event)
 
+    def _toggle_selected(self, item):
+        """Ctrl+click: a curve in a group takes its whole group in or out of
+        the selection. Toggling the member alone was undone at once, as
+        selecting any member selects its group."""
+        gid = getattr(getattr(item, "curve", None), "group_id", None)
+        if not gid:
+            item.setSelected(not item.isSelected())
+            return
+        sc = self.scene()
+        members = [it for it in sc.items()
+                   if isinstance(it, CurveItem) and it.curve.group_id == gid
+                   and self._rb_selectable(it)]
+        if item.isSelected():
+            out = {id(it) for it in members}
+            keep = [it for it in sc.selectedItems() if id(it) not in out]
+            sc.select_items(keep)
+        else:
+            sc.select_items(members, clear=False)
+
     def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.MouseButton.MiddleButton:
+        if self._pans(event):
             # A quick second pan stroke arrives as a double-click only.
             self.mousePressEvent(event)
             return
         if event.button() != Qt.MouseButton.LeftButton:
+            event.accept()
+            return
+        tool_active = ((self._draw_tool and self._draw_tool.active)
+                       or (self._dim_tool and self._dim_tool.active)
+                       or (self._calib_tool and self._calib_tool.active))
+        if self._press_to_tool and not tool_active:
+            # Its first press finished the tool: the second half belongs to
+            # that tool too, not to Select mode (see _press_to_tool).
             event.accept()
             return
         if self._draw_tool and self._draw_tool.active:
@@ -873,6 +1120,8 @@ class CanvasView(QGraphicsView):
             self._coords_label.setText(self._fmt(scene_pos))
         else:
             self._status_bar.showMessage(self._fmt(scene_pos))
+        if self._pan_active and not event.buttons() & self._pan_button:
+            self._end_pan()              # its release went to another widget
         if self._pan_active:
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
@@ -931,10 +1180,21 @@ class CanvasView(QGraphicsView):
                     return
             super().mouseMoveEvent(event)
 
+    def abandon_drag(self):
+        """Drop a drag-to-move in progress without ending it: the curves it
+        holds are gone (Undo or Redo rebuilt the document)."""
+        self._drag_move_start = None
+        self._drag_moving     = False
+        self._drag_pre_called = False
+        self._drag_move_items = []
+
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.MiddleButton:
-            self._pan_active = False
-            self.unsetCursor()
+        if self._pan_active and event.button() == self._pan_button:
+            self._end_pan()
+            event.accept()
+            return
+        if event.button() in (Qt.MouseButton.MiddleButton,
+                              Qt.MouseButton.RightButton):
             event.accept()
             return
         if (self._rb_origin is not None
@@ -957,6 +1217,7 @@ class CanvasView(QGraphicsView):
                 and self._face_positions() != self._faces_at_press:
             cb()
         self._faces_at_press = None
+        self.released.emit()
 
     @staticmethod
     def _rb_selectable(it) -> bool:
@@ -978,17 +1239,31 @@ class CanvasView(QGraphicsView):
 
     def _top_pick(self, vp_pos):
         """What a press at *vp_pos* is aimed at: interactive chrome exactly
-        under the cursor (node/handle dots, gizmo arrows, a dim) wins, then
-        the topmost curve/text within the pick box, else None."""
-        exact = self.itemAt(vp_pos)
-        if exact is not None and not isinstance(exact, (CurveItem, TextItem)):
-            flags = exact.flags()
-            if (isinstance(exact, DimItem)
-                    or flags & exact.GraphicsItemFlag.ItemIgnoresTransformations
-                    or flags & exact.GraphicsItemFlag.ItemIsMovable):
-                # Screen-sized chrome (node/handle dots, gizmo arrows), a dim,
-                # or an unlocked face photo: each runs its own press handling.
-                return exact
+        under the cursor (node/handle dots, gizmo arrows, a dim, an unlocked
+        face photo) wins, then the topmost curve/text within the pick box,
+        else None. Display-only items in between (the guides, the fills, the
+        Ghost, the axis) are looked through: the stock and pad guides cover
+        the face, and a photo under them could not be dragged."""
+        for it in self.items(vp_pos):
+            if isinstance(it, (CurveItem, TextItem)):
+                break                     # curves are picked with tolerance below
+            flags = it.flags()
+            if isinstance(it, DimItem):
+                # A curve in the pick box beats a dim the cursor only grazes:
+                # a dim usually sits on what it measures, and a drag on the
+                # selected curve moved the dim's offset instead.
+                miss_px = (it.hit_distance(self.mapToScene(vp_pos))
+                           * self.zoom())
+                if miss_px > self._PICK_PX:
+                    for near in self._items_near(vp_pos):
+                        if isinstance(near, (CurveItem, TextItem)):
+                            return near
+                return it
+            if (flags & it.GraphicsItemFlag.ItemIgnoresTransformations
+                    or flags & it.GraphicsItemFlag.ItemIsMovable):
+                # Screen-sized chrome (node/handle dots, gizmo arrows) or an
+                # unlocked face photo: each runs its own press handling.
+                return it
         for it in self._items_near(vp_pos):
             if isinstance(it, (CurveItem, TextItem)):
                 return it
@@ -1022,6 +1297,15 @@ class CanvasView(QGraphicsView):
 
     def keyPressEvent(self, event):
         key = event.key()
+
+        if (key == Qt.Key.Key_Space and not event.isAutoRepeat()
+                and not event.modifiers()):
+            # Space held: the left button pans, as in most drawing apps.
+            self._space_held = True
+            if not self._pan_active:
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
 
         # Delete / Backspace: remove selected curves (select mode only)
         if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
@@ -1061,14 +1345,32 @@ class CanvasView(QGraphicsView):
                 return
         super().keyPressEvent(event)
 
+    def keyReleaseEvent(self, event):
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+            self._space_held = False
+            if not self._pan_active:
+                self.unsetCursor()
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
+
+    def focusOutEvent(self, event):
+        # A Space released over another window never reaches us.
+        self._space_held = False
+        if not self._pan_active:
+            self.unsetCursor()
+        super().focusOutEvent(event)
+
     def _fmt(self, p: QPointF) -> str:
-        return f"x: {p.x():.2f} mm  y: {p.y():.2f} mm"
+        # y up, as the Holes fields, the DXF and GuildModel have it: the scene
+        # is y-down, and the readout said 27.75 mm below the origin.
+        return f"x: {p.x():.2f} mm  y: {-p.y():.2f} mm"
 
 
 class WorkspaceState:
     """All per-workspace runtime state: document, canvas, tools, and guides.
 
-    One instance exists per workspace tab (front / temple / hinge).
+    One instance exists per workspace tab (front / temple / component).
     MainWindow holds a list[WorkspaceState] and exposes the active one via
     proxy properties so existing methods need no rewriting.
     """
@@ -1183,8 +1485,14 @@ class WorkspaceState:
         self.inlay_fill_image:   str   = ""        # kept while the color shows
         self.inlay_fill_tumble:  bool  = False     # turn each body's copy
         self.obverse:        bool  = False       # View Obverse: the view only
+        # The Canvas tab's selected row: a shown photo's scene index, or past
+        # them one of unshown_faces.
         self.selected_face_idx: int       = -1
-        self.face_image_paths:  list[str] = []
+        # Photos the file names that were not shown (not on this computer,
+        # too large, damaged, past the cap): kept so the next save carries
+        # them, and listed after the shown ones for Locate… or Remove.
+        # Unshown, they were dropped from it.
+        self.unshown_faces:     list      = []
         self.fitted:            bool      = False   # True once fitInView has been called
 
         # Wire endpoint drag-snap using the workspace's own mutable list and view.
@@ -1236,6 +1544,11 @@ class WorkspaceState:
         self.redo_stack.clear()
         if len(self.undo_stack) > self.MAX_UNDO:
             self.undo_stack.pop(0)
+
+    @property
+    def face_image_paths(self) -> list[str]:
+        """The shown photos' files, in the scene's order."""
+        return [self.scene.face_path(i) for i in range(self.scene.face_count())]
 
     def add_curve(self, curve):
         """Append to the document and the scene; returns the CurveItem."""
@@ -1309,10 +1622,12 @@ class WorkspaceState:
     def reset_session_state(self):
         """Per-document session state that is NOT in the file and must not
         leak from the previous document into the next: the boxing snap and
-        the lens/outline locks derive from geometry that is gone, the bevel
-        and forming values are stored in the file (or default), and the
-        active layer starts over. Called by clear_document, so File > New
-        and every file load share it."""
+        the lens/outline locks derive from geometry that is gone, the bevel,
+        forming and photo-calibration values are stored in the file (or
+        default), and the active layer starts over. Called by clear_document,
+        so File > New and every file load share it. The calibration leaked:
+        a file with none was saved with the previous one's scale."""
+        self.image_px_per_mm = None
         self.boxing_snapped = False
         self.shape_locked   = False
         self.outline_locked = False
@@ -1489,6 +1804,69 @@ class LayerTree(QTreeWidget):
                 0, self, lambda: self.curves_dropped.emit(curve_ids, layer))
 
 
+class ComponentTree(QTreeWidget):
+    """The component library as folders of entries, with drag and drop.
+
+    An entry dropped on a folder, or on an entry in one, moves into that
+    folder; a folder dropped on another moves to just above it, or below it
+    when dropped on the lower edge. As in LayerTree, Qt's own row moves are
+    suppressed: the drop is reported by a signal and MainWindow rebuilds the
+    tree from the library on disk."""
+
+    entry_dropped     = Signal(str, object)   # (entry path, folder or None)
+    folders_reordered = Signal(list)          # the folders' new order
+
+    def __init__(self):
+        super().__init__()
+        self.setHeaderHidden(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setDropIndicatorShown(True)
+
+    @staticmethod
+    def item_data(item):
+        """``("folder", name)`` or ``("entry", path)``, or None."""
+        return item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+
+    def folder_names(self) -> list[str]:
+        out = []
+        for i in range(self.topLevelItemCount()):
+            data = self.item_data(self.topLevelItem(i))
+            if data and data[0] == "folder":
+                out.append(data[1])
+        return out
+
+    def _folder_of(self, item):
+        """The folder *item* is or sits in; None outside any."""
+        data = self.item_data(item)
+        if data and data[0] == "folder":
+            return data[1]
+        parent = item.parent() if item is not None else None
+        pdata = self.item_data(parent)
+        return pdata[1] if pdata and pdata[0] == "folder" else None
+
+    def dropEvent(self, event):
+        moved = self.item_data(self.currentItem())
+        target = self.itemAt(event.position().toPoint())
+        event.setDropAction(Qt.DropAction.IgnoreAction)
+        event.accept()
+        if not moved or target is None:
+            return
+        folder = self._folder_of(target)
+        if moved[0] == "entry":
+            path = moved[1]
+            QTimer.singleShot(0, self, lambda: self.entry_dropped.emit(path, folder))
+            return
+        if folder is None or folder == moved[1]:
+            return
+        order = [n for n in self.folder_names() if n != moved[1]]
+        below = (self.dropIndicatorPosition()
+                 == QAbstractItemView.DropIndicatorPosition.BelowItem
+                 or self.item_data(target)[0] == "entry")
+        order.insert(order.index(folder) + (1 if below else 0), moved[1])
+        QTimer.singleShot(0, self, lambda: self.folders_reordered.emit(order))
+
+
 def _available_screen(widget):
     """The usable area of the screen `widget` (or its parent) will show on —
     what a pop-up's size is bounded by. Falls back to the primary screen, and
@@ -1514,10 +1892,14 @@ class SettingsDialog(QDialog):
     screen, or at the size the maker last left it (`prefs_dialog_size`); the
     guidance under a group is a short hint, and the rest is in tooltips."""
 
-    def __init__(self, prefs: dict, parent=None):
+    def __init__(self, prefs: dict, parent=None, images_in_use=None):
+        """*images_in_use*: the image files the open design shows, which
+        Clear Image Cache keeps."""
         super().__init__(parent)
         self.setWindowTitle("Preferences")
-        self.setMinimumWidth(380)
+        # Narrower, four pages took horizontal scroll bars and the Print & PDF
+        # tab needed the tab bar's arrows.
+        self.setMinimumWidth(520)
         # Bounded by the screen: on a short panel with the OS scale up a fixed
         # floor would put the OK row under the screen's edge.
         self.setMinimumHeight(min(480, _available_screen(self).height()))
@@ -1576,7 +1958,7 @@ class SettingsDialog(QDialog):
         gen_lay.addWidget(draw_box)
 
         # Two columns: the drawing aids, then the Frame Front's guides.
-        start_box  = QGroupBox("On at Startup")
+        start_box  = QGroupBox("On for New Designs")
         start_grid = QGridLayout(start_box)
         start_grid.setHorizontalSpacing(24)
         self._mirror_chk = QCheckBox("Ghost axis")
@@ -1609,7 +1991,7 @@ class SettingsDialog(QDialog):
 
         # The guide sizes, one row per guide (width × height): the Frame
         # Front's, and the temple blank shared by both temple tabs.
-        size_box  = QGroupBox("Guide Sizes")
+        size_box  = QGroupBox("Guide Sizes for New Designs")
         size_grid = QGridLayout(size_box)
         size_grid.setHorizontalSpacing(6)
         self._box_a   = _spinbox(30.0, 80.0,  0.5, prefs["boxing_a_mm"])
@@ -1688,6 +2070,43 @@ class SettingsDialog(QDialog):
             "The opacity an inlay fill starts at.")
         inlay_form.addRow("Default opacity:", self._inlay_opacity_spin)
         gen_lay.addWidget(inlay_box)
+
+        # The questions GuildDraw asks with a "Don't ask again" on the box
+        # itself; this is where a silenced one is turned back on (as
+        # GuildModel's Prompts group).
+        prompt_box = QGroupBox("Prompts")
+        prompt_form = QFormLayout(prompt_box)
+        self._prompt_store_chk = QCheckBox(
+            "Explain storing a reference image in the design")
+        self._prompt_store_chk.setChecked(bool(prefs.get("prompt_store_image", True)))
+        self._prompt_store_chk.setToolTip(
+            "Asked when the paperclip on the Canvas tab stores an image: the "
+            "design file then carries it to every computer that opens it.")
+        prompt_form.addRow(self._prompt_store_chk)
+        gen_lay.addWidget(prompt_box)
+
+        # The copies of stored images unpacked from opened designs. Cleared
+        # here at once, not on OK: it is a deletion, with its own question.
+        cache_box = QGroupBox("Image Cache")
+        cache_lay = QVBoxLayout(cache_box)
+        self._images_in_use = images_in_use or (lambda: ())
+        self._cache_size_lbl = QLabel()
+        self._cache_size_lbl.setWordWrap(True)
+        cache_lay.addWidget(self._cache_size_lbl)
+        clear_row = QHBoxLayout()
+        self._clear_cache_btn = QPushButton("Clear Image Cache…")
+        self._clear_cache_btn.setToolTip(
+            "Delete the copies GuildDraw unpacked of the images stored in the "
+            "designs you opened. Each design still holds its images and "
+            "unpacks them again when opened; the open design's are kept.")
+        self._clear_cache_btn.clicked.connect(lambda: self._clear_image_cache())
+        clear_row.addWidget(self._clear_cache_btn)
+        clear_row.addStretch()
+        cache_lay.addLayout(clear_row)
+        cache_lay.addWidget(self._hint(
+            "Stored images are unpacked here when a design opens."))
+        self._show_cache_size()
+        gen_lay.addWidget(cache_box)
 
         gen_lay.addStretch()
 
@@ -1873,7 +2292,10 @@ class SettingsDialog(QDialog):
             lc_grid.addWidget(hdr, 0, col)
 
         self._layer_btns: dict = {}   # (layer name, mode) -> QPushButton
-        for row, layer in enumerate(Layer, start=1):
+        # The layers a tab can hold: BRIDGE is reserved for GuildModel's
+        # bridge path and no tab offers it yet.
+        _in_use = {layer for layers in WORKSPACE_LAYERS.values() for layer in layers}
+        for row, layer in enumerate([lyr for lyr in Layer if lyr in _in_use], start=1):
             name = layer.value
             lc_grid.addWidget(QLabel(name), row, 0)
             for col, mode in ((1, "light"), (2, "dark")):
@@ -1906,8 +2328,9 @@ class SettingsDialog(QDialog):
         # ═══════════════════════════════════════════════════════════════════
         tb_lay = _page("Toolbar")
         tb_lay.addWidget(self._hint(
-            "Uncheck a button to hide it; a hidden tool still answers its "
-            "hotkey."))
+            "Uncheck a button to hide it. A hidden tool still answers its "
+            "hotkey, and every button stays in the menus (View, and "
+            "Edit ▸ Modify)."))
 
         toolbar_prefs = prefs.get("toolbar", {})
         self._tb_checks: dict[str, QCheckBox] = {}
@@ -1933,6 +2356,14 @@ class SettingsDialog(QDialog):
                 grid.addWidget(chk, i % rows, i // rows)
             grid.setColumnStretch(2, 1)
             tb_lay.addWidget(box)
+        show_all = QPushButton("Show All Buttons")
+        show_all.clicked.connect(
+            lambda: [chk.setChecked(True) for chk in self._tb_checks.values()
+                     if chk.isEnabled()])
+        show_all_row = QHBoxLayout()
+        show_all_row.addWidget(show_all)
+        show_all_row.addStretch()
+        tb_lay.addLayout(show_all_row)
         tb_lay.addStretch()
 
         # ═══════════════════════════════════════════════════════════════════
@@ -1941,7 +2372,17 @@ class SettingsDialog(QDialog):
         hk_lay = _page("Hotkeys", spacing=10)
         hk_lay.addWidget(self._hint(
             "Click a field, then press the key or combination. Esc clears "
-            "the field."))
+            "the field; ↺ puts back the default."))
+
+        # Up here, under the hint: below the list it was out of view, and OK
+        # went gray with no reason in sight.
+        self._conflict_label = QLabel()
+        self._conflict_label.setWordWrap(True)
+        # Dark red vanishes on the dark chrome — brighten it there.
+        self._conflict_label.setStyleSheet(
+            f"color: {'#ff6b6b' if theme.is_dark() else '#cc0000'};")
+        self._conflict_label.hide()
+        hk_lay.addWidget(self._conflict_label)
 
         hk_form = QFormLayout()
         hk_form.setSpacing(6)
@@ -1959,15 +2400,29 @@ class SettingsDialog(QDialog):
             edit.textChanged.connect(self._check_conflicts)
             self._key_edits.append(edit)
             self._hk_keys.append(key)
-            hk_form.addRow(label + ":", edit)
+            row_w = QWidget()
+            row_l = QHBoxLayout(row_w)
+            row_l.setContentsMargins(0, 0, 0, 0)
+            row_l.setSpacing(4)
+            row_l.addWidget(edit)
+            rst = QToolButton()
+            rst.setText("↺")
+            default = defaults.get(key, "")
+            rst.setToolTip(f"Reset to the default ({default})" if default
+                           else "Reset to the default (none)")
+            rst.clicked.connect(lambda _=False, e=edit, d=default: e.setText(d))
+            row_l.addWidget(rst)
+            row_l.addStretch()
+            hk_form.addRow(label + ":", row_w)
 
-        self._conflict_label = QLabel()
-        self._conflict_label.setWordWrap(True)
-        # Dark red vanishes on the dark chrome — brighten it there.
-        self._conflict_label.setStyleSheet(
-            f"color: {'#ff6b6b' if theme.is_dark() else '#cc0000'};")
-        self._conflict_label.hide()
-        hk_lay.addWidget(self._conflict_label)
+        hk_reset_all = QPushButton("Reset All Hotkeys")
+        hk_reset_all.clicked.connect(
+            lambda: [e.setText(defaults.get(k, ""))
+                     for e, k in zip(self._key_edits, self._hk_keys, strict=True)])
+        hk_reset_row = QHBoxLayout()
+        hk_reset_row.addWidget(hk_reset_all)
+        hk_reset_row.addStretch()
+        hk_lay.addLayout(hk_reset_row)
 
         # Every shortcut a hotkey may not take, listed in full — the conflict
         # check refuses all of them, so all of them are shown.
@@ -2039,7 +2494,7 @@ class SettingsDialog(QDialog):
         self._tp_labels_chk.setChecked(bool(tp_cfg["labels"]))
         tp_form.addRow(self._tp_labels_chk)
         tp_form.addRow(self._hint(
-            "Prints each workspace as it shows: visible layers, mirror ghost "
+            "Prints each workspace as it shows: visible layers, the Ghost "
             "and engraving. Every page carries a ruler to check the scale."))
         pdf_lay.addWidget(tp_box)
 
@@ -2225,11 +2680,36 @@ class SettingsDialog(QDialog):
             self._layer_over[mode].pop(f"layer.{name}", None)
         self._refresh_layer_btn(name)
 
+    def _show_cache_size(self):
+        from .export.gdraw import image_cache_size
+        mb = image_cache_size() / (1024 * 1024)
+        self._cache_size_lbl.setText(
+            "Empty." if mb == 0 else
+            f"{mb:.1f} MB of copies of stored images." if mb >= 0.1 else
+            "Under 0.1 MB of copies of stored images.")
+        self._clear_cache_btn.setEnabled(mb > 0)
+
+    def _clear_image_cache(self):
+        from .export.gdraw import clear_image_cache
+        r = QMessageBox.question(
+            self, "Clear Image Cache",
+            "Delete the copies of the stored images unpacked from the designs "
+            "you opened? Each design still holds its images and unpacks them "
+            "again when it is opened. The open design's images are kept.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        clear_image_cache(keep=self._images_in_use())
+        self._show_cache_size()
+
     def _reset_all_layer_colors(self):
         for mode in ("light", "dark"):
             self._layer_over[mode].clear()
-        for layer in Layer:
-            self._refresh_layer_btn(layer.value)
+        # The grid's rows, not every Layer: BRIDGE has none, and reaching it
+        # raised before the rows after it were redrawn.
+        for name in dict.fromkeys(n for n, _ in self._layer_btns):
+            self._refresh_layer_btn(name)
 
     def _collect_theme(self) -> dict:
         """prefs["theme"] value: non-layer tokens preserved from the incoming
@@ -2324,6 +2804,9 @@ class SettingsDialog(QDialog):
                 edit.setStyleSheet("")
         has_conflict = bool(conflict_keys)
         self._ok_btn.setEnabled(not has_conflict)
+        self._ok_btn.setToolTip(
+            "Resolve the hotkey conflict on the Hotkeys tab first."
+            if has_conflict else "")
         if has_conflict:
             parts = []
             dupes = sorted(conflict_keys - reserved - typing)
@@ -2385,6 +2868,7 @@ class SettingsDialog(QDialog):
             "lens_fill_intensity":   self._lens_intensity_spin.value(),
             "inlay_fill_color":       self._inlay_default_color,
             "inlay_fill_opacity_pct": int(self._inlay_opacity_spin.value()),
+            "prompt_store_image":   self._prompt_store_chk.isChecked(),
             "toolbar":              toolbar,
             "hotkeys":              hotkeys,
             "catalog_pdf": {
@@ -2412,7 +2896,7 @@ class SettingsDialog(QDialog):
 class TransformDialog(QDialog):
     """Exact numeric Scale / Rotate for the current selection."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, obverse: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Transform Selection")
         form = QFormLayout(self)
@@ -2449,7 +2933,7 @@ class TransformDialog(QDialog):
         self._rot.setToolTip("Positive rotates counter-clockwise.")
 
         self._pivot = QComboBox()
-        self._pivot.addItems(["Selection center", "Scene origin (0, 0)"])
+        self._pivot.addItems(["Selection center", "Drawing origin (0, 0)"])
 
         form.addRow("Scale X:", self._sx)
         form.addRow("Scale Y:", self._sy)
@@ -2457,8 +2941,11 @@ class TransformDialog(QDialog):
         form.addRow("Rotation:", self._rot)
         form.addRow("Pivot:", self._pivot)
 
-        note = QLabel("Positive rotation is counter-clockwise. A non-uniform "
-                      "scale turns circles and arcs into splines.")
+        note = QLabel(
+            ("Positive rotation is counter-clockwise as the screen shows it, "
+             "in View Obverse too. " if obverse else
+             "Positive rotation is counter-clockwise. ")
+            + "A non-uniform scale turns circles and arcs into splines.")
         note.setObjectName("hintLabel")
         note.setWordWrap(True)
         form.addRow(note)
@@ -2671,7 +3158,7 @@ class MainWindow(QMainWindow):
             ("front",    "Frame Front"),
             ("temple_r", "Temple R"),
             ("temple_l", "Temple L"),
-            ("hinge",    "Hinge Pocket"),
+            ("component", "Component"),
         ]:
             ws = WorkspaceState(ws_type, self._status, self)
             self._workspaces.append(ws)
@@ -2689,6 +3176,9 @@ class MainWindow(QMainWindow):
             ws.view.set_vignette(_vign)
             ws.view.set_calib_tool(ws.calib_tool)
             ws.calib_tool.calibrated.connect(self._apply_calibration)
+            # A locked or hidden photo keeps its scale (the Canvas tab's rows).
+            ws.calib_tool.refusal = (
+                lambda i, ws=ws: self._calibration_refusal(ws, i))
             ws.calib_tool.status_message.connect(self._status.showMessage)
             ws.draw_tool.curve_added.connect(self._on_curve_added)
             ws.draw_tool.status_message.connect(self._status.showMessage)
@@ -2808,6 +3298,8 @@ class MainWindow(QMainWindow):
             ws.edit_tool.node_selection_changed.connect(self._act_snap_ep.setEnabled)
             ws.edit_tool.node_selection_changed.connect(self._update_split_enabled)
             ws.scene.selectionChanged.connect(self._on_selection_changed)
+            ws.scene.selectionChanged.connect(
+                lambda ws=ws: self._drop_orphan_gizmo(ws))
             ws.scene.selectionChanged.connect(self._update_split_enabled)
             ws.scene.selectionChanged.connect(self._update_explode_enabled)
             ws.view.zoom_changed.connect(lambda _, _ws=ws: (
@@ -2831,6 +3323,7 @@ class MainWindow(QMainWindow):
             ws.on_mirror_restored = (
                 lambda on, ws=ws: self._act_mirror.setChecked(on)
                 if ws is self._active_ws else setattr(ws, "mirror_enabled", on))
+            ws.view.released.connect(self._flush_deferred_readiness)
             ws.scene.geometry_changed = (
                 lambda _curve=None, ws=ws: self._schedule_boxing_follow(ws))
             ws.scene.fill_auto_disabled = (
@@ -2866,7 +3359,7 @@ class MainWindow(QMainWindow):
         self._stock_h_spin.setValue(p["stock_height_mm"])
         self._pad_w_spin.setValue(p["pad_width_mm"])
         self._pad_h_spin.setValue(p["pad_height_mm"])
-        self._weight_spin.setValue(self._default_line_weight)
+        self._sync_weight_spin([])
 
         # Sync initial mirror state + guide visibility for every workspace
         for ws in self._workspaces:
@@ -2943,19 +3436,19 @@ class MainWindow(QMainWindow):
             temple.stock_guide.set_width(temple.stock_w)
             temple.stock_guide.set_height(temple.stock_h)
 
-        hinge = self._workspaces[3]
-        hinge.guides_visible = False
-        hinge.boxing_visible = False
-        hinge.pad_visible    = False
-        hinge.stock_visible  = True
-        hinge.stock_w        = 10.0
-        hinge.stock_h        = 20.0
-        hinge.const_guides.set_visible(False)
-        hinge.boxing_guide.set_visible(False)
-        hinge.pad_guide.set_visible(False)
-        hinge.stock_guide.set_visible(True)
-        hinge.stock_guide.set_width(10.0)
-        hinge.stock_guide.set_height(20.0)
+        component = self._workspaces[3]
+        component.guides_visible = False
+        component.boxing_visible = False
+        component.pad_visible    = False
+        component.stock_visible  = True
+        component.stock_w        = 10.0
+        component.stock_h        = 20.0
+        component.const_guides.set_visible(False)
+        component.boxing_guide.set_visible(False)
+        component.pad_guide.set_visible(False)
+        component.stock_guide.set_visible(True)
+        component.stock_guide.set_width(10.0)
+        component.stock_guide.set_height(20.0)
 
         # Toolbar toggles and guide spinboxes are SESSION state (per-workspace,
         # saved/restored on tab switch). They deliberately do NOT write prefs:
@@ -2988,8 +3481,15 @@ class MainWindow(QMainWindow):
         self._refresh_layer_panel()
 
         self._status.showMessage(
-            "Ready  |  Middle-click drag to pan  |  Scroll to zoom"
+            "Ready  |  Right-drag (or Space+drag) to pan  |  Scroll to zoom"
         )
+        self.setAcceptDrops(True)        # a design, drawing, trace or photo (B29)
+        if _prefs_mod.LOAD_NOTE:
+            # Said once, after the window is up: the preferences file did not
+            # read and was kept aside (prefs.load).
+            note = _prefs_mod.LOAD_NOTE
+            _prefs_mod.LOAD_NOTE = None
+            QTimer.singleShot(0, self, lambda: self._status.showMessage(note, 20000))
         self._update_info_label()
 
         # Apply dark mode from prefs (must be after all widgets are built)
@@ -3002,6 +3502,13 @@ class MainWindow(QMainWindow):
             self._fit_view()
             self._workspaces[0].fitted = True
         QTimer.singleShot(0, self, _initial_fit)
+        self._update_readiness()      # the dot's tip from the document, at once
+        for ws in self._workspaces:
+            self._sync_empty_hint(ws)
+        # The fill widgets' enabled state for the style they open on: under
+        # Color, Choose…, ✕ and Tumble were live until the first tab switch.
+        self._sync_fill_style_widgets(self._active_ws)
+        self._sync_inlay_fill_style_widgets(self._active_ws)
 
         # ── Autosave + crash recovery ─────────────────────────────────────
         self._autosave_timer = QTimer(self)
@@ -3010,6 +3517,10 @@ class MainWindow(QMainWindow):
         self._autosave_timer.start()
         QTimer.singleShot(400, self, self._offer_recovery)
 
+        # Start-up applies Preferences through the handlers, and some mark the
+        # design dirty (a Ghost off at start-up did): a fresh window holds
+        # nothing unsaved.
+        self._dirty = False
         self._update_title()
 
     # ------------------------------------------------------------------
@@ -3140,9 +3651,15 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
 
         self._act_mirror = QAction("Ghost", self, checkable=True, checked=True)
-        self._act_mirror.setToolTip("Ghost: toggle the bridge mirror axis and ghost preview.")
+        self._act_mirror.setToolTip(
+            "Ghost: preview each curve's mirrored twin across the axis (the\n"
+            "bridge center on a front, the core line on a temple). A drawing aid\n"
+            "only: the file and every export carry the curves drawn, and\n"
+            "GuildModel reads only those. Bake a twin with Mirror.")
         self._act_guides = QAction("Guides", self, checkable=True, checked=True)
-        self._act_guides.setToolTip("Construction Guides: toggle bridge angle and apical radius guide lines.")
+        self._act_guides.setToolTip(
+            "Construction Guides: show the frontal angle and apical radius\n"
+            "lines. Set them on the Guides tab.")
         self._act_snap   = QAction("Snap",   self, checkable=True, checked=True)
         self._act_snap.setToolTip("Snap: toggle node/handle snapping (hold Ctrl to suspend).")
         self._act_snap_palette = QAction("Snap\nTypes", self, checkable=True,
@@ -3163,8 +3680,8 @@ class MainWindow(QMainWindow):
         )
         self._act_boxing = QAction("Boxing", self, checkable=True, checked=True)
         self._act_boxing.setToolTip(
-            "Boxing Guide: show A×B lens box with DBL separation as a dashed overlay.\n"
-            "Set A, B, DBL in the Properties panel."
+            "Boxing Guide: show the A × B lens boxes and the DBL between them\n"
+            "as a dashed overlay. Set A, B and DBL on the Guides tab."
         )
         self._act_stock = QAction("Stock", self, checkable=True, checked=False)
         self._act_stock.setToolTip(
@@ -3172,12 +3689,14 @@ class MainWindow(QMainWindow):
             "On the temples it carries the core line at y = 0, where the wire runs.\n"
             "GuildModel centers its blank on the origin and places the part as drawn;\n"
             "the readiness dot warns when the OUTLINE leaves the guide.\n"
-            "Set dimensions in the Properties panel or Settings."
+            "Set its size on the Guides tab; new designs start at the size in\n"
+            "Preferences ▸ General."
         )
         self._act_pad = QAction("Pad", self, checkable=True, checked=False)
         self._act_pad.setToolTip(
-            "Pad Guide: show pad block size as a dashed purple rectangle centered at origin.\n"
-            "Set dimensions in the Properties panel or Settings."
+            "Pad Guide: show the pad block as a dashed purple rectangle centered\n"
+            "on the origin. Set its size on the Guides tab; new designs start at\n"
+            "the size in Preferences ▸ General."
         )
         self._act_obverse = QAction("View\nObverse", self, checkable=True,
                                     checked=False)
@@ -3202,18 +3721,18 @@ class MainWindow(QMainWindow):
 
         self._act_mirror_close = QAction("Mirror\nClose", self)
         self._act_mirror_close.setToolTip(
-            "Mirror-Close: combine selected open curve with its mirror to form "
-            "a single closed shape.\nThe two endpoints are moved onto the mirror axis."
+            "Mirror Close: join the selected open half to its mirror image in\n"
+            "one closed shape. Its two ends move onto the mirror axis."
         )
         self._act_mirror_close.triggered.connect(self._copy_across_mirror)
         tb.addAction(self._act_mirror_close)
 
         self._act_dup_mirror = QAction("Mirror", self)
         self._act_dup_mirror.setToolTip(
-            "Mirror: create real mirrored copies of the selected curves\n"
-            "opposite the ghost axis, breaking live symmetry.\n"
-            "Points on the axis are shared — use Join or Mirror-Close\n"
-            "afterward to connect the halves into closed shapes."
+            "Mirror: bake the Ghost, making real mirrored copies of the\n"
+            "selected curves across the axis. A curve whose twin is drawn\n"
+            "already, or would lie on itself, is skipped. Join or Mirror Close\n"
+            "then connects halves into closed shapes."
         )
         self._act_dup_mirror.triggered.connect(self._on_duplicate_mirror)
         tb.addAction(self._act_dup_mirror)
@@ -3268,7 +3787,7 @@ class MainWindow(QMainWindow):
         tb.addAction(self._act_explode)
 
         self._act_fit = QAction("Fit", self)
-        self._act_fit.setToolTip("Fit: zoom to fit all content in view.")
+        self._act_fit.setToolTip("Fit (Ctrl+0): zoom to the drawing.")
         self._act_fit.triggered.connect(self._fit_view)
         tb.addAction(self._act_fit)
 
@@ -3279,7 +3798,10 @@ class MainWindow(QMainWindow):
         self._act_tooltips = QAction("Tooltips", self, checkable=True)
         self._act_tooltips.setChecked(bool(self._prefs.get("tooltips", True)))
         self._act_tooltips.toggled.connect(self._on_tooltips_toggled)
-        self._tooltip_filter.set_exempt([tb.set_trailing_action(self._act_tooltips)])
+        # The readiness dot is color only: its reason is its tooltip, so the
+        # tooltip switch never silences it (as the ? button's own).
+        self._tooltip_filter.set_exempt([tb.set_trailing_action(self._act_tooltips),
+                                         self._readiness_dot])
         self._on_tooltips_toggled(self._act_tooltips.isChecked(), announce=False)
 
         # Map prefs keys → QAction objects (used by visibility and hotkey systems)
@@ -3354,11 +3876,7 @@ class MainWindow(QMainWindow):
         # Commit on Enter/blur, not per keystroke — each change pushes an
         # undo snapshot, so typing "2.5" must not create three undo steps.
         self._weight_spin.setKeyboardTracking(False)
-        self._weight_spin.setToolTip(
-            "Line weight (screen pixels, cosmetic).\n"
-            "Applies to the selected curve(s). New curves take the default from "
-            "Preferences ▸ General."
-        )
+        self._weight_spin.setSuffix(" px")
         self._weight_spin.valueChanged.connect(self._on_weight_spin_changed)
         draw_lay.addRow("Line weight:", self._weight_spin)
 
@@ -3407,7 +3925,9 @@ class MainWindow(QMainWindow):
         self._layer_tree.customContextMenuRequested.connect(
             self._on_layer_tree_menu)
         layers_lay.addWidget(self._layer_tree)
-        curve_lay.addWidget(layers_box)
+        # The tree takes the panel's spare height: it scrolled with a quarter
+        # of the panel empty below Measurements.
+        curve_lay.addWidget(layers_box, 1)
 
         # ── Measurements: Frame Front ──────────────────────────────────────
         meas_front_box = self._fold_box("Measurements", key="Measurements · front")
@@ -3426,16 +3946,19 @@ class MainWindow(QMainWindow):
         self._meas_od_a_lbl  = QLabel("—")
         self._meas_od_b_lbl  = QLabel("—")
         self._meas_od_ed_lbl = QLabel("—")
-        meas_front_lay.addRow("OD  A:", self._meas_od_a_lbl)
-        meas_front_lay.addRow("OD  B:", self._meas_od_b_lbl)
-        meas_front_lay.addRow("OD  ED:", self._meas_od_ed_lbl)
+        meas_front_lay.addRow("OD A:", self._meas_od_a_lbl)
+        meas_front_lay.addRow("OD B:", self._meas_od_b_lbl)
+        meas_front_lay.addRow("OD ED:", self._meas_od_ed_lbl)
 
         self._meas_os_a_lbl  = QLabel("—")
         self._meas_os_b_lbl  = QLabel("—")
         self._meas_os_ed_lbl = QLabel("—")
-        meas_front_lay.addRow("OS  A:", self._meas_os_a_lbl)
-        meas_front_lay.addRow("OS  B:", self._meas_os_b_lbl)
-        meas_front_lay.addRow("OS  ED:", self._meas_os_ed_lbl)
+        meas_front_lay.addRow("OS A:", self._meas_os_a_lbl)
+        meas_front_lay.addRow("OS B:", self._meas_os_b_lbl)
+        meas_front_lay.addRow("OS ED:", self._meas_os_ed_lbl)
+        for lbl in (self._meas_od_ed_lbl, self._meas_os_ed_lbl):
+            lbl.setToolTip("Effective diameter: twice the longest radius from "
+                           "the boxing center, on the finished lens.")
 
         # No Refresh button: every document change, node drag and layer move
         # refreshes these (the 2026-09-29 review checked each path).
@@ -3504,11 +4027,12 @@ class MainWindow(QMainWindow):
         self._guide_crest_height_spin.setSingleStep(0.5)
         self._guide_crest_height_spin.setValue(0.0)
         self._guide_crest_height_spin.setToolTip(
-            "Vertical position of the apical radius arc.\n"
-            "0 = arc apex at the datum line; positive = arc shifts down."
-        )
+            "Height of the crest, the apical arc's top, above the datum line: "
+            "positive above it, negative below, as the optical convention "
+            "measures it.")
         self._guide_crest_height_spin.valueChanged.connect(
             lambda v: self._guides.set_crest_height(v))
+        self._guide_crest_height_spin.valueChanged.connect(self._guide_edited)
         guide_lay.addRow("Crest height:", self._guide_crest_height_spin)
 
         self._guide_spread_spin = QDoubleSpinBox()
@@ -3517,11 +4041,12 @@ class MainWindow(QMainWindow):
         self._guide_spread_spin.setSingleStep(0.5)
         self._guide_spread_spin.setValue(4.0)
         self._guide_spread_spin.setToolTip(
-            "Horizontal distance from mirror axis to each arm pivot.\n"
-            "0 = both arms meet at arc top;  R = arms start at arc quadrant."
-        )
+            "Half the crest's width: from the mirror axis to each arm's pivot. "
+            "0 = both arms meet at the arc's top; the apical radius = the arms "
+            "start at the arc's quadrants.")
         self._guide_spread_spin.valueChanged.connect(
             lambda v: self._guides.set_spread(v))
+        self._guide_spread_spin.valueChanged.connect(self._guide_edited)
         guide_lay.addRow("Crest width:", self._guide_spread_spin)
 
         self._guide_drop_spin = QDoubleSpinBox()
@@ -3530,11 +4055,11 @@ class MainWindow(QMainWindow):
         self._guide_drop_spin.setSingleStep(0.5)
         self._guide_drop_spin.setValue(0.0)
         self._guide_drop_spin.setToolTip(
-            "Vertical drop of arm pivots below the arc top (0 = at arc top).\n"
-            "Set to the arc radius to start arms at the arc quadrant."
-        )
+            "How far below the arc's top the arms' pivots sit (0 = at the top). "
+            "The apical radius starts the arms at the arc's quadrants.")
         self._guide_drop_spin.valueChanged.connect(
             lambda v: self._guides.set_pivot_y(v))
+        self._guide_drop_spin.valueChanged.connect(self._guide_edited)
         guide_lay.addRow("Angle height:", self._guide_drop_spin)
 
         guides_lay.addWidget(guide_box)
@@ -3549,7 +4074,7 @@ class MainWindow(QMainWindow):
         # digit), and stepping commits instantly — so locked-resize fires once
         # per real change instead of mid-typing.
         self._boxing_a_spin = QDoubleSpinBox()
-        self._boxing_a_spin.setRange(20.0, 90.0)
+        self._boxing_a_spin.setRange(0.0, 120.0)   # wide: read-outs too
         self._boxing_a_spin.setSuffix(" mm")
         self._boxing_a_spin.setSingleStep(0.5)
         self._boxing_a_spin.setDecimals(1)
@@ -3558,7 +4083,7 @@ class MainWindow(QMainWindow):
         self._boxing_a_spin.valueChanged.connect(self._on_boxing_a_value)
 
         self._boxing_b_spin = QDoubleSpinBox()
-        self._boxing_b_spin.setRange(10.0, 70.0)
+        self._boxing_b_spin.setRange(0.0, 100.0)
         self._boxing_b_spin.setSuffix(" mm")
         self._boxing_b_spin.setSingleStep(0.5)
         self._boxing_b_spin.setDecimals(1)
@@ -3590,7 +4115,7 @@ class MainWindow(QMainWindow):
         boxing_lay.addRow(ab_w)
 
         self._boxing_dbl_spin = QDoubleSpinBox()
-        self._boxing_dbl_spin.setRange(5.0, 45.0)
+        self._boxing_dbl_spin.setRange(0.0, 60.0)
         self._boxing_dbl_spin.setSuffix(" mm")
         self._boxing_dbl_spin.setSingleStep(0.5)
         self._boxing_dbl_spin.setDecimals(1)
@@ -3696,7 +4221,7 @@ class MainWindow(QMainWindow):
         self._pad_w_spin.setValue(45.0)
         self._pad_w_spin.setToolTip("Width of pad block (mm). Toggle visibility with the Pad button.")
         self._pad_w_spin.valueChanged.connect(
-            lambda v: self._pad_guide.set_width(v))
+            lambda v: self._on_pad_size_changed(width=v))
         pad_lay.addRow("Width:", self._pad_w_spin)
 
         self._pad_h_spin = QDoubleSpinBox()
@@ -3706,7 +4231,7 @@ class MainWindow(QMainWindow):
         self._pad_h_spin.setValue(45.0)
         self._pad_h_spin.setToolTip("Height of pad block (mm).")
         self._pad_h_spin.valueChanged.connect(
-            lambda v: self._pad_guide.set_height(v))
+            lambda v: self._on_pad_size_changed(height=v))
         pad_lay.addRow("Height:", self._pad_h_spin)
 
         guides_lay.addWidget(pad_box)
@@ -3757,7 +4282,11 @@ class MainWindow(QMainWindow):
         self._fill_opacity_slider.setRange(0, 100)
         self._fill_opacity_slider.setValue(50)
         self._fill_opacity_slider.valueChanged.connect(self._on_fill_opacity_changed)
-        fill_lay.addRow("Opacity:", self._fill_opacity_slider)
+        self._fill_opacity_slider.setToolTip(
+            "How much the fill covers what is behind it, the face photo among "
+            "them. A swatch image is shown at this opacity too.")
+        fill_lay.addRow("Opacity:", _slider_row(self._fill_opacity_slider,
+                                                lambda v: f"{v}%"))
 
         guides_lay.addWidget(fill_box)
         self._fill_box = fill_box   # ref for section show/hide
@@ -3817,7 +4346,10 @@ class MainWindow(QMainWindow):
             round(DEFAULT_INLAY_FILL_OPACITY * 100))
         self._inlay_fill_opacity_slider.valueChanged.connect(
             self._on_inlay_fill_opacity_changed)
-        inlay_lay.addRow("Opacity:", self._inlay_fill_opacity_slider)
+        self._inlay_fill_opacity_slider.setToolTip(
+            "How much each inlay covers the frame fill and the photo behind it.")
+        inlay_lay.addRow("Opacity:", _slider_row(self._inlay_fill_opacity_slider,
+                                                 lambda v: f"{v}%"))
 
         guides_lay.addWidget(inlay_box)
         self._inlay_fill_box = inlay_box   # ref for section show/hide
@@ -3900,7 +4432,9 @@ class MainWindow(QMainWindow):
             "the color exactly as picked; drag right for a deeper dye.")
         self._lens_fill_intensity_slider.valueChanged.connect(
             self._on_lens_fill_intensity_changed)
-        lens_fill_lay.addRow("Intensity:", self._lens_fill_intensity_slider)
+        lens_fill_lay.addRow("Intensity:", _slider_row(
+            self._lens_fill_intensity_slider,
+            lambda v: f"×{intensity_from_slider(v):.2f}"))
 
         self._lens_fill_opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self._lens_fill_opacity_slider.setRange(0, 100)
@@ -3911,7 +4445,8 @@ class MainWindow(QMainWindow):
             "frame fill. For the tint's own strength, use Intensity.")
         self._lens_fill_opacity_slider.valueChanged.connect(
             self._on_lens_fill_opacity_changed)
-        lens_fill_lay.addRow("Opacity:", self._lens_fill_opacity_slider)
+        lens_fill_lay.addRow("Opacity:", _slider_row(self._lens_fill_opacity_slider,
+                                                     lambda v: f"{v}%"))
 
         guides_lay.addWidget(lens_fill_box)
         self._lens_fill_box = lens_fill_box   # ref for section show/hide
@@ -3936,29 +4471,60 @@ class MainWindow(QMainWindow):
         img_vlay = QVBoxLayout(img_box.body)
         img_vlay.setSpacing(6)
 
-        # Add / Remove buttons
+        # Add / Locate / Remove buttons
         img_btn_row = QHBoxLayout()
         add_img_btn = QPushButton("Add Image…")
-        add_img_btn.setToolTip("Load a JPEG or PNG as a reference background layer.")
-        add_img_btn.clicked.connect(self._add_face)
+        add_img_btn.setToolTip(
+            "Load a JPEG or PNG as a reference background layer. It stays "
+            "where it is on this computer until you store it in the design "
+            "(the paperclip).")
+        # Not connected bare: clicked passes checked=False, which _add_face
+        # took for its path, so the button opened no dialog and did nothing.
+        add_img_btn.clicked.connect(lambda: self._add_face())
+        self._locate_img_btn = QPushButton("Locate…")
+        self._locate_img_btn.setEnabled(False)
+        self._locate_img_btn.setToolTip(
+            "Find the selected image on this computer: one the design does not "
+            "store, opened on another computer or moved since.")
+        self._locate_img_btn.clicked.connect(lambda: self._locate_face())
         self._remove_img_btn = QPushButton("Remove")
         self._remove_img_btn.setEnabled(False)
         self._remove_img_btn.setToolTip("Remove the selected reference image.")
         self._remove_img_btn.clicked.connect(self._remove_face)
         img_btn_row.addWidget(add_img_btn)
+        img_btn_row.addWidget(self._locate_img_btn)
         img_btn_row.addWidget(self._remove_img_btn)
         img_vlay.addLayout(img_btn_row)
 
-        # Image list
-        self._face_list = QListWidget()
-        self._face_list.setFixedHeight(72)
-        # Fixed, not the list's own Expanding: a fixed-height list that says
+        # The images, as the Layers panel shows layers: name, eye, padlock,
+        # and the paperclip of an image stored in the design.
+        self._face_tree = QTreeWidget()
+        self._face_tree.setHeaderHidden(True)
+        self._face_tree.setRootIsDecorated(False)
+        self._face_tree.setColumnCount(4)
+        hdr = self._face_tree.header()
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col in (1, 2, 3):
+            hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+            self._face_tree.setColumnWidth(col, 28)
+        self._face_tree.setFixedHeight(96)
+        # Fixed, not the tree's own Expanding: a fixed-height list that says
         # it expands made its section claim the tab's spare height as gaps.
-        self._face_list.setSizePolicy(QSizePolicy.Policy.Expanding,
+        self._face_tree.setSizePolicy(QSizePolicy.Policy.Expanding,
                                       QSizePolicy.Policy.Fixed)
-        self._face_list.setToolTip("Loaded reference images. Select one to adjust its settings.")
-        self._face_list.currentRowChanged.connect(self._on_face_list_selection_changed)
-        img_vlay.addWidget(self._face_list)
+        self._face_tree.setToolTip(
+            "Reference images, the last added on top.\n"
+            "Click the eye to show or hide one; hidden, it is left out of PNG "
+            "export and printing.\n"
+            "Click the padlock to lock or unlock its place, turn and scale.\n"
+            "Click the paperclip to store it in the design, so it shows on any "
+            "computer that opens the file.")
+        self._face_tree.currentItemChanged.connect(
+            lambda cur, _prev: self._on_face_row_changed(
+                self._face_tree.indexOfTopLevelItem(cur) if cur else -1))
+        self._face_tree.itemClicked.connect(self._on_face_tree_clicked)
+        img_vlay.addWidget(self._face_tree)
 
         # Per-image controls (disabled until an image is selected)
         img_ctrl_lay = QFormLayout()
@@ -3969,7 +4535,10 @@ class MainWindow(QMainWindow):
         self._opacity_slider.setValue(70)
         self._opacity_slider.setEnabled(False)
         self._opacity_slider.valueChanged.connect(self._on_face_opacity_changed)
-        img_ctrl_lay.addRow("Opacity:", self._opacity_slider)
+        self._opacity_slider.setToolTip("How strongly the selected reference "
+                                        "image shows under the drawing.")
+        img_ctrl_lay.addRow("Opacity:", _slider_row(self._opacity_slider,
+                                                    lambda v: f"{v}%"))
 
         self._rotation_spin = QDoubleSpinBox()
         self._rotation_spin.setRange(-180, 180)
@@ -3977,18 +4546,9 @@ class MainWindow(QMainWindow):
         self._rotation_spin.setSingleStep(0.5)
         self._rotation_spin.setEnabled(False)
         self._rotation_spin.valueChanged.connect(self._on_face_rotation_changed)
+        self._rotation_spin.setToolTip(
+            "Turn the selected image. Unlock it first (the padlock).")
         img_ctrl_lay.addRow("Rotation:", self._rotation_spin)
-
-        self._canvas_lock_chk = QCheckBox("Lock canvas position")
-        self._canvas_lock_chk.setChecked(True)
-        self._canvas_lock_chk.setEnabled(False)
-        self._canvas_lock_chk.setToolTip(
-            "When locked, the image cannot be accidentally dragged.\n"
-            "Uncheck to freely reposition it by clicking and dragging.\n"
-            "Re-check to lock it in place."
-        )
-        self._canvas_lock_chk.toggled.connect(self._on_canvas_lock_toggled)
-        img_ctrl_lay.addRow(self._canvas_lock_chk)
         img_vlay.addLayout(img_ctrl_lay)
 
         image_lay.addWidget(img_box)
@@ -3998,22 +4558,30 @@ class MainWindow(QMainWindow):
         calib_lay.setSpacing(6)
 
         self._calib_label = QLabel("Not set")
+        # Wrapped: unwrapped, the no-image sentence made the Canvas tab 430 px
+        # wide, past the dock's minimum, and the tab scrolled sideways.
+        self._calib_label.setWordWrap(True)
         calib_lay.addRow("Status:", self._calib_label)
 
         calib_btn = QPushButton("Calibrate (2-point)…")
         calib_btn.setToolTip(
-            "Click two landmarks on the face image, then enter their "
-            "real-world distance (mm) to rescale the photo to match."
-        )
+            "Click two landmarks on a reference image, then enter their real "
+            "distance (mm): the image is scaled to match. Each image keeps its "
+            "own calibration.")
         calib_btn.clicked.connect(self._start_calibration)
+        calib_btn.setEnabled(False)          # until there is an image
+        self._calib_btn = calib_btn
         calib_lay.addRow(calib_btn)
 
         self._pxmm_spin = QDoubleSpinBox()
         self._pxmm_spin.setRange(0.01, 9999.0)
         self._pxmm_spin.setDecimals(4)
-        self._pxmm_spin.setSuffix(" img-px/mm")
+        self._pxmm_spin.setSuffix(" px/mm")
         self._pxmm_spin.setValue(1.0)
-        self._pxmm_spin.setToolTip("Image pixels per real-world mm — enter directly or use 2-point calibration above.")
+        self._pxmm_spin.setEnabled(False)
+        self._pxmm_spin.setToolTip(
+            "The selected reference image's pixels per real millimeter: type "
+            "it, or use the 2-point calibration above.")
         self._pxmm_spin.editingFinished.connect(self._apply_manual_calib)
         calib_lay.addRow("Scale:", self._pxmm_spin)
 
@@ -4034,10 +4602,13 @@ class MainWindow(QMainWindow):
 
         btn_add = QPushButton("Bookmark Current State…")
         btn_add.setToolTip(
-            "Save a named snapshot of the current drawing as a revision point.\n"
-            "Bookmarks are saved with the design.")
+            "Save a named snapshot of this tab's drawing as a revision point.\n"
+            "Bookmarks are saved with the design; the hotkey adds one too.")
         btn_add.clicked.connect(self._add_bookmark)
         history_lay.addWidget(btn_add)
+        history_lay.addWidget(SettingsDialog._hint(
+            "Bookmarks are named snapshots of this tab's drawing, kept with the "
+            "design. Double-click one to go back to it."))
 
         self._timeline_list = QListWidget()
         self._timeline_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
@@ -4069,55 +4640,77 @@ class MainWindow(QMainWindow):
         lib_lay.setContentsMargins(8, 8, 8, 8)
         lib_lay.setSpacing(6)
 
-        self._lib_list = QListWidget()
-        self._lib_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-        self._lib_list.setAlternatingRowColors(True)
-        self._lib_list.setToolTip(
-            "Saved hinge pocket designs.\n"
-            "Double-click or press Import to insert geometry into the current workspace."
+        self._lib_tree = ComponentTree()
+        self._lib_tree.setAlternatingRowColors(True)
+        self._lib_tree.setToolTip(
+            "The component library: folders of hinges, bridges and whatever "
+            "else mounts on the posterior.\n"
+            "Double-click or press Import to place one in the current workspace.\n"
+            "On the Component tab, drag an entry into another folder, or a "
+            "folder to reorder them."
         )
-        self._lib_list.itemSelectionChanged.connect(self._on_lib_selection_changed)
-        self._lib_list.itemDoubleClicked.connect(lambda _: self._import_from_library())
-        lib_lay.addWidget(self._lib_list)
+        self._lib_tree.itemSelectionChanged.connect(self._on_lib_selection_changed)
+        self._lib_tree.itemDoubleClicked.connect(self._on_lib_double_clicked)
+        self._lib_tree.entry_dropped.connect(self._move_library_entry)
+        self._lib_tree.folders_reordered.connect(self._reorder_library_folders)
+        lib_lay.addWidget(self._lib_tree)
 
         self._btn_lib_import = QPushButton("Import into Workspace")
         self._btn_lib_import.setEnabled(False)
         self._btn_lib_import.setToolTip(
-            "Insert the selected hinge design into the current workspace\n"
-            "as HINGE-layer curves, centered at the canvas origin."
+            "Insert the selected component into this tab as one group,\n"
+            "centered on the origin. GuildModel cuts its COMPONENT curves as\n"
+            "pockets. They carry the folder's name too, which a later\n"
+            "GuildModel will read to tell a bridge from a hinge."
         )
         self._btn_lib_import.clicked.connect(self._import_from_library)
         lib_lay.addWidget(self._btn_lib_import)
 
-        # Hinge Pocket workspace only
-        self._lib_hinge_actions = QWidget()
-        hinge_btn_lay = QVBoxLayout(self._lib_hinge_actions)
-        hinge_btn_lay.setContentsMargins(0, 4, 0, 0)
-        hinge_btn_lay.setSpacing(4)
+        # Component workspace only: the library is kept where its entries are
+        # drawn.
+        self._lib_component_actions = QWidget()
+        comp_btn_lay = QVBoxLayout(self._lib_component_actions)
+        comp_btn_lay.setContentsMargins(0, 4, 0, 0)
+        comp_btn_lay.setSpacing(4)
 
-        self._btn_lib_save = QPushButton("Save Current Pocket…")
+        self._btn_lib_save = QPushButton("Save Current Component…")
         self._btn_lib_save.setToolTip(
-            "Save this Hinge Pocket workspace's geometry to the library."
+            "Save this Component workspace's geometry to a library folder."
         )
         self._btn_lib_save.clicked.connect(self._save_to_library)
-        hinge_btn_lay.addWidget(self._btn_lib_save)
+        comp_btn_lay.addWidget(self._btn_lib_save)
 
-        hinge_mgmt_row = QHBoxLayout()
+        comp_mgmt_row = QHBoxLayout()
+        self._btn_lib_new_folder = QPushButton("New Folder…")
+        self._btn_lib_new_folder.setToolTip(
+            "A folder for one kind of component, such as Hinges or Bridges. A "
+            "component placed from it carries the folder's name; a later "
+            "GuildModel will read a name with \"hinge\" in it as a hinge, and "
+            "any other as a mount.")
+        self._btn_lib_new_folder.clicked.connect(self._new_library_folder)
         self._btn_lib_rename = QPushButton("Rename…")
         self._btn_lib_rename.setEnabled(False)
         self._btn_lib_rename.clicked.connect(self._rename_library_entry)
         self._btn_lib_delete = QPushButton("Delete")
         self._btn_lib_delete.setEnabled(False)
         self._btn_lib_delete.clicked.connect(self._delete_library_entry)
-        hinge_mgmt_row.addWidget(self._btn_lib_rename)
-        hinge_mgmt_row.addWidget(self._btn_lib_delete)
-        hinge_btn_lay.addLayout(hinge_mgmt_row)
+        comp_mgmt_row.addWidget(self._btn_lib_new_folder)
+        comp_mgmt_row.addWidget(self._btn_lib_rename)
+        comp_mgmt_row.addWidget(self._btn_lib_delete)
+        comp_btn_lay.addLayout(comp_mgmt_row)
 
-        lib_lay.addWidget(self._lib_hinge_actions)
+        self._btn_lib_move = QPushButton("Move to Folder…")
+        self._btn_lib_move.setEnabled(False)
+        self._btn_lib_move.setToolTip("Move the selected entry into another folder.")
+        self._btn_lib_move.clicked.connect(self._move_library_entry_to_folder)
+        comp_btn_lay.addWidget(self._btn_lib_move)
+
+        lib_lay.addWidget(self._lib_component_actions)
         lib_lay.addStretch()
-        lib_tabs.addTab(pockets_w, "Pockets")
+        lib_tabs.addTab(pockets_w, "Components")
 
         lib_tabs.addTab(self._build_holes_panel(), "Holes")
+        self._lib_tabs = lib_tabs          # Holes is shown on the Frame Front only
         tabs.addTab(SettingsDialog._scrolled(lib_tabs), "Library")
 
         self._side_tabs = tabs
@@ -4134,6 +4727,9 @@ class MainWindow(QMainWindow):
         fit = bar.sizeHint().width() + 10
         bar.setTabText(3, "History")
         self._prop_dock.setMinimumWidth(max(_DOCK_WIDTH, fit))
+        # Room for the canvas beside the dock: at the old minimum it was
+        # 110 px wide next to a 350 px panel.
+        self.setMinimumWidth(max(self._prop_dock.minimumWidth() + 480, 820))
         self._wheel_guard = _WheelGuard(self)
         self._wheel_guard.guard(tabs)
         self._set_fold_state(self._prefs.get("dock_folds"))
@@ -4175,8 +4771,29 @@ class MainWindow(QMainWindow):
             self._layer_refresh_pending = True
             QTimer.singleShot(0, self, self._do_layer_panel_refresh)
 
+    # What a fresh tab says until something is on it (CanvasView.set_empty_hint).
+    _EMPTY_HINTS = {
+        "front": ("Draw the frame's OUTLINE with Line or Spline, add a reference "
+                  "photo (File ▸ Add Reference Image…), or open a design (Ctrl+O)."),
+        "temple_r": ("Draw the temple's OUTLINE across the core line, or send the "
+                     "other temple here with Temple Copy."),
+        "temple_l": ("Draw the temple's OUTLINE across the core line, or send the "
+                     "other temple here with Temple Copy."),
+        "component": ("Draw a component on COMPONENT, a hinge's pocket or a "
+                      "bridge, to save to the library."),
+    }
+
+    def _sync_empty_hint(self, ws: "WorkspaceState | None" = None):
+        ws = ws or self._active_ws
+        empty = not (ws.doc_curves or ws.doc_texts or ws.doc_dims
+                     or ws.scene.face_count())
+        ws.view.set_empty_hint(self._EMPTY_HINTS.get(ws.workspace_type)
+                               if empty else None)
+
     def _do_layer_panel_refresh(self):
         self._layer_refresh_pending = False
+        self._sync_empty_hint()
+        self._apply_boxing_field_modes()          # Lock follows the lenses
         self._refresh_layer_panel()
         self._update_readiness()
         self._sync_inlay_tumble_enabled()   # follows the INLAY body count
@@ -4189,15 +4806,19 @@ class MainWindow(QMainWindow):
             self._sync_boxing_readouts()
 
     @staticmethod
-    def _curve_label(c: Curve) -> str:
+    def _curve_label(c: Curve, group_no: int | None = None) -> str:
+        """A Layers-panel row: the curve's kind and size, led by its group as
+        a number in this tab ("group 2"), or by its component's kind
+        ("Hinges 2"). The group's internal id meant nothing to the maker."""
         if c.kind in ("circle", "arc") and c.radius is not None:
             label = f"{c.kind}  r={c.radius:.1f}"
         else:
             label = f"{c.kind}  ·  {len(c.nodes)} nodes"
             if c.closed:
                 label += "  (closed)"
-        if c.group_id:
-            label = f"[grp {c.group_id[:4]}]  " + label
+        if c.component_kind or c.group_id:
+            lead = c.component_kind or "group"
+            label = (f"{lead} {group_no}" if group_no else lead) + "  ·  " + label
         return label
 
     @staticmethod
@@ -4210,12 +4831,13 @@ class MainWindow(QMainWindow):
     def _layer_icon(self, name: str) -> QIcon:
         """Theme-aware cached icon for the eye/padlock tree cells."""
         color = theme.color("chrome.ink")
+        on_row = theme.color("chrome.checked_ink")     # a selected row's ink
         cache = getattr(self, "_layer_icon_cache", None)
         if cache is None:
             cache = self._layer_icon_cache = {}
-        key = (name, color)
+        key = (name, color, on_row)
         if key not in cache:
-            cache[key] = _make_icon(name, color, color)
+            cache[key] = _make_icon(name, color, color, selected_color=on_row)
         return cache[key]
 
     def _refresh_layer_panel(self):
@@ -4228,6 +4850,13 @@ class MainWindow(QMainWindow):
         self._layer_tree_rows: dict = {}        # id(curve) -> row item
         self._layer_tree_text_rows: dict = {}   # id(TextObject) -> row item
         self._layer_tree_layer_rows: dict = {}  # Layer -> top-level row
+        group_no: dict = {}                     # group id -> 1, 2, … in draw order
+        for c in ws.doc_curves:
+            if c.group_id and c.group_id not in group_no:
+                group_no[c.group_id] = len(group_no) + 1
+        from .tooltips import format_tooltip
+        from PySide6.QtWidgets import QToolTip
+        tip_metrics = QFontMetrics(QToolTip.font())
         for layer in WORKSPACE_LAYERS[ws.workspace_type]:
             curves = [c for c in ws.doc_curves if c.layer == layer]
             texts  = [t for t in ws.doc_texts if t.layer == layer]
@@ -4235,7 +4864,11 @@ class MainWindow(QMainWindow):
             locked = ws.scene.is_layer_locked(layer)
             top = QTreeWidgetItem([f"{layer.value}  ({count})", "", ""])
             if layer in _LAYER_TIPS:
-                top.setToolTip(0, _LAYER_TIPS[layer])
+                # Wrapped as every other tip is: an item's own tip skips the
+                # app's tooltip filter.
+                top.setToolTip(0, format_tooltip(_LAYER_TIPS[layer], tip_metrics))
+            top.setToolTip(1, f"Show or hide {layer.value}")
+            top.setToolTip(2, f"Lock or unlock {layer.value}")
             top.setIcon(1, self._layer_icon(
                 "layer-show" if ws.scene.is_layer_visible(layer) else "layer-hide"))
             top.setIcon(2, self._layer_icon(
@@ -4254,7 +4887,8 @@ class MainWindow(QMainWindow):
             if not locked:
                 child_flags |= Qt.ItemFlag.ItemIsDragEnabled
             for c in curves:
-                child = QTreeWidgetItem([self._curve_label(c), "", ""])
+                child = QTreeWidgetItem(
+                    [self._curve_label(c, group_no.get(c.group_id)), "", ""])
                 child.setData(0, Qt.ItemDataRole.UserRole, ("curve", id(c)))
                 child.setFlags(child_flags)
                 top.addChild(child)
@@ -4423,11 +5057,11 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         if kind == "layer":
             layer = payload
-            menu.addAction(f"Set {layer.value} as active layer",
+            menu.addAction(f"Draw on {layer.value}",
                            lambda: self._set_active_layer(layer))
-            menu.addAction(f"Select all on {layer.value}",
+            menu.addAction(f"Select All on {layer.value}",
                            lambda: self._select_all_on_layer(layer))
-            act = menu.addAction(f"Move selection to {layer.value}",
+            act = menu.addAction(f"Move Selection to {layer.value}",
                                  lambda: self._move_selection_to_layer(layer))
             act.setEnabled(has_sel)
         else:
@@ -4471,11 +5105,18 @@ class MainWindow(QMainWindow):
         """Shared by the context menu and layer-panel drag-and-drop; takes
         CurveItems and TextItems. Locked layers keep their objects."""
         locked = [it for it in items if self.scene.is_layer_locked(self._item_layer(it))]
+        # A text stays engraving or reference: moved to OUTLINE it went out as
+        # letter-shaped cut-outs in the DXF, while GuildModel's .gdraw read
+        # dropped it, and the readiness dot checked neither.
+        texts_kept = ([it for it in items if isinstance(it, TextItem)]
+                      if layer not in (Layer.ENGRAVING, Layer.REF) else [])
         items = [it for it in items
-                 if self._item_layer(it) is not layer and it not in locked]
+                 if self._item_layer(it) is not layer and it not in locked
+                 and it not in texts_kept]
         if not items:
             self._status.showMessage(
-                f"Move to layer: {'layer is locked' if locked else 'already on ' + layer.value}")
+                "Move to layer: a text stays on ENGRAVING or REF" if texts_kept
+                else f"Move to layer: {'layer is locked' if locked else 'already on ' + layer.value}")
             return
         self._push_undo_snapshot()
         for it in items:
@@ -4485,6 +5126,8 @@ class MainWindow(QMainWindow):
                 self.scene._apply_layer_state_to_text(it)
             else:
                 it.curve.layer = layer
+                if layer != Layer.COMPONENT:
+                    it.curve.component_kind = None   # a kind is a component's
                 self.scene._apply_layer_state_to_item(it)
                 # Through refresh_curve, not the item alone: the ghost, both
                 # fills, a snapped boxing guide and the Measurements read the
@@ -4497,6 +5140,9 @@ class MainWindow(QMainWindow):
         msg = f"Moved {len(items)} object{'s' if len(items) != 1 else ''} → {layer.value}"
         if locked:
             msg += f"  ({len(locked)} on a locked layer left alone)"
+        if texts_kept:
+            msg += (f"  ({len(texts_kept)} text{'s' if len(texts_kept) != 1 else ''}"
+                    " left alone: a text stays on ENGRAVING or REF)")
         self._status.showMessage(msg)
 
     # ------------------------------------------------------------------
@@ -4509,8 +5155,19 @@ class MainWindow(QMainWindow):
         # selection change and wheel tick — the validator in that path made
         # select-all on a few hundred curves take seconds.
         layer = self._active_ws.active_layer.value
-        zoom  = round(self.view.zoom() * 100)
-        self._info_label.setText(f"{layer}  |  {zoom}%")
+        # Screen pixels per mm, as GuildModel shows it: "324%" was px/mm
+        # times 100, which a true-scale drafting tool must not call a percent.
+        z = self.view.zoom()
+        zoom = f"{z:.2f}" if z < 1.0 else f"{z:.1f}"
+        self._info_label.setText(f"Layer: {layer}  |  Zoom: {zoom} px/mm")
+
+    _readiness_deferred = False
+
+    def _flush_deferred_readiness(self):
+        """After a mouse release: the readiness a drag put off."""
+        if self._readiness_deferred:
+            self._readiness_deferred = False
+            self._update_readiness()
 
     def _update_readiness(self):
         """Recompute the 'Ready for GuildModel' dot for the active workspace."""
@@ -4582,12 +5239,12 @@ class MainWindow(QMainWindow):
         self._update_explode_enabled()
         self._act_snap_ep.setEnabled(self._edit_tool.has_selected_node())
 
+        self._sync_empty_hint(ws)
         # Fit the view the first time this workspace is shown — to the
         # geometry as well as the scene rect, so a loaded temple longer than
         # the default extents isn't half off-screen.
         if not ws.fitted:
-            rect = self.scene.sceneRect().united(self.scene.geometry_rect())
-            self.view.fit_view(rect)
+            self.view.fit_view(self._fit_rect(ws))
             ws.fitted = True
             self._update_info_label()
         if discarded:
@@ -4642,12 +5299,8 @@ class MainWindow(QMainWindow):
         # every tab switch would nudge a loaded document off its saved depth.
         # _on_lens_fill_intensity_changed is the sole writer.
         # (the two stop colors are written by _set_lens_fill_color directly)
-        # Face image list paths
-        ws.face_image_paths = [
-            self._face_list.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(self._face_list.count())
-        ]
-        ws.selected_face_idx = self._face_list.currentRow()
+        # (the images live in the scene, and selected_face_idx is written by
+        # the Canvas tab's row handler)
 
     def _restore_ws_sidebar_state(self, ws: "WorkspaceState"):
         """Read values from *ws* into sidebar widgets (block signals to avoid
@@ -4676,7 +5329,10 @@ class MainWindow(QMainWindow):
         ws.edit_tool.set_smooth_mode(ws.smooth_handles)
         if ws.scene.mirror:
             ws.scene.mirror.set_enabled(ws.mirror_enabled)
-        ws.scene.set_mirror_display(ws.mirror_enabled)
+        if ws.scene.mirror_display() != ws.mirror_enabled:
+            # Only on a change: every tab arrival rebuilt each Ghost and all
+            # three fills, a quarter second on a dense outline (the 2.0 hunt).
+            ws.scene.set_mirror_display(ws.mirror_enabled)
         ws.snap.set_mirror(0.0, ws.mirror_enabled, horizontal=(ws.workspace_type in ("temple_r", "temple_l")))
         ws.boxing_guide.set_mirror(ws.mirror_enabled)
 
@@ -4801,30 +5457,10 @@ class MainWindow(QMainWindow):
         # called by _on_workspace_changed right after this restore.)
 
         # ── Calibration display ─────────────────────────────────────────
-        self._pxmm_spin.blockSignals(True)
-        if ws.image_px_per_mm:
-            self._calib_label.setText(f"{ws.image_px_per_mm:.4f} img-px/mm")
-            self._pxmm_spin.setValue(ws.image_px_per_mm)
-        else:
-            self._calib_label.setText("Not set")
-            self._pxmm_spin.setValue(1.0)   # not the previous tab's value
-        self._pxmm_spin.blockSignals(False)
+        self._show_calibration(ws)
 
-        # ── Face image list ─────────────────────────────────────────────
-        self._face_list.blockSignals(True)
-        self._face_list.clear()
-        for path in ws.face_image_paths:
-            item = QListWidgetItem(os.path.basename(path))
-            item.setData(Qt.ItemDataRole.UserRole, path)
-            self._face_list.addItem(item)
-        self._face_list.blockSignals(False)
-        if ws.selected_face_idx >= 0:
-            self._face_list.setCurrentRow(ws.selected_face_idx)
-        has_sel = ws.selected_face_idx >= 0
-        self._remove_img_btn.setEnabled(has_sel)
-        self._opacity_slider.setEnabled(has_sel)
-        self._rotation_spin.setEnabled(has_sel)
-        self._canvas_lock_chk.setEnabled(has_sel)
+        # ── Reference images ────────────────────────────────────────────
+        self._refresh_face_list(ws)
 
     def _on_stock_width_changed(self, mm: float):
         """The blank guide's width is also the width a Frame Fill swatch spans,
@@ -4835,12 +5471,25 @@ class MainWindow(QMainWindow):
         ws.stock_guide.set_width(mm)
         ws.scene.set_fill_blank_width(mm)
         self._update_readiness()   # the fit warning follows the guide
+        self._mark_dirty()         # the guide sizes are saved with the design
 
     def _on_stock_height_changed(self, mm: float):
         ws = self._active_ws
         ws.stock_h = mm
         ws.stock_guide.set_height(mm)
         self._update_readiness()
+        self._mark_dirty()
+
+    def _on_pad_size_changed(self, width: float | None = None,
+                             height: float | None = None):
+        ws = self._active_ws
+        if width is not None:
+            ws.pad_w = width
+            ws.pad_guide.set_width(width)
+        if height is not None:
+            ws.pad_h = height
+            ws.pad_guide.set_height(height)
+        self._mark_dirty()
 
     # ── Frame fill controls ─────────────────────────────────────────────
 
@@ -4862,11 +5511,11 @@ class MainWindow(QMainWindow):
                 if status == "leak":
                     QMessageBox.information(
                         self, "Frame Fill",
-                        "The frame outline perimeter has a leak somewhere — its "
-                        "ends don't close into an enclosed region, so there's "
-                        "nothing to fill.\n\nClose the OUTLINE, or in Ghost mode "
-                        "snap the open half's endpoints onto the mirror line, "
-                        "then turn Frame Fill on again.")
+                        "The frame outline has a gap somewhere: its ends don't "
+                        "close around a region, so there is nothing to fill.\n\n"
+                        "Close the OUTLINE, or, with the Ghost on, snap the open "
+                        "half's ends onto the mirror line, then turn Frame Fill "
+                        "on again.")
                 else:  # "empty"
                     QMessageBox.information(
                         self, "Frame Fill",
@@ -4880,18 +5529,15 @@ class MainWindow(QMainWindow):
         self._mark_dirty()   # the fill is saved with the design
 
     def _on_fill_auto_disabled(self, status: str, ws):
-        """A geometry edit broke the OUTLINE perimeter while the fill was on;
-        the scene turned it off. Sync the checkbox and note it in the status
-        bar (quietly — no modal mid-edit)."""
-        ws.fill_visible = False
+        """A geometry edit opened the OUTLINE while the fill was on: the scene
+        paused the fill until the outline closes again. The box stays ticked;
+        the status bar says why (quietly — no modal mid-edit)."""
         if ws is self._active_ws:
-            self._fill_show_chk.blockSignals(True)
-            self._fill_show_chk.setChecked(False)
-            self._fill_show_chk.blockSignals(False)
-        if status == "leak":
             self._status.showMessage(
-                "Frame Fill turned off — the outline perimeter was broken.",
-                5000)
+                "Frame Fill paused: the outline does not close (a half drawn "
+                "against the axis needs the Ghost on). It returns when the "
+                "outline closes." if status == "leak" else
+                "Frame Fill paused: there is no OUTLINE to fill.", 6000)
 
     def _on_fill_color_clicked(self):
         ws = self._active_ws
@@ -5018,7 +5664,7 @@ class MainWindow(QMainWindow):
         ws = self._active_ws
         start = os.path.dirname(ws.fill_image) if ws.fill_image else ""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Frame fill material swatch", start,
+            self, "Frame Fill Material Swatch", start,
             "Images (*.jpg *.jpeg *.png *.bmp *.tiff *.tif)")
         def back_to_color_if_empty():
             # Leaving the auto-opened picker without a swatch — canceled, or
@@ -5028,7 +5674,7 @@ class MainWindow(QMainWindow):
                 ws.fill_style = "color"
                 self._apply_fill_material(ws)
                 self._sync_fill_style_widgets(ws)
-        if not path:
+        if not path or self._image_too_large(path):
             back_to_color_if_empty()
             return
         ws.scene.set_fill_blank_width(ws.stock_w)
@@ -5112,16 +5758,12 @@ class MainWindow(QMainWindow):
         self._mark_dirty()   # the fill is saved with the design
 
     def _on_inlay_fill_auto_disabled(self, status: str, ws):
-        """A geometry edit opened every INLAY body while the fill was on; the
-        scene turned it off. Sync the checkbox and note it quietly."""
-        ws.inlay_fill_visible = False
+        """An edit opened every INLAY body while the fill was on: the scene
+        paused it until one closes again. The box stays ticked."""
         if ws is self._active_ws:
-            self._inlay_fill_show_chk.blockSignals(True)
-            self._inlay_fill_show_chk.setChecked(False)
-            self._inlay_fill_show_chk.blockSignals(False)
-        if status == "leak":
             self._status.showMessage(
-                "Inlay Fill turned off — no inlay closes any more.", 5000)
+                "Inlay Fill paused: no inlay closes. It returns when one does.",
+                6000)
 
     def _on_inlay_fill_color_clicked(self):
         ws = self._active_ws
@@ -5210,7 +5852,7 @@ class MainWindow(QMainWindow):
         ws = self._active_ws
         start = os.path.dirname(ws.inlay_fill_image) if ws.inlay_fill_image else ""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Inlay fill image", start,
+            self, "Inlay Fill Image", start,
             "Images (*.jpg *.jpeg *.png *.bmp *.tiff *.tif)")
         def back_to_color_if_empty():
             # Leaving the auto-opened picker without an image puts the style
@@ -5219,7 +5861,7 @@ class MainWindow(QMainWindow):
                 ws.inlay_fill_style = "color"
                 self._apply_inlay_fill_material(ws)
                 self._sync_inlay_fill_style_widgets(ws)
-        if not path:
+        if not path or self._image_too_large(path):
             back_to_color_if_empty()
             return
         if not ws.scene.set_inlay_fill_image(path, reload=True):
@@ -5308,8 +5950,8 @@ class MainWindow(QMainWindow):
                         self, "Lens Fill",
                         "No lens aperture closes into an enclosed region, so "
                         "there's nothing to tint.\n\nClose the LENS shape — "
-                        "select it and press Join to fuse its ends — or in "
-                        "Ghost mode snap the open half's endpoints onto the "
+                        "select it and press Join to fuse its ends — or, with "
+                        "the Ghost on, snap the open half's ends onto the "
                         "mirror line, then turn Lens Fill on again.")
                 else:  # "empty"
                     QMessageBox.information(
@@ -5324,17 +5966,12 @@ class MainWindow(QMainWindow):
         self._mark_dirty()   # the tint is saved with the design
 
     def _on_lens_fill_auto_disabled(self, status: str, ws):
-        """A geometry edit opened every lens aperture while the fill was on;
-        the scene turned it off. Sync the checkbox and note it quietly."""
-        ws.lens_fill_visible = False
+        """An edit opened every lens aperture while the fill was on: the scene
+        paused it until one closes again. The box stays ticked."""
         if ws is self._active_ws:
-            self._lens_fill_show_chk.blockSignals(True)
-            self._lens_fill_show_chk.setChecked(False)
-            self._lens_fill_show_chk.blockSignals(False)
-        if status == "leak":
             self._status.showMessage(
-                "Lens Fill turned off — no lens aperture closes any more.",
-                5000)
+                "Lens Fill paused: no lens closes. It returns when one does.",
+                6000)
 
     def _set_lens_fill_color(self, which: str, color_hex: str):
         """Write one gradient stop (and its twin while the link is on)."""
@@ -5370,10 +6007,19 @@ class MainWindow(QMainWindow):
 
     def _on_lens_fill_link_toggled(self, on: bool):
         ws = self._active_ws
-        ws.lens_fill_linked = on
         if on:
-            # Collapse to a flat tint on the top stop — the primary of the pair.
+            # Collapse to a flat tint on the top stop — the primary of the
+            # pair — keeping the bottom stop to give back on unlink: it stayed
+            # the top's color, and the gradient had to be picked again.
+            ws.lens_fill_bottom_kept = ws.lens_fill_bottom
+            ws.lens_fill_linked = True
             self._set_lens_fill_color("top", ws.lens_fill_top)
+        else:
+            ws.lens_fill_linked = False
+            kept = getattr(ws, "lens_fill_bottom_kept", None)
+            if kept:
+                self._set_lens_fill_color("bottom", kept)
+            ws.lens_fill_bottom_kept = None
         self._mark_dirty()
 
     def _on_lens_fill_intensity_changed(self, value: int):
@@ -5394,7 +6040,7 @@ class MainWindow(QMainWindow):
         """Show/hide Guides-tab group boxes based on workspace type."""
         is_front  = (ws_type == "front")
         is_temple = (ws_type in ("temple_r", "temple_l"))
-        is_hinge  = (ws_type == "hinge")
+        is_component = (ws_type == "component")
         self._construction_guide_box.setVisible(is_front)
         self._boxing_guide_box.setVisible(is_front)
         self._stock_guide_box.setVisible(True)   # all workspaces have a stock rect
@@ -5406,11 +6052,21 @@ class MainWindow(QMainWindow):
         self._apply_toolbar_visibility(self._toolbar_prefs, ws_type)
         self._meas_front_box.setVisible(is_front)
         self._meas_temple_box.setVisible(is_temple)
+        lib_tabs = getattr(self, "_lib_tabs", None)
+        if lib_tabs is not None:
+            # Holes are the front's drill patterns: elsewhere Add Hole jumped
+            # to the Front to place one.
+            lib_tabs.setTabVisible(1, is_front)
         if is_temple:
             label = "Temple R" if ws_type == "temple_r" else "Temple L"
             self._meas_temple_box.set_title(f"Measurements — {label}")
-        # Library tab: save/rename/delete only in Hinge Pocket workspace
-        self._lib_hinge_actions.setVisible(is_hinge)
+        # Library tab: save, folders, rename, move and delete only in the
+        # Component workspace, and drag and drop with them: elsewhere a
+        # double-click that slipped moved an entry, and so changed its kind.
+        self._lib_component_actions.setVisible(is_component)
+        self._lib_tree.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove if is_component
+            else QAbstractItemView.DragDropMode.NoDragDrop)
 
     def _refresh_measurements(self):
         """Recompute and display workspace measurements in the Properties tab.
@@ -5426,104 +6082,112 @@ class MainWindow(QMainWindow):
             mirror_x = getattr(ws.scene.mirror, '_x', 0.0) if ws.scene.mirror else 0.0
             curves = ws.doc_curves
 
-            def _split(layer):
-                """Return (os_curves, od_curves) for *layer* partitioned by centroid x."""
-                os_c, od_c = [], []
-                for c in curves:
-                    if c.layer != layer or not c.nodes:
-                        continue
-                    cx = sum(n.x for n in c.nodes) / len(c.nodes)
-                    if cx > mirror_x:
-                        os_c.append(c)
-                    elif cx < mirror_x:
-                        od_c.append(c)
-                return os_c, od_c
+            ghost = bool(ws.mirror_enabled and ws.scene.mirror is not None)
+            tol = 0.1
 
-            def _set_lens(a_lbl, b_lbl, ed_lbl, a, b):
+            def _side(bb):
+                """+1 for a box wholly on the OS side of the axis (+x), -1 on
+                the OD side, 0 for one across it."""
+                if bb[0] > mirror_x + tol:
+                    return 1
+                if bb[2] < mirror_x - tol:
+                    return -1
+                return 0
+
+            # ── Frame width: OUTLINE layer ─────────────────────────────
+            # What is drawn, except a half on one side with the Ghost on,
+            # which the Ghost completes: the old split by node centroid
+            # doubled an asymmetric whole outline, and a monocle's rim with
+            # the Ghost off (GuildModel reads only the curves drawn).
+            all_out = [c for c in curves if c.layer == Layer.OUTLINE and c.nodes]
+            ob = _curves_bbox(all_out) if all_out else None
+            fw = None
+            if ob is not None:
+                side = _side(ob)
+                if ghost and side > 0:
+                    fw = 2.0 * (ob[2] - mirror_x)
+                elif ghost and side < 0:
+                    fw = 2.0 * (mirror_x - ob[0])
+                else:
+                    fw = ob[2] - ob[0]
+            self._meas_frame_width_lbl.setText(f"{fw:.1f} mm" if fw is not None else "—")
+            self._meas_frame_height_lbl.setText(
+                f"{ob[3] - ob[1]:.1f} mm" if ob else "—")
+
+            # ── Lens boxing: LENS layer ────────────────────────────────
+            # Use the SAMPLED bbox (same basis as the boxing guide + resizer) so
+            # the read-out, the drawn box, and the typed resize target all agree.
+            # Boxing measures the FINISHED (beveled) lens.
+            from .boxing import finished_geometry, lens_polygon, union_bbox
+            bevel_d = max(0.0, ws.bevel_depth)
+            os_len, od_len = [], []
+            for c in curves:
+                if c.layer != Layer.LENS or not c.nodes:
+                    continue
+                bb = union_bbox([c])
+                if bb is None:
+                    continue
+                cx = 0.5 * (bb[0] + bb[2])
+                (os_len if cx > mirror_x else od_len if cx < mirror_x else []).append(c)
+
+            def _eye(lenses):
+                """(A, B, ED, finished box) of one eye's finished lens, or Nones.
+                ED, the effective diameter: twice the longest radius from the
+                box center, as GuildModel and the OMA trace's FED take it (the
+                panel showed the box's diagonal, 10 to 16 mm more)."""
+                boxes, pts = [], []
+                for c in lenses:
+                    box, outline = finished_geometry(c, bevel_d)
+                    if box is None:
+                        continue
+                    boxes.append(box)
+                    if outline is None:
+                        poly = lens_polygon(c)
+                        outline = list(poly.exterior.coords) if not poly.is_empty else []
+                    pts += outline
+                if not boxes:
+                    return None, None, None, None
+                bx0 = min(b[0] for b in boxes); by0 = min(b[1] for b in boxes)
+                bx1 = max(b[2] for b in boxes); by1 = max(b[3] for b in boxes)
+                cx, cy = 0.5 * (bx0 + bx1), 0.5 * (by0 + by1)
+                ed = 2.0 * max((math.hypot(x - cx, y - cy) for x, y in pts),
+                               default=0.0)
+                return bx1 - bx0, by1 - by0, ed, (bx0, by0, bx1, by1)
+
+            os_a, os_b, os_ed, os_fb = _eye(os_len)
+            od_a, od_b, od_ed, od_fb = _eye(od_len)
+            # One eye drawn: with the Ghost on its twin is that eye mirrored;
+            # with it off this is a monocle, and the other eye has no numbers.
+            if ghost and os_a is not None and od_a is None:
+                od_a, od_b, od_ed = os_a, os_b, os_ed
+            elif ghost and od_a is not None and os_a is None:
+                os_a, os_b, os_ed = od_a, od_b, od_ed
+
+            def _set_lens(a_lbl, b_lbl, ed_lbl, a, b, ed):
                 if a is None:
                     for lbl in (a_lbl, b_lbl, ed_lbl):
                         lbl.setText("—")
                 else:
                     a_lbl.setText(f"{a:.1f} mm")
                     b_lbl.setText(f"{b:.1f} mm")
-                    ed_lbl.setText(f"{math.sqrt(a*a + b*b):.1f} mm")
+                    ed_lbl.setText(f"{ed:.1f} mm")
 
-            # ── Frame width: OUTLINE layer ─────────────────────────────
-            os_out, od_out = _split(Layer.OUTLINE)
-            os_ob = _curves_bbox(os_out) if os_out else None
-            od_ob = _curves_bbox(od_out) if od_out else None
+            _set_lens(self._meas_os_a_lbl, self._meas_os_b_lbl, self._meas_os_ed_lbl,
+                      os_a, os_b, os_ed)
+            _set_lens(self._meas_od_a_lbl, self._meas_od_b_lbl, self._meas_od_ed_lbl,
+                      od_a, od_b, od_ed)
 
-            if os_ob and od_ob:
-                all_ob = _curves_bbox(os_out + od_out)
-                fw = all_ob[2] - all_ob[0]
-            elif os_ob:
-                # One side drawn: full width = 2 × distance from the mirror
-                # axis to the outermost edge (not 2 × the half's own width).
-                fw = 2.0 * (os_ob[2] - mirror_x)
-            elif od_ob:
-                fw = 2.0 * (mirror_x - od_ob[0])
-            else:
-                # Joined closed outline centered on mirror axis (centroid == mirror_x)
-                # is dropped by _split; measure directly from all OUTLINE curves.
-                all_out_raw = [c for c in curves if c.layer == Layer.OUTLINE and c.nodes]
-                all_ob = _curves_bbox(all_out_raw) if all_out_raw else None
-                fw = (all_ob[2] - all_ob[0]) if all_ob else None
-            self._meas_frame_width_lbl.setText(f"{fw:.1f} mm" if fw is not None else "—")
-
-            # Frame height — y-extent of all OUTLINE curves (mirror is vertical
-            # so no doubling). Every OUTLINE curve, not the two halves: _split
-            # drops a curve centered on the axis, and a joined outline read "—".
-            all_out = [c for c in curves if c.layer == Layer.OUTLINE and c.nodes]
-            fh_bb = _curves_bbox(all_out) if all_out else None
-            self._meas_frame_height_lbl.setText(
-                f"{fh_bb[3] - fh_bb[1]:.1f} mm" if fh_bb else "—")
-
-            # ── Lens boxing: LENS layer ────────────────────────────────
-            # Use the SAMPLED bbox (same basis as the boxing guide + resizer) so
-            # the read-out, the drawn box, and the typed resize target all agree.
-            from .boxing import union_bbox
-            os_len, od_len = _split(Layer.LENS)
-            os_lb = union_bbox(os_len) if os_len else None
-            od_lb = union_bbox(od_len) if od_len else None
-
-            # A/B for each side; if only one side exists, both show the same value
-            os_a = os_b = od_a = od_b = None
-            if os_lb:
-                os_a, os_b = os_lb[2] - os_lb[0], os_lb[3] - os_lb[1]
-            if od_lb:
-                od_a, od_b = od_lb[2] - od_lb[0], od_lb[3] - od_lb[1]
-            if os_lb and not od_lb:
-                od_a, od_b = os_a, os_b   # mirror — same shape
-            elif od_lb and not os_lb:
-                os_a, os_b = od_a, od_b   # mirror — same shape
-
-            # Boxing measures the FINISHED (beveled) lens: grow A/B by the bevel.
-            bevel_d = max(0.0, ws.bevel_depth)
-            if bevel_d > 0:
-                from .boxing import finished_ab
-                if os_a is not None:
-                    os_a, os_b = finished_ab(os_a, os_b, bevel_d)
-                if od_a is not None:
-                    od_a, od_b = finished_ab(od_a, od_b, bevel_d)
-
-            _set_lens(self._meas_os_a_lbl, self._meas_os_b_lbl, self._meas_os_ed_lbl, os_a, os_b)
-            _set_lens(self._meas_od_a_lbl, self._meas_od_b_lbl, self._meas_od_ed_lbl, od_a, od_b)
-
-            # DBL — distance between nasal edges of the two LENS bboxes
-            # OS nasal = os_lb[0] (left/inner edge of right-side lens)
-            # OD nasal = od_lb[2] (right/inner edge of left-side lens)
-            dbl = dbl_est = None
-            if os_lb and od_lb:
-                dbl = os_lb[0] - od_lb[2]
-            elif os_lb:
-                dbl = 2.0 * (os_lb[0] - mirror_x)
-                dbl_est = True
-            elif od_lb:
-                dbl = 2.0 * (mirror_x - od_lb[2])
-                dbl_est = True
-            if dbl is not None and bevel_d > 0:
-                from .boxing import finished_dbl
-                dbl = finished_dbl(dbl, bevel_d)   # beveled nasal edges narrow DBL
+            # DBL — distance between the nasal edges of the two finished
+            # boxes; with one eye and the Ghost on, twice its nasal edge's
+            # distance from the axis (an estimate, marked ≈); a monocle has none.
+            dbl = None
+            dbl_est = False
+            if os_fb and od_fb:
+                dbl = os_fb[0] - od_fb[2]
+            elif ghost and os_fb:
+                dbl, dbl_est = 2.0 * (os_fb[0] - mirror_x), True
+            elif ghost and od_fb:
+                dbl, dbl_est = 2.0 * (mirror_x - od_fb[2]), True
 
             # Stash representative finished A/B/DBL for the snapped boxing read-outs.
             self._snap_a   = od_a if od_a is not None else os_a
@@ -5531,10 +6195,13 @@ class MainWindow(QMainWindow):
             self._snap_dbl = dbl
 
             if dbl is not None:
-                suffix = " mm ~" if dbl_est else " mm"
-                self._meas_dbl_lbl.setText(f"{dbl:.1f}{suffix}")
+                self._meas_dbl_lbl.setText(f"≈ {dbl:.1f} mm" if dbl_est else f"{dbl:.1f} mm")
+                self._meas_dbl_lbl.setToolTip(
+                    "An estimate: one lens is drawn, and the Ghost previews the "
+                    "other." if dbl_est else "")
             else:
                 self._meas_dbl_lbl.setText("—")
+                self._meas_dbl_lbl.setToolTip("")
 
         elif ws.workspace_type in ("temple_r", "temple_l"):
             curves = ws.doc_curves
@@ -5556,8 +6223,9 @@ class MainWindow(QMainWindow):
             # ghost on even when both halves were drawn.
             from .geometry import sample_curve
             ep_threshold = min_x + max(x_span * 0.1, 2.0)
+            # 64 samples a segment: 16 read up to 0.3 mm short at a corner.
             ys = [y for c in curves if c.layer in _TEMPLE_LAYERS and c.nodes
-                  for x, y, _t in sample_curve(c) if x <= ep_threshold]
+                  for x, y, _t in sample_curve(c, 64) if x <= ep_threshold]
             if ys and ws.mirror_enabled and ws.scene.mirror is not None:
                 axis = ws.scene.mirror.x         # a temple's axis is horizontal
                 if all(y <= axis + 1e-6 for y in ys) or all(y >= axis - 1e-6 for y in ys):
@@ -5585,7 +6253,14 @@ class MainWindow(QMainWindow):
         self._boxing_a_spin.setEnabled((not snapped) or locked)
         self._boxing_b_spin.setEnabled((not snapped) or locked)
         self._boxing_dbl_spin.setEnabled((not snapped) or locked)
-        self._lock_shape_chk.setEnabled(snapped)
+        if not snapped:
+            for spin in (self._boxing_a_spin, self._boxing_b_spin,
+                         self._boxing_dbl_spin):
+                spin.setSpecialValueText("")       # free: every value is one
+        # A shape to lock needs a lens: with none it was offered all the same.
+        has_lens = any(c.layer == Layer.LENS and not c.mirrored
+                       for c in ws.doc_curves)
+        self._lock_shape_chk.setEnabled(snapped and (has_lens or locked))
         self._outline_lock_chk.setEnabled(locked)
         # The A–B link acts only on a locked lens; lit otherwise, it looked
         # like it did something.
@@ -5593,10 +6268,18 @@ class MainWindow(QMainWindow):
 
     # A/B fields: drive the free box when not snapped; live-resize the locked
     # lens when locked (read-outs while snapped-but-unlocked never user-fire).
+    def _guide_edited(self, *_args):
+        """A guide value saved with the design changed: star it. Not while
+        Preferences pushes its values in (_apply_settings stars a drawn
+        design itself, and an empty one has nothing to lose)."""
+        if not getattr(self, "_applying_settings", False):
+            self._mark_dirty()
+
     def _on_boxing_a_value(self, v: float):
         ws = self._active_ws
         if not ws.boxing_snapped:
             self._boxing_guide.set_a(v)
+            self._guide_edited()
         elif ws.shape_locked:
             self._locked_resize_from_field("a", v)
 
@@ -5604,6 +6287,7 @@ class MainWindow(QMainWindow):
         ws = self._active_ws
         if not ws.boxing_snapped:
             self._boxing_guide.set_b(v)
+            self._guide_edited()
         elif ws.shape_locked:
             self._locked_resize_from_field("b", v)
 
@@ -5611,6 +6295,7 @@ class MainWindow(QMainWindow):
         ws = self._active_ws
         if not ws.boxing_snapped:
             self._boxing_guide.set_dbl(v)
+            self._guide_edited()
         elif ws.shape_locked:
             self._set_dbl_by_move(v)
 
@@ -5868,16 +6553,19 @@ class MainWindow(QMainWindow):
     def _sync_boxing_readouts(self):
         """Push the stashed finished A/B/DBL into the spinboxes (read-out display).
         Caller must have run _refresh_measurements first."""
-        vals = self._finished_box_values()
-        if vals is None:
-            return
+        vals = self._finished_box_values() or (None, None, None)
         for spin, val in zip(
                 (self._boxing_a_spin, self._boxing_b_spin, self._boxing_dbl_spin),
                 vals, strict=True):
-            if val is None:
-                continue
             spin.blockSignals(True)
-            spin.setValue(max(spin.minimum(), min(spin.maximum(), val)))
+            if val is None:
+                # Nothing to read: "—", not the free box's values, which the
+                # gray fields went on showing with no lens drawn.
+                spin.setSpecialValueText("—")
+                spin.setValue(spin.minimum())
+            else:
+                spin.setSpecialValueText("")
+                spin.setValue(max(spin.minimum(), min(spin.maximum(), val)))
             spin.blockSignals(False)
 
     def _schedule_boxing_follow(self, ws):
@@ -5897,8 +6585,18 @@ class MainWindow(QMainWindow):
         # Live measurements track node drags / moves regardless of snap state,
         # and so does the readiness dot (closing an outline's gap by dragging
         # its end node left the dot amber with the old gap in its tooltip).
+        # The validator waits for the button's release, though: it ran on
+        # every drag tick, 14-24 ms a tick on a dense drawing.
         self._refresh_measurements()
-        self._update_readiness()
+        # Deferred only while the canvas holds the mouse (a drag there): a
+        # press held elsewhere, on a spin box's arrow say, never reached the
+        # canvas's release, and the dot kept its old color.
+        grabber = QWidget.mouseGrabber()
+        on_canvas = grabber is not None and grabber in (self.view, self.view.viewport())
+        if on_canvas and QApplication.mouseButtons() & Qt.MouseButton.LeftButton:
+            self._readiness_deferred = True
+        else:
+            self._update_readiness()
         if ws.boxing_snapped:
             ws.boxing_guide.refresh()
             self._sync_boxing_readouts()
@@ -5957,8 +6655,8 @@ class MainWindow(QMainWindow):
         # to move an alt-clicked lower item (e.g. lens). If the press captured an
         # explicit pre-click selection, use that; otherwise fall back to current selection.
         items = self.view._drag_move_items or self.scene.selectedItems()
-        self._drag_moving_curves = [it.curve    for it in items
-                                    if isinstance(it, CurveItem)]
+        self._drag_moving_curves = self._with_group_members(
+            [it.curve for it in items if isinstance(it, CurveItem)])
         self._drag_moving_dims   = [it.dim      for it in items
                                     if isinstance(it, DimItem)]
         self._drag_moving_texts  = [it.text_obj for it in items
@@ -6058,6 +6756,18 @@ class MainWindow(QMainWindow):
         if self._move_gizmo is not None:
             self._move_gizmo.remove()
             self._move_gizmo = None
+
+    def _drop_orphan_gizmo(self, ws: "WorkspaceState"):
+        """A tab's gizmo goes with its selection, the tab active or not:
+        Temple Copy, New and Open clear another tab's selection, and its gizmo
+        stayed up over nothing, where a typed move pushed an empty undo step
+        and starred the design. (_on_selection_changed serves the active tab.)"""
+        if ws is self._active_ws or ws.move_gizmo is None:
+            return
+        if not any(isinstance(i, (CurveItem, DimItem, TextItem))
+                   for i in ws.scene.selectedItems()):
+            ws.move_gizmo.remove()
+            ws.move_gizmo = None
 
     def _toggle_move_gizmo(self):
         if self._move_gizmo is not None:
@@ -6268,7 +6978,7 @@ class MainWindow(QMainWindow):
         mb = self.menuBar()
 
         from PySide6.QtGui import QKeySequence
-        file_menu = mb.addMenu("File")
+        file_menu = mb.addMenu("&File")
         # New / Open / Quit and the zooms had no shortcuts at all. Kept on
         # self: a text+slot addAction's wrapper is Python-owned (see Ctrl+,).
         self._act_new = file_menu.addAction("New", self._new)
@@ -6293,10 +7003,12 @@ class MainWindow(QMainWindow):
         imp.addAction("SVG…", self._import_svg)
         imp.addAction("OMA Lens Trace…", self._import_oma)
         exp = file_menu.addMenu("Export")
-        exp.addAction("DXF…", self._export_dxf)
-        exp.addAction("All DXF…", self._export_all_dxf)
-        exp.addAction("SVG…", self._export_svg)
-        exp.addAction("PNG…", self._export_png)
+        # "This Tab" / "Every Tab": the first three export the tab in view
+        # only, and the menu used not to say so.
+        exp.addAction("DXF of This Tab…", self._export_dxf)
+        exp.addAction("DXF of Every Tab…", self._export_all_dxf)
+        exp.addAction("SVG of This Tab…", self._export_svg)
+        exp.addAction("PNG of This Tab…", self._export_png)
         exp.addAction("OMA Lens Trace…", self._export_oma)
         exp.addSeparator()
         exp.addAction("PDF (1:1 Scale)…", self._export_pdf_1to1)
@@ -6312,7 +7024,7 @@ class MainWindow(QMainWindow):
         self._act_quit = file_menu.addAction("Quit", self.close)
         self._act_quit.setShortcut(QKeySequence("Ctrl+Q"))
 
-        edit_menu = mb.addMenu("Edit")
+        edit_menu = mb.addMenu("&Edit")
         self._act_undo = edit_menu.addAction("Undo\tCtrl+Z", self._handle_undo)
         self._act_undo.setEnabled(False)
         self._act_redo = edit_menu.addAction("Redo\tCtrl+Y", self._redo)
@@ -6321,13 +7033,38 @@ class MainWindow(QMainWindow):
         edit_menu.addAction("Copy\tCtrl+C",        self._copy_selected)
         edit_menu.addAction("Paste\tCtrl+V",       self._paste)
         edit_menu.addAction("Duplicate\tCtrl+D",   self._duplicate_selected)
+        edit_menu.addAction("Delete\tDel",        self._delete_selected)
         edit_menu.addAction("Select All\tCtrl+A",  self._select_all)
         edit_menu.addAction("Transform…\tCtrl+T",  self._transform_selected)
+        self._menu_move_gizmo = edit_menu.addAction("Move Gizmo",
+                                                    self._toggle_move_gizmo)
         edit_menu.addSeparator()
         edit_menu.addAction("Group\tCtrl+G", self._group_selected)
         edit_menu.addAction("Ungroup\tCtrl+Shift+G", self._ungroup_selected)
+        edit_menu.addSeparator()
+        # Every operation on the tool bar, here too: a button hidden in
+        # Preferences ▸ Toolbar left Mirror, Split and the rest with no way to
+        # reach them. Each entry follows its button (enabled, per-tab rules).
+        modify = edit_menu.addMenu("Modify")
+        self._modify_menu = modify        # kept, as _recent_menu is
+        self._modify_menu_ops: dict[str, tuple[QAction, QAction]] = {}
+        for key, label, act in (
+                ("mirror",       "Mirror (Bake the Ghost)", self._act_dup_mirror),
+                ("mirror_close", "Mirror Close",            self._act_mirror_close),
+                ("copy_temple",  "Temple Copy",             self._act_copy_temple),
+                ("join",         "Join",                    self._act_join),
+                ("snap_node",    "Snap Node to Endpoint",   self._act_snap_ep),
+                ("split",        "Split at Node",           self._act_split),
+                ("explode",      "Explode",                 self._act_explode)):
+            proxy = QAction(label, self)
+            proxy.setToolTip(act.toolTip())
+            proxy.triggered.connect(lambda _checked=False, a=act: a.trigger())
+            modify.addAction(proxy)
+            self._modify_menu_ops[key] = (proxy, act)
+        modify.aboutToShow.connect(self._sync_modify_menu)
+        edit_menu.aboutToShow.connect(self._sync_edit_menu)
 
-        view_menu = mb.addMenu("View")
+        view_menu = mb.addMenu("&View")
         self._act_zoom_in = view_menu.addAction(
             "Zoom In", lambda: self.view.zoom_by(1.2))
         self._act_zoom_in.setShortcuts([QKeySequence("Ctrl++"),
@@ -6335,17 +7072,32 @@ class MainWindow(QMainWindow):
         self._act_zoom_out = view_menu.addAction(
             "Zoom Out", lambda: self.view.zoom_by(1 / 1.2))
         self._act_zoom_out.setShortcut(QKeySequence("Ctrl+-"))
-        self._act_fit_menu = view_menu.addAction("Fit", self._fit_view)
+        self._act_fit_menu = view_menu.addAction("Fit to Drawing", self._fit_view)
         self._act_fit_menu.setShortcut(QKeySequence("Ctrl+0"))
         view_menu.addSeparator()
-        # The menu's own entries for the two toggles, following the toolbar's
+        # The menu's own entries for the toggles, following the toolbar's
         # each time the menu opens. Sharing the toolbar's QActions meant that
         # hiding the button in Preferences ▸ Toolbar hid the menu entry too —
-        # and Ghost has no hotkey, so nothing could switch it any more.
+        # and Ghost has no hotkey, so nothing could switch it any more. Every
+        # toggle on the bar is here, for the same reason.
         self._view_menu_toggles: dict[str, tuple[QAction, QAction]] = {}
-        for key, act in (("ghost", self._act_mirror), ("guides", self._act_guides),
-                         ("obverse", self._act_obverse)):
-            proxy = QAction(act.text().replace("\n", " "), self, checkable=True)
+        for key, label, act in (
+                ("ghost",        "Ghost",               self._act_mirror),
+                ("obverse",      "View Obverse",        self._act_obverse),
+                (None, None, None),
+                ("guides",       "Construction Guides", self._act_guides),
+                ("boxing",       "Boxing Guide",        self._act_boxing),
+                ("stock",        "Stock Guide",         self._act_stock),
+                ("pad",          "Pad Guide",           self._act_pad),
+                ("grid",         "Grid",                self._act_grid),
+                (None, None, None),
+                ("snap",         "Snap",                self._act_snap),
+                ("snap_palette", "Snap Types",          self._act_snap_palette),
+                ("smooth",       "Smooth Handles",      self._act_smooth)):
+            if key is None:
+                view_menu.addSeparator()
+                continue
+            proxy = QAction(label, self, checkable=True)
             proxy.setToolTip(act.toolTip())
             proxy.triggered.connect(lambda checked, a=act: a.setChecked(checked))
             view_menu.addAction(proxy)
@@ -6356,10 +7108,17 @@ class MainWindow(QMainWindow):
             "Revision History",
             lambda: (self._prop_dock.show(), self._side_tabs.setCurrentIndex(3)),
         )
-        view_menu.addSeparator()
-        view_menu.addAction(self._prop_dock.toggleViewAction())
+        # Its own entry, with a check mark: the dock's toggle action carries
+        # the toolbar's icon, which a menu draws in place of the check.
+        self._menu_panel = QAction("Properties Panel", self, checkable=True)
+        # Through a lambda: bound straight to the dock's C++ setVisible,
+        # PySide6 picked triggered's no-argument overload, and every click
+        # raised a TypeError and left the panel as it was.
+        self._menu_panel.triggered.connect(
+            lambda on: self._prop_dock.setVisible(on))
+        view_menu.addAction(self._menu_panel)
 
-        settings_menu = mb.addMenu("Settings")
+        settings_menu = mb.addMenu("&Settings")
         self._act_dark = QAction("Dark Mode", self, checkable=True, checked=False)
         self._act_dark.triggered.connect(self._toggle_dark_mode)
         settings_menu.addAction(self._act_dark)
@@ -6372,14 +7131,50 @@ class MainWindow(QMainWindow):
             "Preferences…", self._open_settings)
         self._act_prefs.setShortcut(QKeySequence("Ctrl+,"))
 
+        help_menu = mb.addMenu("&Help")
+        self._act_about = help_menu.addAction("&About GuildDraw", self._on_about)
+
+    def _on_about(self):
+        """Help ▸ About GuildDraw, as GuildModel's Help ▸ About GuildModel."""
+        QMessageBox.about(
+            self, "About GuildDraw",
+            f"<b>GuildDraw</b> v{__version__}<br><br>"
+            "Free, open-source 2D drafting for acetate and horn eyewear, at "
+            "true millimeters: a frame front, its temples and the components "
+            "they carry, checked against a calibrated face photo.<br><br>"
+            "Companion to GuildModel, which turns a GuildDraw design into "
+            "toolpaths. The two never start each other: the hand-off is the "
+            ".gdraw file you open.<br><br>"
+            "GPLv3 — see LICENSE for details.")
+
+    # The hotkey a menu entry shows, by its key in prefs["hotkeys"].
+    _MENU_HOTKEYS = {"obverse": "obverse", "join": "join",
+                     "snap_node": "snap_node_ep"}
+
+    def _menu_label(self, proxy: QAction, key: str) -> None:
+        """Show the entry's current hotkey after a tab, as Qt lays out a
+        shortcut, without binding it twice (the QShortcut owns the key)."""
+        base = proxy.text().split("\t")[0]
+        hk = self._MENU_HOTKEYS.get(key)
+        key_str = getattr(self, "_hotkey_prefs", {}).get(hk, "").strip() if hk else ""
+        proxy.setText(f"{base}\t{key_str}" if key_str else base)
+
+    def _sync_modify_menu(self):
+        ws_type = self._active_ws.workspace_type
+        for key, (proxy, _act) in self._modify_menu_ops.items():
+            proxy.setEnabled(self._op_available(key))
+            allowed = _WS_ONLY_ACTIONS.get(key)
+            proxy.setVisible(allowed is None or ws_type in allowed)
+            self._menu_label(proxy, key)
+
     def _on_obverse_toggled(self, on: bool):
         """View Obverse turns the active tab's view only: a front and a temple
         may be seen from opposite faces at once."""
         ws = self._active_ws
         face = _OBVERSE_FACE.get(ws.workspace_type)
         if face is None:
-            # The Hinge Pocket's button is hidden, but its hotkey still
-            # triggers the action: the pocket has no other face to show.
+            # The Component tab's button is hidden, but its hotkey still
+            # triggers the action: a component has no other face to show.
             self._act_obverse.blockSignals(True)
             self._act_obverse.setChecked(False)
             self._act_obverse.blockSignals(False)
@@ -6395,6 +7190,12 @@ class MainWindow(QMainWindow):
             proxy.blockSignals(False)
             allowed = _WS_ONLY_ACTIONS.get(key)
             proxy.setVisible(allowed is None or ws_type in allowed)
+            self._menu_label(proxy, key)
+        self._menu_panel.setChecked(self._prop_dock.isVisible())
+
+    def _sync_edit_menu(self):
+        mk = getattr(self, "_hotkey_prefs", {}).get("move_gizmo", "").strip()
+        self._menu_move_gizmo.setText(f"Move Gizmo\t{mk}" if mk else "Move Gizmo")
 
     # ------------------------------------------------------------------
     # Tool switching
@@ -6447,7 +7248,53 @@ class MainWindow(QMainWindow):
         self._teardown_tools(clear_selection=False)
         self._status.showMessage("Select: click a curve to select and show nodes")
 
+    def _ask_to_act(self, title: str, text: str, act: str) -> bool:
+        """A question with one action button, the default, and Cancel."""
+        box = QMessageBox(QMessageBox.Icon.Question, title, text,
+                          QMessageBox.StandardButton.Cancel, self)
+        go = box.addButton(act, QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(go)
+        box.exec()
+        return box.clickedButton() is go
+
+    def _layer_ready_to_draw(self, layer: Layer) -> bool:
+        """A drawing tool on a hidden or locked layer asks first: a circle
+        drawn on hidden LENS vanished on finish, and a line drawn on locked
+        OUTLINE could never be selected. The answer shows or unlocks the
+        layer; Cancel goes back to Select."""
+        hidden = not self.scene.is_layer_visible(layer)
+        locked = self.scene.is_layer_locked(layer)
+        if not hidden and not locked:
+            return True
+        name = layer.value
+        if hidden and locked:
+            title, act = "Layer Hidden and Locked", "Show and Unlock"
+            text = (f"{name} is hidden and locked: a curve drawn on it would "
+                    f"not show, and could not be selected. Show and unlock "
+                    f"{name} to draw on it?")
+        elif hidden:
+            title, act = "Layer Hidden", f"Show {name}"
+            text = (f"{name} is hidden: a curve drawn on it would not show. "
+                    f"Show {name} to draw on it?")
+        else:
+            title, act = "Layer Locked", f"Unlock {name}"
+            text = (f"{name} is locked: a curve drawn on it could not be "
+                    f"selected or edited. Unlock {name} to draw on it?")
+        if not self._ask_to_act(title, text, act):
+            self._back_to_select(f"{name} is {'hidden' if hidden else 'locked'}: "
+                                 "nothing drawn")
+            return False
+        if hidden:
+            self.scene.set_layer_visible(layer, True)
+        if locked:
+            self.scene.set_layer_locked(layer, False)
+        self._mark_dirty()                 # the layer flags are saved
+        self._refresh_layer_panel()
+        return True
+
     def _set_tool_line(self):
+        if not self._layer_ready_to_draw(self._current_layer()):
+            return
         self._teardown_tools(clear_selection=True)
         self._draw_tool.activate("line", self._current_layer(), self.scene,
                                  self.view, snap=self._snap,
@@ -6456,6 +7303,8 @@ class MainWindow(QMainWindow):
         self._update_snap_context()
 
     def _set_tool_spline(self):
+        if not self._layer_ready_to_draw(self._current_layer()):
+            return
         self._teardown_tools(clear_selection=True)
         self._draw_tool.activate("spline", self._current_layer(), self.scene,
                                  self.view, snap=self._snap,
@@ -6464,6 +7313,8 @@ class MainWindow(QMainWindow):
         self._update_snap_context()
 
     def _set_tool_circle(self):
+        if not self._layer_ready_to_draw(self._current_layer()):
+            return
         self._teardown_tools(clear_selection=True)
         self._circle_tool.activate("circle", self._current_layer(), self.scene,
                                    self.view, snap=self._snap,
@@ -6472,6 +7323,8 @@ class MainWindow(QMainWindow):
         self.view.set_draw_tool(self._circle_tool)
 
     def _set_tool_arc(self):
+        if not self._layer_ready_to_draw(self._current_layer()):
+            return
         self._teardown_tools(clear_selection=True)
         self._circle_tool.activate("arc", self._current_layer(), self.scene,
                                    self.view, snap=self._snap,
@@ -6480,6 +7333,8 @@ class MainWindow(QMainWindow):
         self.view.set_draw_tool(self._circle_tool)
 
     def _set_tool_arc_sec(self):
+        if not self._layer_ready_to_draw(self._current_layer()):
+            return
         self._teardown_tools(clear_selection=True)
         self._circle_tool.activate("arc_sec", self._current_layer(), self.scene,
                                    self.view, snap=self._snap,
@@ -6504,6 +7359,8 @@ class MainWindow(QMainWindow):
         if Layer.ENGRAVING not in WORKSPACE_LAYERS[self._active_ws.workspace_type]:
             self._back_to_select(
                 "Text engraving is available in the Temple workspaces.")
+            return
+        if not self._layer_ready_to_draw(Layer.ENGRAVING):
             return
         self._teardown_tools(clear_selection=True)
         self._text_tool.activate(Layer.ENGRAVING, self.scene, self.view,
@@ -6543,7 +7400,7 @@ class MainWindow(QMainWindow):
 
     def _edit_text_object(self, text_obj):
         """Double-click on a TextItem — re-open the dialog pre-filled."""
-        dlg = TextDialog(self, text_obj)
+        dlg = TextDialog(self, text_obj, obverse=self.view.is_obverse())
         if _run_modal(dlg) != QDialog.DialogCode.Accepted:
             return
         v = dlg.values()
@@ -6576,7 +7433,16 @@ class MainWindow(QMainWindow):
         self._split_tool.activate(self.scene, self.view, lambda: self._doc_curves)
         self.view.set_draw_tool(self._split_tool)
 
+    # Why a shape tool leaves a placed component alone, as Insert Node does: a
+    # group is one rigid part, and Trim, Split and Rebuild broke its members
+    # out of it, dropping the group and the kind.
+    _GROUPED_REFUSAL = ("the curve belongs to a group (a placed component); "
+                        "ungroup it first (Ctrl+Shift+G)")
+
     def _on_trim_applied(self, original, remaining: list):
+        if original.group_id:
+            self._status.showMessage(f"Trim: {self._GROUPED_REFUSAL}", 6000)
+            return
         self._push_undo_snapshot()
         self._edit_tool.clear()
         self.scene.clearSelection()
@@ -6587,6 +7453,9 @@ class MainWindow(QMainWindow):
     def _on_split_applied(self, pairs: list):
         """Apply all splits from one click — [(original, [parts]), ...] —
         as a single undo step (an intersection split breaks several curves)."""
+        if any(original.group_id for original, _parts in pairs):
+            self._status.showMessage(f"Split: {self._GROUPED_REFUSAL}", 6000)
+            return
         self._push_undo_snapshot()
         self._edit_tool.clear()
         self.scene.clearSelection()
@@ -6596,6 +7465,9 @@ class MainWindow(QMainWindow):
                 self._active_ws.add_curve(c)
 
     def _on_fillet_applied(self, line1, line2, new_curves: list):
+        if line1.group_id or line2.group_id:
+            self._status.showMessage(f"Fillet: {self._GROUPED_REFUSAL}", 6000)
+            return
         self._push_undo_snapshot()
         self._edit_tool.clear()
         self.scene.clearSelection()
@@ -6627,6 +7499,12 @@ class MainWindow(QMainWindow):
         self.view.set_draw_tool(self._offset_tool)
 
     def _on_offset_applied(self, source_curve, offset_curve):
+        # The offset belongs with its source: a clearance outline of a placed
+        # hinge moves with the hinge and is of its kind.
+        offset_curve.group_id = source_curve.group_id
+        offset_curve.component_kind = (source_curve.component_kind
+                                       if offset_curve.layer == Layer.COMPONENT
+                                       else None)
         self._push_undo_snapshot()
         self._active_ws.add_curve(offset_curve)
         # Return to Select mode first (re-enables ItemIsSelectable on all items)
@@ -6655,6 +7533,9 @@ class MainWindow(QMainWindow):
             if isinstance(item, CurveItem) and not item.curve.mirrored
         ]
         source = selected[0] if len(selected) == 1 else None
+        if source is not None and source.group_id:
+            self._back_to_select(f"Rebuild: {self._GROUPED_REFUSAL}")
+            return
 
         self._teardown_tools(clear_selection=False)
         self._rebuild_tool.activate(self.scene, self.view, source)
@@ -6664,6 +7545,7 @@ class MainWindow(QMainWindow):
         # Rebuild REPLACES the source: the whole point is to swap a dense/heavy
         # curve for the clean one at the same place. Undoable, so Ctrl+Z brings
         # the original back.
+        rebuilt_curve.component_kind = source_curve.component_kind
         self._push_undo_snapshot()
         self._edit_tool.clear()
         self.scene.clearSelection()
@@ -6693,7 +7575,8 @@ class MainWindow(QMainWindow):
         # Relying on the live selection (or on the view's stale drag-capture
         # list) is why Point Move only worked intermittently.
         sel = self.scene.selectedItems()
-        self._pm_curves = [it.curve for it in sel if isinstance(it, CurveItem)]
+        self._pm_curves = self._with_group_members(
+            [it.curve for it in sel if isinstance(it, CurveItem)])
         self._pm_dims   = [it.dim for it in sel if isinstance(it, DimItem)]
         self._pm_texts  = [it.text_obj for it in sel if isinstance(it, TextItem)]
         if not self._pm_curves and not self._pm_dims and not self._pm_texts:
@@ -6707,6 +7590,10 @@ class MainWindow(QMainWindow):
 
     def _on_point_moved(self, dx: float, dy: float):
         """Translate the selection captured at tool activation by (dx, dy)."""
+        if dx == 0.0 and dy == 0.0:
+            # No step to undo for a move of nothing.
+            self._back_to_select("Point Move: the two points coincide; nothing moved")
+            return
         self._push_undo_snapshot()
         self._edit_tool.clear()
         self._drag_moving_curves = list(self._pm_curves)
@@ -6785,14 +7672,19 @@ class MainWindow(QMainWindow):
             ws.view.set_grid(visible=visible, spacing_mm=spacing, major=major,
                              minor_color=minor_color, major_color=major_color,
                              major_width=major_width)
-            ws.snap.set_grid_spacing(spacing)
+            # Grid snap only while the grid shows: shipped on with the grid
+            # hidden, it pulled most clicks in empty space onto an invisible
+            # 2 mm lattice.
+            ws.snap.set_grid_spacing(spacing if visible else 0.0)
         if save:
             _prefs_mod.save(self._prefs)
 
     def _on_grid_toggled(self, on: bool):
         self._prefs["grid_visible"] = bool(on)
+        spacing = float(self._prefs.get("grid_spacing_mm", 2.0))
         for ws in self._workspaces:
             ws.view.set_grid(visible=on)
+            ws.snap.set_grid_spacing(spacing if on else 0.0)   # see above
         _prefs_mod.save(self._prefs)
 
     def _on_snap_types_changed(self, types: dict):
@@ -6822,7 +7714,8 @@ class MainWindow(QMainWindow):
         # document, so this is an unsaved change.
         self._active_ws.mirror_enabled = on
         self._mark_dirty()
-        self._update_readiness()   # mirror doubling changes LENS/OUTLINE counts
+        self._update_readiness()   # the Ghost's twins are checked when it is on
+        self._refresh_measurements()   # a half's width and DBL lean on the Ghost
 
     def _on_curve_added(self, curve):
         curve.line_weight = self._default_line_weight
@@ -6831,10 +7724,32 @@ class MainWindow(QMainWindow):
         # Return to select mode so the user can immediately inspect the new curve
         self._act_select.setChecked(True)
         self._set_tool_select()
+        # The layer was switched mid-tool to a hidden or locked one (the tool
+        # asked when it started): say so rather than lose the curve from view.
+        if not self.scene.is_layer_visible(curve.layer):
+            self._status.showMessage(
+                f"The curve is on {curve.layer.value}, which is hidden: show "
+                "it in the Layers panel to see it.", 8000)
+        elif self.scene.is_layer_locked(curve.layer):
+            self._status.showMessage(
+                f"The curve is on {curve.layer.value}, which is locked: unlock "
+                "it in the Layers panel to select it.", 8000)
 
     # ------------------------------------------------------------------
     # Layer re-labeling for selected curves
     # ------------------------------------------------------------------
+
+    def _with_group_members(self, curves: list) -> list:
+        """*curves* and every other curve of their groups: a group moves,
+        turns, copies and deletes as one, its members on a hidden or locked
+        layer too (they cannot be selected, and were left behind, splitting
+        the group)."""
+        gids = {c.group_id for c in curves if c.group_id}
+        if not gids:
+            return list(curves)
+        have = {id(c) for c in curves}
+        return list(curves) + [c for c in self._doc_curves
+                               if c.group_id in gids and id(c) not in have]
 
     def _expand_selection_to_groups(self):
         """Selecting any member of a group selects the whole group.
@@ -6846,8 +7761,15 @@ class MainWindow(QMainWindow):
         gids = {i.curve.group_id for i in selected if i.curve.group_id}
         if not gids:
             return
+        # Members on a hidden or locked layer cannot be selected; they ride
+        # along with every whole-group operation instead (_with_group_members).
+        # Holding such a group unselectable made every placed shipped hinge
+        # (its pocket grouped with REF guide lines) unpickable while REF was
+        # hidden or locked.
         to_add = [it for it in self.scene._curve_items.values()
-                  if it.curve.group_id in gids and not it.isSelected()]
+                  if it.curve.group_id in gids and not it.isSelected()
+                  and self.scene.is_layer_visible(it.curve.layer)
+                  and not self.scene.is_layer_locked(it.curve.layer)]
         if not to_add:
             return
         self.scene.blockSignals(True)
@@ -6857,9 +7779,28 @@ class MainWindow(QMainWindow):
         # Repaint: blocked signals suppressed the view's selection-highlight update.
         self.view.viewport().update()
 
+    def _sync_weight_spin(self, selected: list):
+        """The Line weight box edits the selected curves, so it is live only
+        with one selected; with none it shows, grayed, the weight a new curve
+        takes. Typed with nothing selected, a weight did nothing, and the box
+        went on showing it."""
+        self._updating_weight_spin = True
+        try:
+            self._weight_spin.setValue(selected[0].curve.line_weight if selected
+                                       else self._default_line_weight)
+        finally:
+            self._updating_weight_spin = False
+        self._weight_spin.setEnabled(bool(selected))
+        self._weight_spin.setToolTip(
+            "Line weight of the selected curves, in screen pixels (display "
+            "only; it is not cut)." if selected else
+            "Select a curve to change its line weight. A new curve takes the "
+            "default in Preferences ▸ General.")
+
     def _on_selection_changed(self):
         """Reflect the selected curve's layer and weight in the UI (Select mode)."""
         if self._draw_tool.active or self._circle_tool.active:
+            self._sync_weight_spin([])
             return
         self._expand_selection_to_groups()
         selected = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
@@ -6879,9 +7820,7 @@ class MainWindow(QMainWindow):
                     self._syncing_selection = True
                     self._layer_tree.setCurrentItem(row)
                     self._syncing_selection = False
-            self._updating_weight_spin = True
-            self._weight_spin.setValue(selected[0].curve.line_weight)
-            self._updating_weight_spin = False
+        self._sync_weight_spin(selected)
         # A single selected engraving text highlights its panel row too.
         texts = [i for i in self.scene.selectedItems() if isinstance(i, TextItem)]
         if not selected and len(texts) == 1 and not self._syncing_selection:
@@ -6907,13 +7846,28 @@ class MainWindow(QMainWindow):
         if self._draw_tool.active:
             return
         targets = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
-        if not targets:
+        if not targets or all(abs(i.curve.line_weight - value) < 1e-9 for i in targets):
             return
-        self._push_undo_snapshot()
+        # One undo step for a run of arrow steps on one selection: each step
+        # pushed a deep copy, and a few dozen flooded the 100-step history.
+        # The run ends when the selection changes or another step lands on the
+        # stack (an undo, or any other edit), so the step is still ours on top.
+        ids = tuple(id(i.curve) for i in targets)
+        top = self._undo_stack[-1] if self._undo_stack else None
+        last_ids, last_top = self._weight_edit_key or ((), None)
+        if ids != last_ids or top is None or top is not last_top:
+            self._push_undo_snapshot()
+        self._weight_edit_key = (ids, self._undo_stack[-1] if self._undo_stack else None)
         for item in targets:
             item.curve.line_weight = value
             item.refresh()
+        # Every step stars the design, not only the one that pushed: a weight
+        # set right after a save left it clean, and closing lost it unasked.
+        self._mark_dirty()
         self._status.showMessage(f"Line weight → {value:.2f} px")
+
+    # (curve ids, its undo step) of the last weight edit; see _on_weight_spin_changed.
+    _weight_edit_key: tuple | None = None
 
     # ------------------------------------------------------------------
     # Undo / redo  (snapshot-based: full deep-copy of curves + dims)
@@ -6947,6 +7901,13 @@ class MainWindow(QMainWindow):
                                   self._offset_tool, self._point_move_tool)):
             self._act_select.setChecked(True)
             self._set_tool_select()
+        # A drag-to-move holds its curves too: Ctrl+Z mid-drag kept moving the
+        # old ones, and each move cast a Ghost for a curve no longer drawn.
+        if self._drag_moving_curves or self._drag_moving_dims or self._drag_moving_texts:
+            self.view.abandon_drag()
+            self._drag_moving_curves = []
+            self._drag_moving_dims   = []
+            self._drag_moving_texts  = []
 
     def _undo(self):
         self._end_operations_holding_curves()
@@ -7023,7 +7984,9 @@ class MainWindow(QMainWindow):
             self._active_ws.remove_text(item.text_obj)
 
         doc_ids = {id(c) for c in self._doc_curves}
-        to_remove = [item.curve for item in selected_curves if id(item.curve) in doc_ids]
+        to_remove = [c for c in self._with_group_members(
+                         [item.curve for item in selected_curves])
+                     if id(c) in doc_ids]
         if to_remove:
             self.scene.clearSelection()
             for curve in to_remove:
@@ -7072,7 +8035,8 @@ class MainWindow(QMainWindow):
     def _selection_payload(self):
         """(curves, dims, texts) behind the current canvas selection."""
         sel = self.scene.selectedItems()
-        curves = [it.curve    for it in sel if isinstance(it, CurveItem)]
+        curves = self._with_group_members(
+            [it.curve for it in sel if isinstance(it, CurveItem)])
         dims   = [it.dim      for it in sel if isinstance(it, DimItem)]
         texts  = [it.text_obj for it in sel if isinstance(it, TextItem)]
         return curves, dims, texts
@@ -7097,17 +8061,24 @@ class MainWindow(QMainWindow):
         self._clipboard = {"curves": copy.deepcopy(curves),
                            "dims":   copy.deepcopy(dims),
                            "texts":  copy.deepcopy(texts)}
+        self._paste_count = 0
         self._status.showMessage(
             self._payload_summary("Copied", curves, dims, texts))
+
+    # Pastes of the one clipboard so far: each lands one offset further on, as
+    # a second Ctrl+V landed exactly on the first and nothing flagged it.
+    _paste_count = 0
 
     def _paste(self):
         clip = getattr(self, "_clipboard", None)
         if not clip or not any(clip.get(k) for k in ("curves", "dims", "texts")):
             self._status.showMessage("Paste: clipboard is empty")
             return
+        self._paste_count += 1
         self._paste_payload(copy.deepcopy(clip["curves"]),
                             copy.deepcopy(clip["dims"]),
-                            copy.deepcopy(clip.get("texts", [])))
+                            copy.deepcopy(clip.get("texts", [])),
+                            steps=self._paste_count)
 
     def _duplicate_selected(self):
         curves, dims, texts = self._selection_payload()
@@ -7117,20 +8088,23 @@ class MainWindow(QMainWindow):
         self._paste_payload(copy.deepcopy(curves), copy.deepcopy(dims),
                             copy.deepcopy(texts))
 
-    def _paste_payload(self, curves: list, dims: list, texts: list = ()):
-        """Insert deep-copied curves/dims/texts at +5 mm offset and select them."""
+    def _paste_payload(self, curves: list, dims: list, texts: list = (),
+                       steps: int = 1):
+        """Insert deep-copied curves/dims/texts *steps* × 5 mm off and select
+        them."""
         self._push_undo_snapshot()
         allowed = set(WORKSPACE_LAYERS[self._active_ws.workspace_type])
         gid_map: dict = {}
         remapped = 0
         new_items = []
-        off = self._PASTE_OFFSET_MM
+        off = self._PASTE_OFFSET_MM * max(1, steps)
         for c in curves:
             self._translate_curve(c, off, off)
             if c.layer not in allowed:
                 # Layer doesn't exist in this workspace (cross-tab paste) —
                 # land on REF so the curve stays visible and non-machined.
                 c.layer = Layer.REF
+                c.component_kind = None
                 remapped += 1
             if c.group_id:
                 # Fresh group ids: the paste must not merge with the original
@@ -7151,6 +8125,18 @@ class MainWindow(QMainWindow):
         msg = self._payload_summary("Pasted", curves, dims, texts)
         if remapped:
             msg += f"  ({remapped} moved to REF — layer not in this workspace)"
+        layers = {c.layer for c in curves} | {t.layer for t in texts}
+        hidden = sorted(lay.value for lay in layers
+                        if not self.scene.is_layer_visible(lay))
+        locked = sorted(lay.value for lay in layers
+                        if self.scene.is_layer_visible(lay)
+                        and self.scene.is_layer_locked(lay))
+        if hidden:
+            msg += (f"  ({_and_list(hidden)} hidden: show "
+                    f"{'it' if len(hidden) == 1 else 'them'} to see the paste)")
+        if locked:
+            msg += (f"  ({_and_list(locked)} locked: unlock "
+                    f"{'it' if len(locked) == 1 else 'them'} to move the paste)")
         self._status.showMessage(msg)
 
     def _select_all(self):
@@ -7180,26 +8166,36 @@ class MainWindow(QMainWindow):
         if not items and not text_items and not dims:
             self._status.showMessage("Transform: select curves or text first")
             return
-        dlg = TransformDialog(self)
+        obverse = self.view.is_obverse()
+        dlg = TransformDialog(self, obverse=obverse)
         if _run_modal(dlg) != QDialog.DialogCode.Accepted:
             return
         sx, sy, rot, pivot_origin = dlg.values()
         if sx == 1.0 and sy == 1.0 and rot == 0.0:
             return
+        if obverse:
+            # The angle is the one on screen, as the Move gizmo's distances
+            # are: View Obverse mirrors the screen, and +30° turned the
+            # selection 30° clockwise there. Scene terms from here on.
+            rot = -rot
 
-        curves = [i.curve for i in items]
+        curves = self._with_group_members([i.curve for i in items])
         if pivot_origin:
             px = py = 0.0
         else:
             xs, ys = [], []
-            if curves:
-                bb = _curves_bbox(curves)
+            bb = _curves_bbox(curves) if curves else None
+            if bb is not None:              # None when nothing samples
                 xs += [bb[0], bb[2]]; ys += [bb[1], bb[3]]
             for ti in text_items:
                 r = ti.sceneBoundingRect()
                 xs += [r.left(), r.right()]; ys += [r.top(), r.bottom()]
             for d in dims:
                 xs += [d.x0, d.x1]; ys += [d.y0, d.y1]
+            if not xs:
+                self._status.showMessage(
+                    "Transform: the selection draws nothing to transform")
+                return
             px, py = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
 
         # The dialog's angle is counter-clockwise on screen; the scene is
@@ -7234,7 +8230,8 @@ class MainWindow(QMainWindow):
                 c0 = curve.nodes[0]
                 c0.x, c0.y = xf(c0.x, c0.y)
                 curve.radius = (curve.radius or 0.0) * abs(sx)
-                if curve.kind == "arc" and rot:
+                if (curve.kind == "arc" and rot and curve.start_angle is not None
+                        and curve.end_angle is not None):
                     # Rotation shifts both angles equally (same atan2 space,
                     # scene y-down, so a counter-clockwise turn subtracts)
                     curve.start_angle = (curve.start_angle - rot) % 360
@@ -7356,10 +8353,31 @@ class MainWindow(QMainWindow):
             self._status.showMessage("Mirror Close: need at least 2 nodes")
             return
 
-        self._push_undo_snapshot()
-
         is_horiz = bool(self.scene.mirror and getattr(self.scene.mirror, '_horizontal', False))
         axis_x   = self.scene.mirror.x if self.scene.mirror else 0.0
+
+        # A half reaches the axis at both ends and stays on one side of it.
+        # Any end was pulled onto the axis however far off it was, and a
+        # curve across the axis was reshaped, under a message of success.
+        def side(x: float, y: float) -> float:
+            return -y if is_horiz else x - axis_x
+
+        far = max(abs(side(n.x, n.y)) for n in (curve.nodes[0], curve.nodes[-1]))
+        if far > self._MIRROR_CLOSE_REACH_MM:
+            self._status.showMessage(
+                f"Mirror Close: an end is {far:.1f} mm from the axis. Bring both "
+                f"ends onto the axis (within {self._MIRROR_CLOSE_REACH_MM:g} mm; "
+                "the axis snap puts them on it), then try again.", 8000)
+            return
+        sides = [side(x, y) for x, y, _t in sample_curve(curve)]
+        if (max(sides, default=0.0) > self._MIRROR_CLOSE_REACH_MM
+                and min(sides, default=0.0) < -self._MIRROR_CLOSE_REACH_MM):
+            self._status.showMessage(
+                "Mirror Close: the curve crosses the axis. It closes a half "
+                "drawn on one side with its mirror image.", 8000)
+            return
+
+        self._push_undo_snapshot()
 
         def mp(x: float, y: float) -> tuple:
             return (x, -y) if is_horiz else (2.0 * axis_x - x, y)
@@ -7413,6 +8431,7 @@ class MainWindow(QMainWindow):
             nodes       = new_nodes,
             closed      = True,
             line_weight = curve.line_weight,
+            component_kind = curve.component_kind,
         )
 
         # Replace the open half with the new closed shape
@@ -7420,55 +8439,78 @@ class MainWindow(QMainWindow):
         self._active_ws.remove_curve(curve)
         self._active_ws.add_curve(new_curve)
         self._status.showMessage(
-            f"Mirror-closed → {len(new_nodes)}-node closed {new_curve.layer.value}"
-        )
+            f"Mirror Close: closed into a {len(new_nodes)}-node "
+            f"{new_curve.layer.value} curve")
+
+    # How far off the axis an end may be for Mirror Close to put it on.
+    _MIRROR_CLOSE_REACH_MM = 2.0
 
     # ------------------------------------------------------------------
-    # Duplicate Mirror — bake ghost into real geometry
+    # Mirror — bake the Ghost into real geometry
     # ------------------------------------------------------------------
 
     def _on_duplicate_mirror(self):
         """Create real mirrored copies of all selected curves across the mirror axis.
 
         After this operation both the originals and copies are independent
-        geometry.  The mirror toggle is turned off so the live ghost disappears
-        and export does not double-mirror the result.
+        geometry.  The mirror toggle is turned off so the live ghost does not
+        sit on the copies. A curve whose twin is already drawn, or would lie on
+        itself, is skipped (``validate.bake_skips``): Ctrl+A then Mirror on a
+        whole outline used to bake a second outline over the first.
         """
+        from .export.validate import bake_skips
         selected = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
         if not selected:
             self._status.showMessage(
-                "Duplicate Mirror: select one or more curves first"
+                "Mirror: select one or more curves first"
             )
             return
 
         is_horiz = bool(self.scene.mirror and getattr(self.scene.mirror, '_horizontal', False))
         axis_x   = self.scene.mirror.x if self.scene.mirror else 0.0
 
+        gid_map: dict = {}
+        copies = []
+        reasons: dict = {}                # why each skipped curve was skipped
+        drawn = [c for c in self._doc_curves if not c.mirrored]
+        traces: dict = {}                 # one trace per curve for the whole bake
+        # A group is baked whole, its members on a hidden or locked layer too.
+        sources = self._with_group_members([item.curve for item in selected])
+        for src in sources:
+            c = mirror_curve(src, axis_x, horizontal=is_horiz)
+            why = bake_skips(src, c, drawn + copies, horizontal=is_horiz,
+                             cache=traces)
+            if why:
+                reasons[why] = reasons.get(why, 0) + 1
+                continue
+            if src.group_id:          # the copy is its own rigid group
+                c.group_id = gid_map.setdefault(src.group_id, uuid.uuid4().hex[:8])
+            copies.append(c)
+        skipped = len(sources) - len(copies)
+        said = {"drawn already": "twin drawn already",
+                "on itself": "twin on the curve itself",
+                "overlaps itself": "across the axis, its twin over itself"}
+        why_text = "; ".join(f"{n} {said[k]}" for k, n in reasons.items())
+        if not copies:
+            self._status.showMessage(f"Mirror: nothing to bake ({why_text})")
+            return
+
         self._push_undo_snapshot()
         # This step turns Ghost off below; Undo puts it back (see undo()).
         self._undo_stack[-1]["mirror"] = self._act_mirror.isChecked()
         self.scene.clearSelection()
-
-        gid_map: dict = {}
-        copies = []
-        for item in selected:
-            c = mirror_curve(item.curve, axis_x, horizontal=is_horiz)
-            if item.curve.group_id:   # the copy is its own rigid group
-                c.group_id = gid_map.setdefault(item.curve.group_id,
-                                                uuid.uuid4().hex[:8])
-            copies.append(c)
         for c in copies:
             self._active_ws.add_curve(c)
 
-        # Turn off live mirror so the originals no longer generate a ghost
-        # and the export does not auto-mirror these curves a second time.
+        # Turn off live mirror so the originals no longer cast a ghost over
+        # their baked twins.
         self._act_mirror.setChecked(False)
 
         n = len(copies)
-        self._status.showMessage(
-            f"Duplicate Mirror: {n} curve{'s' if n != 1 else ''} duplicated. "
-            "Use Join or Mirror-Close to connect halves."
-        )
+        msg = f"Mirror: {n} curve{'s' if n != 1 else ''} baked"
+        if skipped:
+            msg += f"; {skipped} skipped ({why_text})"
+        self._status.showMessage(msg + ". Join or Mirror Close connects halves.")
 
     # ------------------------------------------------------------------
     # Mirror Copy: temple_r ↔ temple_l
@@ -7490,7 +8532,7 @@ class MainWindow(QMainWindow):
             return
 
         # Identify source and target workspace objects
-        tab_names = ["front", "temple_r", "temple_l", "hinge"]
+        tab_names = ["front", "temple_r", "temple_l", "component"]
         src_ws = self._active_ws
         if not (src_ws.doc_curves or src_ws.doc_dims or src_ws.doc_texts):
             self._status.showMessage(
@@ -7510,6 +8552,7 @@ class MainWindow(QMainWindow):
             f"Send a mirrored copy of this temple to {label}?\n\n{detail}\n"
             f"(Ctrl+Z in {label} restores its previous content.)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
         )
         if r != QMessageBox.StandardButton.Yes:
             return
@@ -7528,7 +8571,7 @@ class MainWindow(QMainWindow):
         gid_map: dict = {}
         for c in src_ws.doc_curves:
             m = mirror_curve(c, 0.0, horizontal=True)
-            if c.group_id:      # a grouped hinge stays a group on the other side
+            if c.group_id:      # a grouped component stays a group on the other side
                 m.group_id = gid_map.setdefault(c.group_id, uuid.uuid4().hex[:8])
             tgt_ws.add_curve(m)
         for d in src_ws.doc_dims:
@@ -7601,6 +8644,7 @@ class MainWindow(QMainWindow):
             closed=True,
             line_weight=curve.line_weight,
             group_id=source.group_id,
+            component_kind=source.component_kind,
         )
         self.scene.clearSelection()
         self._active_ws.remove_curve(source)
@@ -7632,25 +8676,41 @@ class MainWindow(QMainWindow):
 
         # Arcs store only their center node, so their endpoints can't be read
         # from nodes[0]/nodes[-1] — convert them to splines (with real endpoint
-        # nodes) before chaining. Closed circles have no endpoints to join to,
-        # so they're dropped from the join with a note.
+        # nodes) before chaining. Circles and closed curves have no endpoints
+        # to join to, so they're left out of the join, untouched, with a note
+        # (Join used to open a closed curve, and delete the circles it said it
+        # skipped).
         curves = []
-        skipped_circles = 0
+        joined = []                      # the originals the join replaces
+        skipped_circles = skipped_closed = 0
         for c in originals:
-            if c.kind == "arc":
-                curves.append(arc_to_spline(c))
-            elif c.kind == "circle":
+            if c.kind == "circle":
                 skipped_circles += 1
+            elif c.closed:
+                skipped_closed += 1
+            elif c.kind == "arc":
+                curves.append(arc_to_spline(c))
+                joined.append(c)
             else:
                 curves.append(c)
+                joined.append(c)
 
         if len(curves) < 2:
-            if skipped_circles:
+            if skipped_circles or skipped_closed:
                 self._status.showMessage(
-                    "Join: circles have no endpoints — trim/split a circle to an "
-                    "arc first, then join. Need 2+ joinable curves.")
+                    "Join: circles and closed curves have no endpoints — trim or "
+                    "split one open first, then join. Need 2+ joinable curves.")
             else:
                 self._status.showMessage("Join: select 2 or more joinable curves")
+            return
+        layers = sorted({c.layer.value for c in curves})
+        if len(layers) > 1:
+            # The joined curve took the layer of whichever curve headed the
+            # chain: REF + OUTLINE became REF, and a machined half stopped
+            # being cut, without a word.
+            self._status.showMessage(
+                f"Join: the curves are on {_and_list(layers)}; move them to one "
+                "layer first (right-click ▸ Move Selection to…)", 8000)
             return
 
         def ep_dist(a, b):
@@ -7664,6 +8724,7 @@ class MainWindow(QMainWindow):
         # Build chain: list of (curve, forward: bool)
         chain = [(curves[0], True)]
         remaining = list(curves[1:])
+        max_gap = 0.0          # the widest junction closed (the geometry moves)
 
         while remaining:
             c0, fwd0 = chain[0]
@@ -7687,6 +8748,7 @@ class MainWindow(QMainWindow):
 
             if best_d > self._JOIN_TOL:
                 break
+            max_gap = max(max_gap, best_d)
             remaining.remove(best_c)
             if   best_mode == "tail_fwd":    chain.append((best_c, True))
             elif best_mode == "tail_rev":    chain.append((best_c, False))
@@ -7724,8 +8786,10 @@ class MainWindow(QMainWindow):
                 result_nodes.extend(seg[1:])
 
         # Check if chain forms a closed loop
-        is_closed = ep_dist(result_nodes[0], result_nodes[-1]) < self._JOIN_TOL
+        close_gap = ep_dist(result_nodes[0], result_nodes[-1])
+        is_closed = close_gap < self._JOIN_TOL
         if is_closed:
+            max_gap = max(max_gap, close_gap)
             # Merge tail into head: head takes cp_in from tail
             tail = result_nodes[-1]
             head = result_nodes[0]
@@ -7736,34 +8800,46 @@ class MainWindow(QMainWindow):
             )
             result_nodes.pop()
 
+        # A group and a kind the curves all share carry over (both were lost).
+        gids = {c.group_id for c in joined}
+        kinds = {c.component_kind for c in joined}
         new_curve = _Curve(
             kind=result_kind,
             layer=result_layer,
             nodes=result_nodes,
             closed=is_closed,
             line_weight=result_weight,
+            group_id=gids.pop() if len(gids) == 1 else None,
+            component_kind=kinds.pop() if len(kinds) == 1 else None,
         )
 
         self.scene.clearSelection()
-        for c in originals:
+        for c in joined:
             self._active_ws.remove_curve(c)
 
         item = self._active_ws.add_curve(new_curve)
         item.setSelected(True)
-        note = (f"  ({skipped_circles} circle(s) skipped)"
-                if skipped_circles else "")
+        skipped = [f"{n} {what} skipped" for n, what in
+                   ((skipped_circles, "circle(s)"), (skipped_closed, "closed curve(s)"))
+                   if n]
+        note = f"  ({', '.join(skipped)})" if skipped else ""
+        if max_gap > 0.01:
+            # Ends up to _JOIN_TOL apart are brought together, which moves the
+            # geometry there: the one-curve close reported its gap, this did not.
+            note += f"  (ends up to {max_gap:.2f} mm apart were brought together)"
         self._status.showMessage(
             f"Joined {len(curves)} curves{note} → "
             f"{'closed' if is_closed else 'open'} {result_kind} "
-            f"({len(result_nodes)} nodes)"
-        )
+            f"({len(result_nodes)} nodes)", 8000)
 
     # ------------------------------------------------------------------
     # Snap selected node to nearest endpoint
     # ------------------------------------------------------------------
 
     def _snap_selected_node_to_endpoint(self):
-        """Move the selected (red) NodeDot to the nearest endpoint of any other open curve."""
+        """Move the selected (red) NodeDot onto the nearest free end of another
+        open curve on a visible layer, within reach (_snap_node_reach_mm)."""
+        from .geometry import open_ends
         dot = self._edit_tool.selected_dot
         if dot is None:
             self._status.showMessage(
@@ -7777,19 +8853,25 @@ class MainWindow(QMainWindow):
 
         best_x, best_y = None, None
         best_d         = float("inf")
+        reach = self._snap_node_reach_mm()
 
+        # A free end only (an arc's on its rim, not its center), on a shown
+        # layer, within reach: E moved a node 117 mm, onto a hidden SCULPT end.
         for c in self._doc_curves:
-            if c is curve or not c.nodes:
+            if c is curve or not self.scene.is_layer_visible(c.layer):
                 continue
-            # Only snap to endpoints of open curves
-            if not c.closed:
-                for ep in (c.nodes[0], c.nodes[-1]):
-                    d = math.hypot(ep.x - sx, ep.y - sy)
-                    if d < best_d:
-                        best_d, best_x, best_y = d, ep.x, ep.y
+            for ex, ey, _node in open_ends(c):
+                d = math.hypot(ex - sx, ey - sy)
+                if d < best_d:
+                    best_d, best_x, best_y = d, ex, ey
 
-        if best_x is None:
-            self._status.showMessage("Snap Node: no endpoints found on other open curves")
+        if best_x is None or best_d > reach:
+            self._status.showMessage(
+                f"Snap Node: no free end of another open curve within "
+                f"{reach:.1f} mm of this node (the snap reach at this zoom)", 6000)
+            return
+        if best_d < 1e-9:
+            self._status.showMessage("Snap Node: the node is on that end already")
             return
 
         self._push_undo_snapshot()
@@ -7814,29 +8896,68 @@ class MainWindow(QMainWindow):
                 break
 
         self._status.showMessage(
-            f"Snapped node to endpoint ({best_x:.2f}, {best_y:.2f}) mm  "
+            f"Snapped node to endpoint ({best_x:.2f}, {-best_y:.2f}) mm  "
             f"[moved {best_d:.2f} mm]"
         )
+
+    def _snap_node_reach_mm(self) -> float:
+        """How far E reaches: the snap radius at this zoom, and never less
+        than 2 mm, the gap a near-miss join leaves."""
+        px = float(self._prefs.get("snap_radius_px", 10))
+        return max(2.0, px / max(self.view.zoom(), 1e-6))
 
     # ------------------------------------------------------------------
     # Split / Explode  (Phase 10b)
     # ------------------------------------------------------------------
 
+    def _op_available(self, key: str) -> bool:
+        """Whether the operation *key* can run on the current selection.
+        Asked of the selection, not of the button: Qt reports a hidden action
+        as disabled, which grayed the Modify menu's entry for a button hidden
+        in Preferences ▸ Toolbar."""
+        if key == "split":
+            curves = [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]
+            return (len(curves) == 1 and self._edit_tool.has_selected_node()
+                    and self._split_refusal() is None)
+        if key == "explode":
+            return any(isinstance(i, CurveItem) for i in self.scene.selectedItems())
+        if key == "snap_node":
+            return self._edit_tool.has_selected_node()
+        return True
+
     def _update_split_enabled(self, _=None):
-        one_curve = (
-            len([i for i in self.scene.selectedItems() if isinstance(i, CurveItem)]) == 1
-        )
-        self._act_split.setEnabled(one_curve and self._edit_tool.has_selected_node())
+        self._act_split.setEnabled(self._op_available("split"))
+
+    def _split_refusal(self) -> str | None:
+        """Why Split cannot break the curve at the selected node, or None when
+        it can. A circle's or an arc's one node is its center, and splitting
+        there made a circle with no radius, or two arcs with no angles, which
+        vanished from the canvas and the DXF; an open curve's end node made a
+        one-node curve (the 2.0 bug hunt)."""
+        curve, idx = self._edit_tool.selected_node_info()
+        if curve is None:
+            return None
+        if curve.kind in ("circle", "arc"):
+            return (f"a {curve.kind}'s one node is its center; convert it to a "
+                    "spline to split it")
+        if len(curve.nodes) < 2:
+            return "the curve has a single node"
+        if not curve.closed and idx in (0, len(curve.nodes) - 1):
+            return "an end node already ends the curve"
+        return None
 
     def _update_explode_enabled(self):
-        any_curve = any(isinstance(i, CurveItem) for i in self.scene.selectedItems())
-        self._act_explode.setEnabled(any_curve)
+        self._act_explode.setEnabled(self._op_available("explode"))
 
     def _split_at_node(self):
         """Break the selected curve at the selected (red) node into two open curves."""
         curve, idx = self._edit_tool.selected_node_info()
         if curve is None or not any(c is curve for c in self._doc_curves):
             self._status.showMessage("Split: select a node first")
+            return
+        refusal = self._split_refusal()
+        if refusal:
+            self._status.showMessage(f"Split: {refusal}")
             return
 
         self._push_undo_snapshot()
@@ -7853,18 +8974,23 @@ class MainWindow(QMainWindow):
                        + copy.deepcopy(curve.nodes[:idx + 1]))
             results = [
                 Curve(kind=curve.kind, layer=curve.layer,
-                      nodes=rotated, closed=False, line_weight=curve.line_weight)
+                      nodes=rotated, closed=False, line_weight=curve.line_weight,
+                      component_kind=curve.component_kind)
             ]
         else:
             left_nodes  = copy.deepcopy(curve.nodes[:idx + 1])
             right_nodes = copy.deepcopy(curve.nodes[idx:])
             results = [
                 Curve(kind=curve.kind, layer=curve.layer,
-                      nodes=left_nodes,  closed=False, line_weight=curve.line_weight),
+                      nodes=left_nodes,  closed=False, line_weight=curve.line_weight,
+                      component_kind=curve.component_kind),
                 Curve(kind=curve.kind, layer=curve.layer,
-                      nodes=right_nodes, closed=False, line_weight=curve.line_weight),
+                      nodes=right_nodes, closed=False, line_weight=curve.line_weight,
+                      component_kind=curve.component_kind),
             ]
 
+        for c in results:
+            drop_end_handles(c)       # the split node's far-side handles
         self._active_ws.remove_curve(curve)
         self.scene.select_items([self._active_ws.add_curve(c) for c in results])
 
@@ -7887,6 +9013,14 @@ class MainWindow(QMainWindow):
             self._status.showMessage(
                 "Explode: circles and arcs have no segments to break apart")
             return
+        # An open curve of two nodes is one segment already: exploding it
+        # changed nothing and pushed an empty undo step.
+        selected_items = [i for i in selected_items
+                          if i.curve.closed or len(i.curve.nodes) > 2]
+        if not selected_items:
+            self._status.showMessage(
+                "Explode: each selected curve is a single segment already")
+            return
 
         self._push_undo_snapshot()
         self._edit_tool.clear()
@@ -7905,8 +9039,9 @@ class MainWindow(QMainWindow):
                 a   = copy.copy(nodes[i])
                 b   = copy.copy(nodes[(i + 1) % n])
                 seg = Curve(kind=curve.kind, layer=curve.layer,
-                            nodes=[a, b], closed=False, line_weight=curve.line_weight)
-                segments.append(seg)
+                            nodes=[a, b], closed=False, line_weight=curve.line_weight,
+                            component_kind=curve.component_kind)
+                segments.append(drop_end_handles(seg))
 
             self._active_ws.remove_curve(curve)
             new_items += [self._active_ws.add_curve(seg) for seg in segments]
@@ -7933,7 +9068,7 @@ class MainWindow(QMainWindow):
             "toolbar":             dict(self._toolbar_prefs),
             "hotkeys":             dict(self._hotkey_prefs),
         }
-        dlg = SettingsDialog(current, self)
+        dlg = SettingsDialog(current, self, images_in_use=self._images_in_use)
         accepted = _run_modal(dlg) == QDialog.DialogCode.Accepted
         # The size the maker left it at is theirs to keep, Cancel or OK.
         self._prefs["prefs_dialog_size"] = [int(dlg.width()), int(dlg.height())]
@@ -7942,7 +9077,30 @@ class MainWindow(QMainWindow):
             return
         self._apply_settings(dlg.to_prefs())
 
+    def _ask_apply_to_open_design(self) -> bool:
+        """Whether the changed guide sizes and startup choices go into the
+        open design as well as the ones that follow."""
+        box = QMessageBox(
+            QMessageBox.Icon.Question, "Apply to the Open Design?",
+            "The guide sizes and the switches under “On for New Designs” start "
+            "each new design. Apply the changes to the open design too? Its "
+            "blank and pad sizes are saved with it.",
+            QMessageBox.StandardButton.NoButton, self)
+        apply = box.addButton("Apply to This Design", QMessageBox.ButtonRole.AcceptRole)
+        later = box.addButton("New Designs Only", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(later)
+        box.setEscapeButton(later)
+        box.exec()
+        return box.clickedButton() is apply
+
     def _apply_settings(self, p: dict) -> None:
+        self._applying_settings = True          # see _guide_edited
+        try:
+            self._apply_settings_now(p)
+        finally:
+            self._applying_settings = False
+
+    def _apply_settings_now(self, p: dict) -> None:
         """Apply an accepted Settings-dialog prefs dict to the live session
         and persist it. Split from _open_settings so tests can exercise the
         apply logic without executing the modal dialog."""
@@ -7976,17 +9134,14 @@ class MainWindow(QMainWindow):
         else:
             self._refresh_theme_dependents()
 
-        # Drawing — the spin shows the default; guard it so the change is not
-        # applied to whatever curve happens to be selected (with an undo step).
+        # Drawing: the box shows the selection's weight, or the new default
+        # (_sync_weight_spin guards it so no curve takes the default).
         self._default_line_weight = p["default_line_weight"]
-        self._updating_weight_spin = True
-        try:
-            self._weight_spin.setValue(p["default_line_weight"])
-        finally:
-            self._updating_weight_spin = False
+        self._sync_weight_spin(
+            [i for i in self.scene.selectedItems() if isinstance(i, CurveItem)])
 
         # Startup toggles + guide dimensions — these prefs describe the Frame
-        # Front workspace (temple/hinge have their own fixed stock defaults),
+        # Front workspace (temple/component have their own fixed stock defaults),
         # so apply them to the front workspace ONLY. Driving the live toolbar
         # widgets from any other tab pushed front stock/pad guides into that
         # workspace's session state (GitHub issue #4: saving Settings inside a
@@ -8005,6 +9160,19 @@ class MainWindow(QMainWindow):
             "boxing_a_mm", "boxing_b_mm", "boxing_dbl_mm",
             "stock_width_mm", "stock_height_mm", "pad_width_mm", "pad_height_mm",
         ) if p[k] != old_prefs.get(k)}
+        temple_changed = {k for k in ("temple_stock_width_mm", "temple_stock_height_mm")
+                          if k in p and p[k] != old_prefs.get(k)}
+        # These start new designs. A design with something drawn keeps its own
+        # sizes unless the maker says otherwise: they are saved with it since
+        # 2.0, and OK rewrote them — silently from another tab — so the next
+        # save wrote a blank the design was never drawn against.
+        drawn = any(ws.doc_curves or ws.doc_texts or ws.doc_dims
+                    for ws in self._workspaces)
+        if (changed or temple_changed) and drawn:
+            if self._ask_apply_to_open_design():
+                self._mark_dirty()
+            else:
+                changed, temple_changed = set(), set()
         front = self._workspaces[0]
         if self._active_ws is front:
             # Widgets drive the active (= front) workspace via their signals.
@@ -8058,7 +9226,7 @@ class MainWindow(QMainWindow):
             for key, attr, spin in (
                     ("temple_stock_width_mm",  "stock_w", self._stock_w_spin),
                     ("temple_stock_height_mm", "stock_h", self._stock_h_spin)):
-                if key not in p or p[key] == old_prefs.get(key):
+                if key not in temple_changed:
                     continue
                 if self._active_ws is temple:
                     spin.setValue(p[key])
@@ -8163,11 +9331,15 @@ class MainWindow(QMainWindow):
         )
         if not ok or not name.strip():
             return
-        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        snapshot = self._take_snapshot()
+        # The Ghost goes with it, as with an undo step: a bookmark taken
+        # before a bake came back as half a frame with the Ghost off.
+        snapshot["mirror"] = self._act_mirror.isChecked()
         self._bookmarks.append({
             "name":      name.strip(),
             "timestamp": ts,
-            "snapshot":  self._take_snapshot(),
+            "snapshot":  snapshot,
         })
         self._refresh_timeline_list()
         self._timeline_list.setCurrentRow(len(self._bookmarks) - 1)
@@ -8182,10 +9354,16 @@ class MainWindow(QMainWindow):
         idx = items[0].data(Qt.ItemDataRole.UserRole)
         bm = self._bookmarks[idx]
         self._push_undo_snapshot()
+        ghost = bm["snapshot"].get("mirror")      # absent in pre-2.0 bookmarks
+        if ghost is not None:
+            # Undo brings back the Ghost the restore leaves (_step_across).
+            self._undo_stack[-1]["mirror"] = self._act_mirror.isChecked()
         # Deep-copy: _restore_snapshot installs the snapshot's objects as the
         # live document, and later in-place node edits would otherwise mutate
         # the stored bookmark.
         self._restore_snapshot(copy.deepcopy(bm["snapshot"]))
+        if ghost is not None and bool(ghost) != self._act_mirror.isChecked():
+            self._act_mirror.setChecked(bool(ghost))
         self._status.showMessage(f"Restored bookmark: {bm['name']}")
 
     def _rename_bookmark(self):
@@ -8210,8 +9388,9 @@ class MainWindow(QMainWindow):
         bm = self._bookmarks[idx]
         r = QMessageBox.question(
             self, "Delete Bookmark",
-            f"Delete bookmark \"{bm['name']}\"?",
+            f"Delete bookmark \u201c{bm['name']}\u201d?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if r == QMessageBox.StandardButton.Yes:
             self._bookmarks.pop(idx)
@@ -8219,40 +9398,75 @@ class MainWindow(QMainWindow):
             self._mark_dirty()
 
     # ------------------------------------------------------------------
-    # Hinge Library
+    # Component library
     # ------------------------------------------------------------------
 
-    def _refresh_library_panel(self) -> None:
-        """Repopulate the Library list from disk."""
-        from .library import HingeLibrary
-        lib = HingeLibrary()
-        entries = lib.list_entries()
-        self._lib_list.clear()
-        for e in entries:
-            item = QListWidgetItem(f"{e['name']}  ·  {e['date']}")
-            item.setData(Qt.ItemDataRole.UserRole, e["path"])
-            self._lib_list.addItem(item)
+    def _refresh_library_panel(self, select=None) -> None:
+        """Rebuild the Library tree from disk: the folders in the maker's
+        order, each with its entries, then any entry outside a folder.
+        *select* is the ``("folder", name)`` or ``("entry", path)`` to select
+        afterwards; by default the selection is kept."""
+        from .library import ComponentLibrary
+        from PySide6.QtWidgets import QStyle
+        if select is None:
+            select = ComponentTree.item_data(self._lib_tree.currentItem())
+        tree = self._lib_tree
+        tree.blockSignals(True)
+        tree.clear()
+        folder_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        picked = None
+        for group in ComponentLibrary().tree():
+            parent = tree
+            if group["folder"] is not None:
+                parent = QTreeWidgetItem(tree, [group["folder"]])
+                parent.setIcon(0, folder_icon)
+                parent.setData(0, Qt.ItemDataRole.UserRole, ("folder", group["folder"]))
+                parent.setExpanded(True)
+                if select == ("folder", group["folder"]):
+                    picked = parent
+            for e in group["entries"]:
+                # The name only: a shipped entry's date was the day it was
+                # copied in, the same on every row.
+                item = QTreeWidgetItem(parent, [e["name"]])
+                item.setToolTip(0, f"{e['name']}\nSaved {e['date']}")
+                item.setData(0, Qt.ItemDataRole.UserRole, ("entry", e["path"]))
+                if select == ("entry", e["path"]):
+                    picked = item
+        if picked is not None:
+            tree.setCurrentItem(picked)
+        tree.blockSignals(False)
         self._on_lib_selection_changed()
 
+    def _lib_selected(self):
+        """``("folder", name)``, ``("entry", path)`` or None."""
+        return ComponentTree.item_data(self._lib_tree.currentItem())
+
     def _on_lib_selection_changed(self) -> None:
-        has_sel = self._lib_list.currentRow() >= 0
-        self._btn_lib_import.setEnabled(has_sel)
-        self._btn_lib_rename.setEnabled(has_sel)
-        self._btn_lib_delete.setEnabled(has_sel)
+        sel = self._lib_selected()
+        is_entry = bool(sel) and sel[0] == "entry"
+        self._btn_lib_import.setEnabled(is_entry)
+        self._btn_lib_rename.setEnabled(bool(sel))
+        self._btn_lib_delete.setEnabled(bool(sel))
+        self._btn_lib_move.setEnabled(is_entry)
+
+    def _on_lib_double_clicked(self, item, _column=0) -> None:
+        data = ComponentTree.item_data(item)
+        if data and data[0] == "entry":
+            self._import_from_library()
 
     def _import_from_library(self) -> None:
-        item = self._lib_list.currentItem()
-        if not item:
+        sel = self._lib_selected()
+        if not sel or sel[0] != "entry":
             return
-        path = item.data(Qt.ItemDataRole.UserRole)
+        path = sel[1]
         try:
-            from .library import HingeLibrary
-            curves, dims = HingeLibrary().load_entry(path)
+            from .library import ComponentLibrary
+            curves, dims = ComponentLibrary().load_entry(path)
         except Exception as exc:
-            QMessageBox.critical(self, "Import failed", str(exc))
+            QMessageBox.critical(self, "Could Not Import", str(exc))
             return
         if not curves:
-            QMessageBox.information(self, "Empty entry",
+            QMessageBox.information(self, "Empty Entry",
                                     "This library entry contains no geometry.")
             return
 
@@ -8274,79 +9488,247 @@ class MainWindow(QMainWindow):
                 d.x0 -= cx;  d.y0 -= cy
                 d.x1 -= cx;  d.y1 -= cy
 
+        # The kind: the folder placed from, as the maker named it. GuildModel
+        # will read a kind with "hinge" in it as a hinge, any other as a
+        # mount; a component outside any folder carries none.
+        from .library import ComponentLibrary
+        kind = ComponentLibrary.kind_of(path)
         self._push_undo_snapshot()
-        # Import as a GROUP: the hinge moves as one rigid unit and exposes no
-        # node dots, so its nodes can't be distorted by accidental node drags
-        # snapping onto nearby frame geometry at the origin.
+        # Import as a GROUP: the component moves as one rigid unit and exposes
+        # no node dots, so its nodes can't be distorted by accidental node
+        # drags snapping onto nearby frame geometry at the origin.
         gid = uuid.uuid4().hex[:8]
+        # A layer this tab does not have lands on REF, as a paste's does: a
+        # component saved from the front with LENS and DRILL curves, placed on
+        # a temple, kept them, and the validator then refused the temple.
+        allowed = set(WORKSPACE_LAYERS[self._active_ws.workspace_type])
+        foreign = sorted({c.layer.value for c in curves if c.layer not in allowed})
         for c in curves:
             c.mirrored = False
             c.group_id = gid
+            if c.layer not in allowed:
+                c.layer = Layer.REF
+            c.component_kind = kind if c.layer == Layer.COMPONENT else None
             self._active_ws.add_curve(c)
         for d in dims:
             self._active_ws.add_dim(d)
 
-        name = item.text().split("  ·")[0]
+        name = os.path.splitext(os.path.basename(path))[0]
+        note = (f"  ({_and_list(foreign)} moved to REF: not a layer of this tab)"
+                if foreign else "")
         self._status.showMessage(
             f"Imported '{name}' as a group — {len(curves)} curve(s) at origin. "
-            "Drag or Point Move (G) to place; Ctrl+Shift+G to ungroup."
-        )
+            f"Drag or Point Move{self._key_hint('point_move')} to place; "
+            "Ctrl+Shift+G to ungroup." + note, 8000)
+
+    def _key_hint(self, key: str) -> str:
+        """' (G)': the key bound to *key* now, for a message; '' if none."""
+        key_str = getattr(self, "_hotkey_prefs", {}).get(key, "").strip()
+        if key_str in SettingsDialog._RESERVED_KEYS or key_str in _TYPING_KEYS:
+            key_str = ""
+        return f" ({key_str})" if key_str else ""
+
+    def _default_library_folder(self) -> str:
+        """The folder a save goes to unless the maker picks another: the one
+        selected, or the selected entry's, or the first."""
+        from .library import ComponentLibrary
+        sel = self._lib_selected()
+        if sel and sel[0] == "folder":
+            return sel[1]
+        if sel and sel[0] == "entry":
+            kind = ComponentLibrary.kind_of(sel[1])
+            if kind:
+                return kind
+        folders = ComponentLibrary().folders()
+        return folders[0] if folders else ""
+
+    def _ask_library_save(self, default_folder: str):
+        """``(name, folder)`` for a new entry, or None when canceled. The
+        folder box lists the library's folders and takes a new name too."""
+        from .library import ComponentLibrary
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Save to Library")
+        dlg.setMinimumWidth(380)
+        form = QFormLayout(dlg)
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("For example, Zoye TH-23 Front")
+        folder_box = QComboBox()
+        folder_box.setEditable(True)
+        folder_box.addItems(ComponentLibrary().folders())
+        folder_box.setCurrentText(default_folder)
+        folder_box.setToolTip("A folder of the library, or a new name for a new one.")
+        form.addRow("Name:", name_edit)
+        form.addRow("Folder:", folder_box)
+        form.addRow("", SettingsDialog._hint(
+            "Pick a folder, or type a new name to make one."))
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        # OK waits for a name: an empty OK used to do nothing at all.
+        ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok.setEnabled(False)
+        name_edit.textChanged.connect(lambda t: ok.setEnabled(bool(t.strip())))
+        form.addRow(buttons)
+        name_edit.setFocus()
+        if _run_modal(dlg) != QDialog.DialogCode.Accepted:
+            return None
+        return name_edit.text().strip(), folder_box.currentText().strip()
+
+    def _ask_replace_entry(self, name: str, folder: str) -> str:
+        """An entry of that name is in the folder already: "replace",
+        "keep" (save beside it as name_2) or "cancel"."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Replace the Entry?")
+        where = folder or "The library"
+        box.setText(f"{where} already holds \u201c{name}\u201d. Replace it?")
+        replace = box.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+        keep = box.addButton("Keep Both", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(keep)
+        _run_modal(box)
+        clicked = box.clickedButton()
+        return ("replace" if clicked is replace
+                else "keep" if clicked is keep else "cancel")
 
     def _save_to_library(self) -> None:
         if not self._doc_curves:
-            QMessageBox.information(self, "Nothing to save",
+            QMessageBox.information(self, "Nothing to Save",
                                     "There is no geometry in this workspace to save.")
             return
-        name, ok = QInputDialog.getText(
-            self, "Save to Library", "Name for this hinge design:"
-        )
+        answer = self._ask_library_save(self._default_library_folder())
+        if not answer or not answer[0]:
+            return
+        name, folder = answer
+        try:
+            from .library import ComponentLibrary
+            lib = ComponentLibrary()
+            replace = False
+            if lib.entry_path(folder or None, name).exists():
+                choice = self._ask_replace_entry(name, folder)
+                if choice == "cancel":
+                    return
+                replace = choice == "replace"
+            path = lib.save_entry(
+                folder or None, name, self._doc_curves, self._doc_dims,
+                replace=replace,
+            )
+            self._refresh_library_panel(select=("entry", path))
+            where = f" in {folder}" if folder else ""
+            self._status.showMessage(
+                f"Saved to library{where}: {os.path.basename(path)}"
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Could Not Save to the Library", str(exc))
+
+    def _new_library_folder(self) -> None:
+        name, ok = QInputDialog.getText(self, "New Folder", "Name for the folder:")
         if not ok or not name.strip():
             return
         try:
-            from .library import HingeLibrary
-            path = HingeLibrary().save_entry(
-                name.strip(), self._doc_curves, self._doc_dims
-            )
-            self._refresh_library_panel()
-            self._status.showMessage(
-                f"Saved to library: {os.path.basename(path)}"
-            )
+            from .library import ComponentLibrary
+            made = ComponentLibrary().create_folder(name.strip())
+            self._refresh_library_panel(select=("folder", made))
         except Exception as exc:
-            QMessageBox.critical(self, "Save failed", str(exc))
+            QMessageBox.critical(self, "Could Not Make the Folder", str(exc))
 
     def _rename_library_entry(self) -> None:
-        item = self._lib_list.currentItem()
-        if not item:
+        """Rename the selected folder or entry."""
+        sel = self._lib_selected()
+        if not sel:
             return
-        old_path = item.data(Qt.ItemDataRole.UserRole)
-        old_name = item.text().split("  ·")[0]
-        new_name, ok = QInputDialog.getText(
-            self, "Rename Library Entry", "New name:", text=old_name
-        )
+        from .library import ComponentLibrary
+        if sel[0] == "folder":
+            old_name = sel[1]
+            title, label = "Rename Folder", "New name for the folder:"
+        else:
+            old_name = os.path.splitext(os.path.basename(sel[1]))[0]
+            title, label = "Rename Library Entry", "New name:"
+        new_name, ok = QInputDialog.getText(self, title, label, text=old_name)
         if not ok or not new_name.strip():
             return
         try:
-            from .library import HingeLibrary
-            HingeLibrary().rename_entry(old_path, new_name.strip())
-            self._refresh_library_panel()
+            lib = ComponentLibrary()
+            if sel[0] == "folder":
+                select = ("folder", lib.rename_folder(old_name, new_name.strip()))
+            else:
+                select = ("entry", lib.rename_entry(sel[1], new_name.strip()))
+            self._refresh_library_panel(select=select)
         except Exception as exc:
-            QMessageBox.critical(self, "Rename failed", str(exc))
+            QMessageBox.critical(self, "Could Not Rename", str(exc))
 
     def _delete_library_entry(self) -> None:
-        item = self._lib_list.currentItem()
-        if not item:
+        """Delete the selected entry, asking first, or the selected folder,
+        asking first when it is not empty."""
+        sel = self._lib_selected()
+        if not sel:
             return
-        name = item.text().split("  ·")[0]
-        r = QMessageBox.question(
-            self, "Delete Library Entry",
-            f"Delete \"{name}\" from the library?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if r == QMessageBox.StandardButton.Yes:
-            from .library import HingeLibrary
-            HingeLibrary().delete_entry(item.data(Qt.ItemDataRole.UserRole))
-            self._refresh_library_panel()
+        from .library import ComponentLibrary
+        lib = ComponentLibrary()
+        # No is the default: Enter on the question used to delete.
+        if sel[0] == "folder":
+            seeded = lib.is_seeded_folder(sel[1])
+            if not lib.folder_is_empty(sel[1]) or seeded:
+                text = (f"Delete the folder \u201c{sel[1]}\u201d"
+                        + ("" if lib.folder_is_empty(sel[1])
+                           else " and every component in it") + "?")
+                if seeded:
+                    text += ("\n\nGuildDraw made this folder, and it will not "
+                             "come back, nor will the starter components that "
+                             "came in it.")
+                r = QMessageBox.question(
+                    self, "Delete Folder", text,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if r != QMessageBox.StandardButton.Yes:
+                    return
+            lib.delete_folder(sel[1])
+        else:
+            name = os.path.splitext(os.path.basename(sel[1]))[0]
+            r = QMessageBox.question(
+                self, "Delete Library Entry",
+                f"Delete \u201c{name}\u201d from the library?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if r != QMessageBox.StandardButton.Yes:
+                return
+            lib.delete_entry(sel[1])
+        self._refresh_library_panel(select=())
 
+    def _move_library_entry(self, path: str, folder) -> None:
+        """Move an entry into *folder* (None: outside any), as a drop does."""
+        try:
+            from .library import ComponentLibrary
+            moved = ComponentLibrary().move_entry(path, folder)
+            self._refresh_library_panel(select=("entry", moved))
+        except Exception as exc:
+            QMessageBox.critical(self, "Could Not Move", str(exc))
+
+    def _move_library_entry_to_folder(self) -> None:
+        sel = self._lib_selected()
+        if not sel or sel[0] != "entry":
+            return
+        from .library import ComponentLibrary
+        folders = ComponentLibrary().folders()
+        if not folders:
+            self._status.showMessage("Move to Folder: make a folder first (New Folder…)")
+            return
+        current = ComponentLibrary.kind_of(sel[1])
+        start = folders.index(current) if current in folders else 0
+        folder, ok = QInputDialog.getItem(self, "Move to Folder", "Folder:",
+                                          folders, start, False)
+        if ok and folder:
+            self._move_library_entry(sel[1], folder)
+
+    def _reorder_library_folders(self, order: list) -> None:
+        from .library import ComponentLibrary
+        ComponentLibrary().set_folder_order(order)
+        self._refresh_library_panel()
+
+    # ------------------------------------------------------------------
     # ------------------------------------------------------------------
     # Drill holes (DRILL layer + pattern library, M13)
     # ------------------------------------------------------------------
@@ -8363,7 +9745,7 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
         lay.addWidget(hint)
 
-        entry = self._fold_box("Place hole")
+        entry = self._fold_box("Place Hole")
         form = QFormLayout(entry.body)
         form.setSpacing(6)
         self._drill_x = QDoubleSpinBox()
@@ -8459,7 +9841,7 @@ class MainWindow(QMainWindow):
         center = self._drill_datum()
         if center is None:
             QMessageBox.information(
-                self, "No lens",
+                self, "No Lens",
                 "Draw a LENS shape first — drill holes are placed relative to the "
                 "lens boxing center.")
             return False
@@ -8505,7 +9887,7 @@ class MainWindow(QMainWindow):
         holes = self._current_drill_holes_relative()
         if not holes:
             QMessageBox.information(
-                self, "No holes",
+                self, "No Holes",
                 "There are no DRILL holes on the front workspace to save.")
             return
         name, ok = QInputDialog.getText(self, "Save Drill Pattern",
@@ -8528,7 +9910,7 @@ class MainWindow(QMainWindow):
         try:
             holes = DrillLibrary().load_entry(item.data(Qt.ItemDataRole.UserRole))
         except Exception as exc:        # a damaged pattern file did nothing, silently
-            QMessageBox.warning(self, "Import failed",
+            QMessageBox.warning(self, "Could Not Import",
                                 f"The pattern could not be read.\n\n{exc}")
             return
         if holes and self._place_drill_holes(
@@ -8567,7 +9949,7 @@ class MainWindow(QMainWindow):
             DrillLibrary().rename_entry(item.data(Qt.ItemDataRole.UserRole),
                                         new_name.strip())
         except ValueError as e:
-            QMessageBox.warning(self, "Rename failed", str(e))
+            QMessageBox.warning(self, "Could Not Rename", str(e))
             return
         self._refresh_drill_library_panel()
 
@@ -8577,8 +9959,9 @@ class MainWindow(QMainWindow):
             return
         if QMessageBox.question(
                 self, "Delete Pattern",
-                f"Delete '{item.text().split('  ·')[0]}'?",
+                f"Delete \u201c{item.text().split('  ·')[0]}\u201d?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
         ) == QMessageBox.StandardButton.Yes:
             from .library import DrillLibrary
             DrillLibrary().delete_entry(item.data(Qt.ItemDataRole.UserRole))
@@ -8590,24 +9973,51 @@ class MainWindow(QMainWindow):
 
     def _start_calibration(self):
         self.view.setFocus()
+        # The photo the tool measures when the first click misses every one.
+        self._calib_tool.preferred_index = self._selected_photo()
         self._calib_tool.start(self.scene)
 
-    def _apply_calibration(self, px_per_mm: float):
-        """Scale the face image so px_per_mm image pixels = 1 scene mm."""
-        self._image_px_per_mm = px_per_mm
-        self.scene.set_face_calibration(px_per_mm)
-        self._mark_dirty()   # calibration is persisted in the file
+    def _selected_photo(self, ws: "WorkspaceState | None" = None) -> int:
+        """The selected shown photo, else the first."""
+        return max(0, self._shown_face(ws))
+
+    def _show_calibration(self, ws: "WorkspaceState | None" = None):
+        """The Canvas tab's calibration fields, for the selected photo."""
+        ws = ws or self._active_ws
+        has_photo = ws.scene.face_count() > 0
+        index = self._selected_photo(ws)
+        px = ws.scene.face_calibration(index) if has_photo else None
         self._pxmm_spin.blockSignals(True)
-        self._pxmm_spin.setValue(px_per_mm)
+        self._pxmm_spin.setValue(px or 1.0)      # not the previous tab's value
         self._pxmm_spin.blockSignals(False)
-        self._calib_label.setText(f"{px_per_mm:.4f} img-px/mm")
+        # The scale is the image's size: a locked image keeps it.
+        self._pxmm_spin.setEnabled(has_photo and not ws.scene.face_is_locked(index))
+        self._calib_btn.setEnabled(has_photo)
+        self._calib_label.setText(
+            f"{px:.4f} px/mm" if px else
+            "Not set" if has_photo else
+            "Add a reference image first (Add Image…), then calibrate.")
+
+    def _apply_calibration(self, px_per_mm: float, index: int | None = None):
+        """Scale reference photo *index* so px_per_mm of its pixels make one
+        mm, or every photo (None: a file's one calibration for the design)."""
+        self.scene.set_face_calibration(px_per_mm, index)
+        # The design's own value, as files before 2.0 read it: the first
+        # photo's (or the one set, before any photo).
+        self._image_px_per_mm = self.scene.face_calibration(0) or px_per_mm
+        self._mark_dirty()   # calibration is persisted in the file
+        self._show_calibration()
+        which = ""
+        if index is not None and self.scene.face_count() > 1:
+            which = f" ({os.path.basename(self._active_ws.face_image_paths[index])})" \
+                if index < len(self._active_ws.face_image_paths) else ""
         self._status.showMessage(
-            f"Face image calibrated: {px_per_mm:.4f} image pixels per mm"
-        )
+            f"Reference image calibrated{which}: {px_per_mm:.4f} image pixels per mm")
 
     def _apply_manual_calib(self):
         v = self._pxmm_spin.value()
-        current = self._image_px_per_mm
+        index = self._selected_photo()
+        current = self.scene.face_calibration(index)
         # editingFinished fires on a mere click away. Apply a change only:
         # leaving an uncalibrated photo's untouched 1.0 placeholder applied
         # 1 px/mm — a 3000 px photo became 3 m wide — and marked the design
@@ -8615,7 +10025,7 @@ class MainWindow(QMainWindow):
         if v <= 0 or (current and abs(v - current) < 1e-9) \
                 or (not current and v == 1.0):
             return
-        self._apply_calibration(v)
+        self._apply_calibration(v, index)
 
     # ------------------------------------------------------------------
     # Dirty flag / window title
@@ -8637,16 +10047,20 @@ class MainWindow(QMainWindow):
             self._dirty = False
         self._update_title()
 
-    def _confirm_discard(self) -> bool:
-        """If there are unsaved changes, offer Save / Discard / Cancel.
+    def _confirm_discard(self, action: str = "closing") -> bool:
+        """If there are unsaved changes, offer Save / Don't Save / Cancel,
+        naming the design and *action* ("closing", "opening another file",
+        "starting a new design").
 
         Returns True when it is safe to proceed (saved, discarded, or clean).
         """
         if not self._dirty:
             return True
+        name = (os.path.basename(self._current_path) if self._current_path
+                else "this design")
         r = QMessageBox.warning(
-            self, "Unsaved changes",
-            "This document has unsaved changes.",
+            self, "Save Changes?",
+            f"Save the changes to {name} before {action}?",
             QMessageBox.StandardButton.Save
             | QMessageBox.StandardButton.Discard
             | QMessageBox.StandardButton.Cancel,
@@ -8655,19 +10069,21 @@ class MainWindow(QMainWindow):
         if r == QMessageBox.StandardButton.Cancel:
             return False
         if r == QMessageBox.StandardButton.Save:
-            self._save()
-            if self._dirty and self._current_path \
-                    and not self._current_path.lower().endswith(".gdraw") \
-                    and self._other_workspaces_in_use():
+            if not self._save():
+                return False         # canceled, or the failure already said so
+            if self._dirty:
                 # "Save Front Only" into a .svg: the rest is still unsaved, so
-                # stay open — and say why, or the window just refuses to close.
+                # stay — and say why, or the window just refuses to close.
+                # (It said so after a canceled save too, which saved nothing.)
                 QMessageBox.information(
-                    self, "Not closed",
-                    "Only the Frame Front was saved. Unsaved work remains in "
-                    f"{', '.join(self._other_workspaces_in_use())}: save as a "
-                    ".gdraw project to keep it, or close again and choose "
-                    "Discard.")
-            return not self._dirty   # False if the save dialog was canceled
+                    self, "Not All Saved",
+                    f"The Frame Front was saved to "
+                    f"{os.path.basename(self._current_path)}. "
+                    f"{_and_list(self._other_workspaces_in_use())} are not "
+                    "saved. To keep them, use File ▸ Save As… and choose a "
+                    ".gdraw project; to drop them, choose Discard.")
+                return False
+            return True
         return True   # Discard
 
     def closeEvent(self, event):
@@ -8692,11 +10108,14 @@ class MainWindow(QMainWindow):
         # back into the half-destroyed scene (shiboken RuntimeError on quit).
         # Sever every selectionChanged connection (ours + each EditTool's)
         # now that no further UI updates can matter.
-        for ws in self._workspaces:
-            try:
-                ws.scene.selectionChanged.disconnect()
-            except RuntimeError:
-                pass   # already disconnected / already gone
+        # Once: a second close found nothing connected, and PySide warned.
+        if not getattr(self, "_selection_severed", False):
+            self._selection_severed = True
+            for ws in self._workspaces:
+                try:
+                    ws.scene.selectionChanged.disconnect()
+                except RuntimeError:
+                    pass   # already disconnected / already gone
         super().closeEvent(event)
 
     def _save_prefs_on_close(self):
@@ -8829,7 +10248,11 @@ class MainWindow(QMainWindow):
             if not self._hold_autosave_slot():
                 return
             tmp = str(rec) + ".tmp"
-            self._do_save_gdraw(tmp)
+            # The design's own file stands in for an image that cannot be
+            # read now, as in a save (_do_save_gdraw).
+            src = self._current_path
+            self._do_save_gdraw(tmp, carry_from=src if src and src.lower()
+                                .endswith(".gdraw") else None)
             os.replace(tmp, rec)
             meta.write_text(json.dumps({
                 "source_path": self._current_path,
@@ -8873,7 +10296,7 @@ class MainWindow(QMainWindow):
         answer) or "discard"."""
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle("Recover unsaved work?")
+        box.setWindowTitle("Recover Unsaved Work?")
         box.setText(text)
         box.setInformativeText(detail)
         restore = box.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
@@ -8896,12 +10319,25 @@ class MainWindow(QMainWindow):
             when   = info.get("saved_at", when)
         except Exception:
             pass
+        if not isinstance(source, str):
+            source = None
         name = os.path.basename(source) if source else "an unsaved document"
+        # Saved again after this autosave (in another window, or after a
+        # restart the crash did not stop): restored under its path, the older
+        # work went over the newer save at the next Ctrl+S.
+        newer = False
         try:    # "2026-09-27T10:33:12" → "2026-09-27 at 10:33"
-            when = datetime.datetime.fromisoformat(when).strftime("%Y-%m-%d at %H:%M")
-        except (TypeError, ValueError):
+            stamp = datetime.datetime.fromisoformat(when)
+            when = stamp.strftime("%Y-%m-%d at %H:%M")
+            newer = bool(source and os.path.isfile(source)
+                         and os.path.getmtime(source) > stamp.timestamp() + 2)
+        except (TypeError, ValueError, OSError):
             pass
         text = f"GuildDraw found autosaved work from {when}\n({name})."
+        if newer:
+            text += (f"\n\n{name} was saved again after this autosave. "
+                     "Restoring opens the older work as a new, unsaved design "
+                     "and leaves the newer file alone.")
         later = "Later keeps it and asks again next time."
         if opening:
             # A file was double-clicked: say what happens to it, and never
@@ -8933,9 +10369,21 @@ class MainWindow(QMainWindow):
             # The recovered content belongs to the original document, not
             # the recovery file: restore the real path and mark it unsaved.
             self._current_path = (source if source and os.path.isfile(source)
-                                  else None)
-        # ("errors": _open_gdraw already dropped the path so Save asks for a
-        # new name — a half-recovered file must never overwrite the original.)
+                                  and not newer else None)
+            self._remember_disk_state(self._current_path)
+        kept = None
+        if status == "errors":
+            # _open_gdraw dropped the path so Save asks for a new name — a
+            # half-recovered file must never overwrite the original. And the
+            # recovery file stays, whole: it is the only copy of what could
+            # not be read, and it was deleted below once this copy's slot
+            # held the part that could.
+            stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            kept = rec.with_name(f"failed-{stamp}.gdraw.bak")
+            try:
+                rec.rename(kept)
+            except OSError:
+                kept = None
         self._mark_dirty()
         self._update_title()
         # The work is in this copy now: write it to this copy's own slot
@@ -8947,6 +10395,7 @@ class MainWindow(QMainWindow):
         # named the internal slot file.
         self._status.showMessage(
             f"Restored autosaved work from {when}"
+            + (f"; the whole recovery file is kept as {kept}" if kept else "")
             + (f"; {os.path.basename(opening)} was not opened" if opening else ""))
         return True
 
@@ -8987,14 +10436,14 @@ class MainWindow(QMainWindow):
 
     def _open_recent(self, path: str):
         if not os.path.isfile(path):
-            QMessageBox.warning(self, "File not found",
+            QMessageBox.warning(self, "File Not Found",
                                 f"{path}\n\nno longer exists.")
             self._recent_files = [p for p in self._recent_files if p != path]
             self._prefs["recent_files"] = list(self._recent_files)
             _prefs_mod.save(self._prefs)
             self._rebuild_recent_menu()
             return
-        if not self._confirm_discard():
+        if not self._confirm_discard("opening another file"):
             return
         self._open_path(path)
 
@@ -9002,74 +10451,405 @@ class MainWindow(QMainWindow):
     # File operations
     # ------------------------------------------------------------------
 
-    def _add_face(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Add Reference Image", "",
-            "Images (*.jpg *.jpeg *.png *.bmp *.tiff *.tif)"
-        )
-        if not path:
+    def _image_too_large(self, path: str) -> bool:
+        """Whether *path* is past what a design carries (gdraw's
+        _MAX_IMAGE_BYTES), said when it is: such an image showed, saved, and
+        was gone at the next open."""
+        from .export.gdraw import _MAX_IMAGE_BYTES
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return False                   # the loader says what is wrong
+        if size <= _MAX_IMAGE_BYTES:
+            return False
+        QMessageBox.warning(
+            self, "Image Too Large",
+            f"{os.path.basename(path)} is {size / (1024 * 1024):.0f} MB; a design "
+            f"carries images of up to {_MAX_IMAGE_BYTES // (1024 * 1024)} MB. Use "
+            "a smaller copy: a JPEG of a few MB is plenty to trace over.")
+        return True
+
+    def _add_face(self, path: str | None = None):
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Add Reference Image", self._dialog_dir("last_image_dir"),
+                "Images (*.jpg *.jpeg *.png *.bmp *.tiff *.tif)"
+            )
+        if not path or self._image_too_large(path):
             return
+        self._remember_dir(path, "last_image_dir")
         idx = self.scene.add_face(path)
+        self._sync_empty_hint()
         if idx is not None:
-            item = QListWidgetItem(os.path.basename(path))
-            item.setData(Qt.ItemDataRole.UserRole, path)
-            self._face_list.addItem(item)
-            self._face_list.setCurrentRow(idx)
+            # Not stored: the design names it by an id this computer maps to
+            # the file (image_links), until the maker stores it.
+            link = image_links.new_id()
+            self.scene.set_face_link(idx, link)
+            image_links.remember(link, path)
+            # Unlocked, to be placed, turned and calibrated; locked once set.
+            self.scene.set_canvas_locked(idx, False)
+            self._active_ws.selected_face_idx = idx
+            self._refresh_face_list()
             if idx == 0:
                 self.view.fit_view(self.scene.sceneRect())
             self._mark_dirty()
-            self._status.showMessage(f"Loaded: {os.path.basename(path)}")
+            self._status.showMessage(
+                f"Loaded: {os.path.basename(path)}. Drag it into place, turn and "
+                "calibrate it, then lock it (the padlock on the Canvas tab).")
         else:
+            self._show_calibration()
             self._status.showMessage(f"Failed to load image: {path}")
 
-    def _remove_face(self):
-        idx = self._face_list.currentRow()
-        if idx < 0:
-            return
-        self.scene.remove_face(idx)
-        self._face_list.takeItem(idx)
-        self._mark_dirty()
-        count = self._face_list.count()
-        if count > 0:
-            self._face_list.setCurrentRow(min(idx, count - 1))
-        else:
-            self._selected_face_idx = -1
-            self._remove_img_btn.setEnabled(False)
-            self._opacity_slider.setEnabled(False)
-            self._rotation_spin.setEnabled(False)
-            self._canvas_lock_chk.setEnabled(False)
+    # The Canvas tab lists a row per image: the shown ones in the scene's
+    # order, then those the file names that could not be shown
+    # (WorkspaceState.unshown_faces), for Locate… or Remove.
 
-    def _on_face_list_selection_changed(self, row: int):
-        self._selected_face_idx = row
-        has_sel = (row >= 0)
-        self._remove_img_btn.setEnabled(has_sel)
-        self._opacity_slider.setEnabled(has_sel)
-        self._rotation_spin.setEnabled(has_sel)
-        self._canvas_lock_chk.setEnabled(has_sel)
-        if has_sel:
+    def _shown_face(self, ws: "WorkspaceState | None" = None) -> int:
+        """The selected row's scene index, or -1: no row, or an unshown one."""
+        ws = ws or self._active_ws
+        row = ws.selected_face_idx
+        return row if 0 <= row < ws.scene.face_count() else -1
+
+    def _face_name(self, ws: "WorkspaceState", row: int) -> str:
+        """A row's name: the image's own file name, or for one the design
+        does not store and this computer does not have, its number. The
+        file never names such an image."""
+        from .export.gdraw import _photo_name
+        n = ws.scene.face_count()
+        if row < n:
+            return _photo_name(os.path.basename(ws.scene.face_path(row)))
+        fi = ws.unshown_faces[row - n]
+        if fi.stored and fi.path:
+            return _photo_name(os.path.basename(fi.path))
+        return f"Reference {row + 1}"
+
+    def _stored_icon(self, stored: bool) -> QIcon:
+        """The paperclip: in ink when the design stores the image, faint
+        when it stays on this computer."""
+        color = theme.color("chrome.ink" if stored else "chrome.disabled_ink")
+        # On a selected row too the faint one stays fainter.
+        on_row = theme.color("chrome.checked_ink")
+        if not stored:
+            on_row = theme._mix(on_row, theme.color("chrome.checked_bg"), 0.55)
+        cache = getattr(self, "_layer_icon_cache", None)
+        if cache is None:
+            cache = self._layer_icon_cache = {}
+        key = ("image-stored", color, on_row)
+        if key not in cache:
+            cache[key] = _make_icon("image-stored", color, color,
+                                    selected_color=on_row)
+        return cache[key]
+
+    def _refresh_face_list(self, ws: "WorkspaceState | None" = None):
+        """Rebuild the Canvas tab's rows from *ws* and select its row."""
+        ws = ws or self._active_ws
+        if ws is not self._active_ws:
+            return
+        tree = self._face_tree
+        tree.blockSignals(True)
+        tree.clear()
+        faint = QColor(theme.color("chrome.disabled_ink"))
+        n = ws.scene.face_count()
+        for row in range(n + len(ws.unshown_faces)):
+            name = self._face_name(ws, row)
+            if row < n:
+                sc = ws.scene
+                stored = sc.face_stored(row)
+                item = QTreeWidgetItem([name, "", "", ""])
+                item.setToolTip(0, name)
+                item.setIcon(1, self._layer_icon(
+                    "layer-show" if sc.face_visible(row) else "layer-hide"))
+                item.setToolTip(1, f"Show or hide {name}")
+                item.setIcon(2, self._layer_icon(
+                    "layer-lock" if sc.face_is_locked(row) else "layer-unlock"))
+                item.setToolTip(2, f"Lock or unlock {name}: its place, turn "
+                                   "and scale")
+                item.setIcon(3, self._stored_icon(stored))
+                item.setToolTip(3, (
+                    "Stored in the design: it shows on any computer that opens "
+                    "the file. Click to keep it on this computer only."
+                    if stored else
+                    "On this computer only: the design keeps its place, not the "
+                    "image. Click to store it in the design."))
+            else:
+                stored = ws.unshown_faces[row - n].stored
+                why = "could not be shown" if stored else "not on this computer"
+                item = QTreeWidgetItem([f"{name} — {why}", "", "", ""])
+                item.setForeground(0, faint)
+                item.setToolTip(0, (
+                    "Stored in the design but not shown: too large, damaged or "
+                    "not found. The next save keeps it. Locate… shows another "
+                    "file in its place." if stored else
+                    "The design does not store this image, and it is not on "
+                    "this computer, or it has moved. Locate… finds it; its "
+                    "place and calibration are kept."))
+            tree.addTopLevelItem(item)
+            if row >= n:
+                item.setFirstColumnSpanned(True)    # no icons: the whole width
+        row = ws.selected_face_idx
+        if 0 <= row < tree.topLevelItemCount():
+            tree.setCurrentItem(tree.topLevelItem(row))
+        else:
+            ws.selected_face_idx = -1
+        tree.blockSignals(False)
+        self._sync_face_controls()
+
+    def _sync_face_controls(self):
+        """Enable and fill the controls under the rows for the selected one."""
+        ws = self._active_ws
+        idx = self._shown_face(ws)
+        has_row = 0 <= ws.selected_face_idx < self._face_tree.topLevelItemCount()
+        self._remove_img_btn.setEnabled(has_row)
+        self._locate_img_btn.setEnabled(has_row and idx < 0)
+        self._opacity_slider.setEnabled(idx >= 0)
+        self._rotation_spin.setEnabled(idx >= 0 and not ws.scene.face_is_locked(idx))
+        if idx >= 0:
             self._opacity_slider.blockSignals(True)
-            self._opacity_slider.setValue(int(self.scene.face_opacity(row) * 100))
+            self._opacity_slider.setValue(int(ws.scene.face_opacity(idx) * 100))
             self._opacity_slider.blockSignals(False)
             self._rotation_spin.blockSignals(True)
-            self._rotation_spin.setValue(self.scene.face_rotation(row))
+            self._rotation_spin.setValue(ws.scene.face_rotation(idx))
             self._rotation_spin.blockSignals(False)
-            self._canvas_lock_chk.blockSignals(True)
-            self._canvas_lock_chk.setChecked(self.scene.face_is_locked(row))
-            self._canvas_lock_chk.blockSignals(False)
+        self._show_calibration(ws)        # the selected photo's own
+
+    def _on_face_row_changed(self, row: int):
+        self._selected_face_idx = row
+        self._sync_face_controls()
+
+    def _on_face_tree_clicked(self, item, column: int):
+        ws = self._active_ws
+        row = self._face_tree.indexOfTopLevelItem(item)
+        if column == 0 or not 0 <= row < ws.scene.face_count():
+            return
+        name = self._face_name(ws, row)
+        if column == 1:
+            on = not ws.scene.face_visible(row)
+            ws.scene.set_face_visible(row, on)
+            self._status.showMessage(
+                f"{name} {'shown' if on else 'hidden: it is left out of PNG export and printing'}.")
+        elif column == 2:
+            locked = not ws.scene.face_is_locked(row)
+            ws.scene.set_canvas_locked(row, locked)
+            self._status.showMessage(
+                f"{name} locked." if locked else
+                f"{name} unlocked: drag it into place, turn it and calibrate "
+                "it, then lock it again.")
+        elif column == 3:
+            if not self._set_face_stored(ws, row, not ws.scene.face_stored(row)):
+                return
+        ws.selected_face_idx = row
+        self._refresh_face_list(ws)
+        self._mark_dirty()
+
+    def _set_face_stored(self, ws: "WorkspaceState", idx: int, stored: bool) -> bool:
+        """Store the image *idx* in the design, or keep it on this computer
+        only. Whether it changed: the maker may decline either."""
+        name = self._face_name(ws, idx)
+        if stored:
+            if not self._confirm_store_image(name):
+                return False
+            ws.scene.set_face_stored(idx, True)
+            self._status.showMessage(
+                f"{name} is stored in the design: it shows on any computer that "
+                "opens the file.")
+            return True
+        path = self._file_for_unstored(ws, idx, name)
+        if path is None:
+            return False
+        link = ws.scene.face_link(idx) or image_links.new_id()
+        ws.scene.set_face_link(idx, link)
+        ws.scene.set_face_path(idx, path)
+        image_links.remember(link, path)
+        ws.scene.set_face_stored(idx, False)
+        self._status.showMessage(
+            f"{name} is no longer stored in the design; it stays at {path} on "
+            "this computer.")
+        return True
+
+    def _confirm_store_image(self, name: str) -> bool:
+        """Say what storing an image does before it is done, unless the maker
+        has said not to ask (Preferences ▸ General ▸ Prompts turns it back
+        on)."""
+        if not self._prefs.get("prompt_store_image", True):
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Store Image in the Design?")
+        box.setText(f"Store {name} in the design?")
+        box.setInformativeText(
+            "The image is copied into the design file, so it shows when the "
+            "file is opened on another computer, and anyone you send the file "
+            "to can see it.\n\nNot stored, it stays where it is on this "
+            "computer: the file keeps only its place on the canvas, and other "
+            "computers list it as not on this computer.")
+        store = box.addButton("Store in Design", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(store)
+        cb = QCheckBox("Don't ask again")
+        box.setCheckBox(cb)
+        box.exec()
+        if box.clickedButton() is not store:
+            return False
+        if cb.isChecked():
+            self._prefs["prompt_store_image"] = False
+            _prefs_mod.save(self._prefs)
+        return True
+
+    def _file_for_unstored(self, ws: "WorkspaceState", idx: int,
+                           name: str) -> str | None:
+        """The file an image that stops being stored is found by on this
+        computer: the one it was added from, or, when the design holds the
+        only copy, a copy the maker saves now. None if they decline."""
+        from .export import gdraw as _gdraw
+        found = image_links.find(ws.scene.face_link(idx))
+        if found:
+            return found
+        cur = ws.scene.face_path(idx)
+        cache = os.path.abspath(_gdraw._IMAGE_CACHE_ROOT) + os.sep
+        if os.path.isfile(cur) and not os.path.abspath(cur).startswith(cache):
+            return cur        # beside the document, from a file before 2.0
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Keep a Copy on This Computer?")
+        box.setText(f"{name} is stored only inside this design.")
+        box.setInformativeText(
+            "To stop storing it, save a copy on this computer: the design finds "
+            "it there. Without one, the next save would lose the image.")
+        save = box.addButton("Save Copy…", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(save)
+        box.exec()
+        if box.clickedButton() is not save:
+            return None
+        ext = os.path.splitext(name)[1] or ".png"
+        dest, _ = QFileDialog.getSaveFileName(
+            self, "Save a Copy of the Image",
+            os.path.join(self._dialog_dir("last_image_dir"), name),
+            f"Images (*{ext})")
+        if not dest:
+            return None
+        try:
+            shutil.copyfile(cur, dest)
+        except OSError as e:
+            QMessageBox.warning(self, "Copy Not Saved",
+                                f"The copy could not be saved: {e}")
+            return None
+        self._remember_dir(dest, "last_image_dir")
+        return dest
+
+    def _place_face(self, ws: "WorkspaceState", fi: FaceImage) -> int | None:
+        """Show the photo *fi* names in *ws*, as the record has it (all but
+        its calibration and place, which the caller sets once every photo is
+        in). Its index, or None when it is not to be had."""
+        if not (fi.path and os.path.isabs(fi.path) and os.path.isfile(fi.path)):
+            return None
+        idx = ws.scene.add_face(fi.path)
+        if idx is None:
+            return None
+        sc = ws.scene
+        sc.set_face_opacity(idx, fi.opacity)
+        sc.set_face_rotation(idx, fi.rotation)
+        sc.set_face_visible(idx, fi.visible)
+        sc.set_canvas_locked(idx, fi.locked)
+        sc.set_face_stored(idx, fi.stored)
+        sc.set_face_link(idx, fi.link_id or image_links.new_id())
+        return idx
+
+    def _locate_face(self):
+        """Find the selected unshown image on this computer and show it at
+        the place and scale the design keeps for it."""
+        ws = self._active_ws
+        n = ws.scene.face_count()
+        row = ws.selected_face_idx
+        if not n <= row < n + len(ws.unshown_faces):
+            return
+        fi = ws.unshown_faces[row - n]
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Locate Reference Image", self._dialog_dir("last_image_dir"),
+            "Images (*.jpg *.jpeg *.png *.bmp *.tiff *.tif)")
+        if not path or self._image_too_large(path):
+            return
+        self._remember_dir(path, "last_image_dir")
+        idx = self._place_face(ws, dataclasses.replace(fi, path=path))
+        if idx is None:
+            self._status.showMessage(f"Failed to load image: {path}")
+            return
+        if fi.px_per_mm:
+            ws.scene.set_face_calibration(fi.px_per_mm, idx)
+        if fi.tx != 0.0 or fi.ty != 0.0:
+            ws.scene.get_face_item(idx).setPos(fi.tx, fi.ty)
+        image_links.remember(ws.scene.face_link(idx), path)
+        ws.unshown_faces.pop(row - n)
+        ws.selected_face_idx = idx
+        self._refresh_face_list(ws)
+        self._sync_empty_hint(ws)
+        # A stored image now has other bytes to store, and one without an id
+        # has a new one for the file.
+        if fi.stored or ws.scene.face_link(idx) != fi.link_id:
+            self._mark_dirty()
+        self._status.showMessage(f"Found {self._face_name(ws, idx)}: {path}")
+
+    def _remove_face(self):
+        ws = self._active_ws
+        n = ws.scene.face_count()
+        total = n + len(ws.unshown_faces)
+        row = ws.selected_face_idx
+        if not 0 <= row < total:
+            return
+        # Asked first: the removal is not on the undo history, and the
+        # image's place and calibration went with it.
+        name = self._face_name(ws, row)
+        r = QMessageBox.question(
+            self, "Remove Reference Image",
+            f"Remove {name} from the design? Its place and calibration go "
+            "with it, and Undo does not bring it back.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        if row < n:
+            ws.scene.remove_face(row)
+        else:
+            ws.unshown_faces.pop(row - n)
+        ws.selected_face_idx = min(row, total - 2)
+        self._refresh_face_list(ws)
+        self._sync_empty_hint()
+        self._mark_dirty()
+
+    def _images_in_use(self) -> set[str]:
+        """Every image file the open design shows or names, in every tab:
+        Clear Image Cache keeps them (Preferences ▸ General)."""
+        out = set()
+        for ws in self._workspaces:
+            out.update(ws.face_image_paths)
+            out.update(fi.path for fi in ws.unshown_faces if fi.path)
+            out.update(p for p in (ws.fill_image, ws.inlay_fill_image) if p)
+        return out
+
+    def _calibration_refusal(self, ws: "WorkspaceState", index: int) -> str | None:
+        """Why the photo *index* may not be calibrated now, or None."""
+        if not 0 <= index < ws.scene.face_count():
+            return None                   # the tool says there is no photo
+        name = self._face_name(ws, index)
+        if not ws.scene.face_visible(index):
+            return (f"{name} is hidden: show it (the eye on the Canvas tab) "
+                    "to calibrate it.")
+        if ws.scene.face_is_locked(index):
+            return (f"{name} is locked: unlock it (the padlock on the Canvas "
+                    "tab) to calibrate it.")
+        return None
 
     def _on_face_opacity_changed(self, v: int):
-        if self._selected_face_idx >= 0:
-            self.scene.set_face_opacity(self._selected_face_idx, v / 100)
+        idx = self._shown_face()
+        if idx >= 0:
+            self.scene.set_face_opacity(idx, v / 100)
             self._mark_dirty()
 
     def _on_face_rotation_changed(self, v: float):
-        if self._selected_face_idx >= 0:
-            self.scene.set_face_rotation(self._selected_face_idx, v)
+        idx = self._shown_face()
+        if idx >= 0:
+            self.scene.set_face_rotation(idx, v)
             self._mark_dirty()
-
-    def _on_canvas_lock_toggled(self, locked: bool):
-        if self._selected_face_idx >= 0:
-            self.scene.set_canvas_locked(self._selected_face_idx, locked)
 
     # ------------------------------------------------------------------
     # New / Open / Save (SVG as native format)
@@ -9085,81 +10865,203 @@ class MainWindow(QMainWindow):
         self._act_select.setChecked(True)
         self._set_tool_select()
         self._save_ws_sidebar_state(self._active_ws)
-        # The next document is first seen from its default faces.
+        # The next document is first seen from its default faces, and each
+        # tab fitted to it on first sight: the inactive tabs kept the previous
+        # document's zoom and pan, a temple at 2632 % on the old hinge.
         for ws in self._workspaces:
             ws.obverse = False
             ws.view.set_obverse(False)
+            ws.fitted = False
         self._act_obverse.blockSignals(True)
         self._act_obverse.setChecked(False)
         self._act_obverse.blockSignals(False)
 
+    def _guide_defaults(self, ws: "WorkspaceState") -> tuple:
+        """``(stock_w, stock_h, pad_w, pad_h)`` a workspace starts at: the
+        front's from Preferences, the temples' blank from its own preference,
+        the component tab's fixed 10 × 20 mm, as __init__ sets them."""
+        p = self._prefs
+        if ws.workspace_type in ("temple_r", "temple_l"):
+            stock = (p["temple_stock_width_mm"], p["temple_stock_height_mm"])
+        elif ws.workspace_type == "component":
+            stock = (10.0, 20.0)
+        else:
+            stock = (p["stock_width_mm"], p["stock_height_mm"])
+        return (*stock, p["pad_width_mm"], p["pad_height_mm"])
+
+    def _reset_measure_guides(self, ws: "WorkspaceState"):
+        """The construction guide's crest and arms and the free boxing box as
+        a new design starts them: they were the previous design's."""
+        ws.crest_height, ws.arm_spread, ws.arm_drop = 0.0, 4.0, 0.0
+        ws.boxing_a = self._prefs["boxing_a_mm"]
+        ws.boxing_b = self._prefs["boxing_b_mm"]
+        ws.boxing_dbl = self._prefs["boxing_dbl_mm"]
+        ws.const_guides.set_crest_height(ws.crest_height)
+        ws.const_guides.set_spread(ws.arm_spread)
+        ws.const_guides.set_pivot_y(ws.arm_drop)
+        if not ws.boxing_snapped:
+            ws.boxing_guide.set_a(ws.boxing_a)
+            ws.boxing_guide.set_b(ws.boxing_b)
+            ws.boxing_guide.set_dbl(ws.boxing_dbl)
+
+    def _set_guide_sizes(self, ws: "WorkspaceState", stock=None, pad=None):
+        """Size the workspace's stock and pad guides, each a (width, height)
+        or None to leave it."""
+        if stock is not None:
+            ws.stock_w, ws.stock_h = stock
+            ws.stock_guide.set_width(ws.stock_w)
+            ws.stock_guide.set_height(ws.stock_h)
+        if pad is not None:
+            ws.pad_w, ws.pad_h = pad
+            ws.pad_guide.set_width(ws.pad_w)
+            ws.pad_guide.set_height(ws.pad_h)
+
+    def _set_ghost(self, ws: "WorkspaceState", on: bool):
+        """The workspace's Ghost, on its scene, snap and boxing guide; the
+        toolbar follows when the sidebar is restored."""
+        ws.mirror_enabled = on
+        if ws.scene.mirror:
+            ws.scene.mirror.set_enabled(on)
+        ws.scene.set_mirror_display(on)
+        ws.snap.set_mirror(0.0, on, horizontal=(ws.workspace_type
+                                                in ("temple_r", "temple_l")))
+        ws.boxing_guide.set_mirror(on)
+
+    def _reset_workspace(self, ws: "WorkspaceState"):
+        """Empty *ws* as File > New leaves it: no geometry, history, photos or
+        fills, and the Ghost and the guide sizes as Preferences start them.
+        The Ghost and the guides used to come from the previous design."""
+        ws.clear_document()
+        ws.bookmarks.clear()
+        ws.scene.clear_faces()
+        ws.unshown_faces = []
+        ws.selected_face_idx = -1
+        # (snap/lock/bevel/forming/calibration state: reset by clear_document)
+        self._set_ghost(ws, self._prefs["mirror_on_startup"])
+        sw, sh, pw, ph = self._guide_defaults(ws)
+        self._set_guide_sizes(ws, (sw, sh), (pw, ph))
+        self._reset_measure_guides(ws)
+        ws.fill_visible = False          # fill resets with the document
+        ws.fill_color   = "#2a6099"
+        ws.fill_opacity = 0.50
+        ws.fill_style   = "color"
+        ws.fill_image   = ""
+        ws.scene.set_fill_color(QColor(ws.fill_color))
+        ws.scene.set_fill_opacity(ws.fill_opacity)
+        ws.scene.clear_fill_image()
+        ws.scene.set_fill_visible(False)
+        ws.inlay_fill_visible = False
+        ws.inlay_fill_color   = self._default_inlay_fill_color()
+        ws.inlay_fill_opacity = self._default_inlay_fill_opacity()
+        ws.inlay_fill_style   = "color"
+        ws.inlay_fill_image   = ""
+        ws.inlay_fill_tumble  = False
+        ws.scene.set_inlay_fill_color(QColor(ws.inlay_fill_color))
+        ws.scene.set_inlay_fill_opacity(ws.inlay_fill_opacity)
+        ws.scene.clear_inlay_fill_image()
+        ws.scene.set_inlay_fill_tumble(False)
+        ws.scene.set_inlay_fill_visible(False)
+        ws.lens_fill_visible = False
+        ws.lens_fill_top     = DEFAULT_LENS_FILL_TOP
+        ws.lens_fill_bottom  = DEFAULT_LENS_FILL_BOTTOM
+        ws.lens_fill_linked  = False
+        ws.lens_fill_opacity = self._default_lens_fill_opacity()
+        ws.lens_fill_intensity = self._default_lens_fill_intensity()
+        ws.scene.set_lens_fill_colors(ws.lens_fill_top, ws.lens_fill_bottom)
+        ws.scene.set_lens_fill_intensity(ws.lens_fill_intensity)
+        ws.scene.set_lens_fill_opacity(ws.lens_fill_opacity)
+        ws.scene.set_lens_fill_visible(False)
+
     def _new(self):
-        if not self._confirm_discard():
+        if not self._confirm_discard("starting a new design"):
             return
         self._settle_before_replacing_document()
         for ws in self._workspaces:
-            ws.clear_document()
-            ws.bookmarks.clear()
-            ws.scene.clear_faces()
-            ws.face_image_paths.clear()
-            ws.selected_face_idx = -1
-            ws.image_px_per_mm = None        # calibration belongs to the document
-            # (snap/lock/bevel/forming state: reset by clear_document)
-            ws.fill_visible = False          # fill resets with the document
-            ws.fill_color   = "#2a6099"
-            ws.fill_opacity = 0.50
-            ws.fill_style   = "color"
-            ws.fill_image   = ""
-            ws.scene.set_fill_color(QColor(ws.fill_color))
-            ws.scene.set_fill_opacity(ws.fill_opacity)
-            ws.scene.clear_fill_image()
-            ws.scene.set_fill_visible(False)
-            ws.inlay_fill_visible = False
-            ws.inlay_fill_color   = self._default_inlay_fill_color()
-            ws.inlay_fill_opacity = self._default_inlay_fill_opacity()
-            ws.inlay_fill_style   = "color"
-            ws.inlay_fill_image   = ""
-            ws.inlay_fill_tumble  = False
-            ws.scene.set_inlay_fill_color(QColor(ws.inlay_fill_color))
-            ws.scene.set_inlay_fill_opacity(ws.inlay_fill_opacity)
-            ws.scene.clear_inlay_fill_image()
-            ws.scene.set_inlay_fill_tumble(False)
-            ws.scene.set_inlay_fill_visible(False)
-            ws.lens_fill_visible = False
-            ws.lens_fill_top     = DEFAULT_LENS_FILL_TOP
-            ws.lens_fill_bottom  = DEFAULT_LENS_FILL_BOTTOM
-            ws.lens_fill_linked  = False
-            ws.lens_fill_opacity = self._default_lens_fill_opacity()
-            ws.lens_fill_intensity = self._default_lens_fill_intensity()
-            ws.scene.set_lens_fill_colors(ws.lens_fill_top, ws.lens_fill_bottom)
-            ws.scene.set_lens_fill_intensity(ws.lens_fill_intensity)
-            ws.scene.set_lens_fill_opacity(ws.lens_fill_opacity)
-            ws.scene.set_lens_fill_visible(False)
+            self._reset_workspace(ws)
+        # A new design starts on its front, wherever the last one was left.
+        self._loading = True
+        try:
+            self._ws_tab_widget.setCurrentIndex(0)
+        finally:
+            self._loading = False
         self._restore_ws_sidebar_state(self._active_ws)
-        # Refresh sidebar for the currently visible workspace
-        self._face_list.clear()
-        self._remove_img_btn.setEnabled(False)
-        self._opacity_slider.setEnabled(False)
-        self._rotation_spin.setEnabled(False)
-        self._canvas_lock_chk.setEnabled(False)
         self._refresh_timeline_list()
         self._update_undo_actions()
         self._current_path = None
+        self._remember_disk_state(None)
         self._clear_autosave()
         self._clear_dirty()
         self._update_info_label()      # the layer shown was the old document's
         self._status.showMessage("New document")
 
     def _open(self):
-        if not self._confirm_discard():
+        if not self._confirm_discard("opening another file"):
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open GuildDraw File", "",
+            self, "Open GuildDraw File", self._dialog_dir(),
             "GuildDraw Files (*.gdraw *.svg);;GuildDraw Project (*.gdraw);;SVG Files (*.svg)"
         )
+        if path:
+            self._remember_dir(path)
         if not path:
             return
         self._open_path(path)
+
+    # What a dropped file does, by suffix (B29: a drop did nothing, where
+    # GuildModel opens what is dropped on it).
+    _DROP_IMAGES = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+
+    @staticmethod
+    def _dropped_path(mime) -> str | None:
+        """The first local file in a drag that GuildDraw takes, or None."""
+        if not mime.hasUrls():
+            return None
+        for url in mime.urls():
+            p = url.toLocalFile()
+            if p and os.path.isfile(p) and p.lower().endswith(
+                    (".gdraw", ".svg", ".dxf", ".oma", ".dcs",
+                     *MainWindow._DROP_IMAGES)):
+                return p
+        return None
+
+    def dragEnterEvent(self, event):
+        if self._dropped_path(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self._dropped_path(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        path = self._dropped_path(event.mimeData())
+        if path is None:
+            super().dropEvent(event)
+            return
+        event.acceptProposedAction()
+        # After the drop returns: a modal (the unsaved prompt) inside a drop
+        # handler holds the dragging program.
+        QTimer.singleShot(0, self, lambda: self._open_dropped(path))
+
+    def _open_dropped(self, path: str):
+        """Open a design, import a drawing or a trace, or add a photo."""
+        low = path.lower()
+        if low.endswith(".gdraw") or (low.endswith(".svg") and _is_guilddraw_svg(path)):
+            if self._confirm_discard("opening another file"):
+                self._remember_dir(path)
+                self._open_path(path)
+        elif low.endswith(".svg"):
+            self._import_svg(path)
+        elif low.endswith(".dxf"):
+            self._import_dxf(path)
+        elif low.endswith((".oma", ".dcs")):
+            self._import_oma(path)
+        elif low.endswith(self._DROP_IMAGES):
+            self._remember_dir(path, "last_image_dir")
+            self._add_face(path)
 
     def _open_path(self, path: str):
         """Dispatch an open by extension. Caller handles the discard prompt."""
@@ -9178,36 +11080,46 @@ class MainWindow(QMainWindow):
             resolve_fill_image(data.get("fill"), path)
             resolve_fill_image(data.get("inlay_fill"), path)
         except Exception as e:
-            QMessageBox.critical(self, "Open failed", str(e))
+            QMessageBox.critical(self, "Could Not Open the File",
+                                 _open_error_text(path, e))
             return
         self._settle_before_replacing_document()
-        # A plain .svg is a single-workspace document: the temples and hinge
+        # A plain .svg is a single-workspace document: the temples and component
         # start empty, or the previous project's would ride along into the
         # next save.
         for ws in self._workspaces[1:]:
-            ws.clear_document()
-            ws.bookmarks.clear()
-            ws.scene.clear_faces()
-            ws.face_image_paths.clear()
-            ws.selected_face_idx = -1
-            ws.image_px_per_mm = None
-        self._load_ws_data(self._workspaces[0], data)
-        # Switch to Front tab
-        self._loading = True
+            self._reset_workspace(ws)
         try:
-            self._ws_tab_widget.setCurrentIndex(0)
-        finally:
-            self._loading = False
-        # Pull the loaded state into the sidebar. The tab change above does
-        # this via _on_workspace_changed — but only when the index actually
-        # moves, so opening a file while already on Front left the widgets
-        # (fill tick, tint colors, guide sizes) showing the previous document.
-        self._restore_ws_sidebar_state(self._active_ws)
+            self._load_ws_data(self._workspaces[0], data)
+            # Switch to Front tab
+            self._loading = True
+            try:
+                self._ws_tab_widget.setCurrentIndex(0)
+            finally:
+                self._loading = False
+            # Pull the loaded state into the sidebar. The tab change above does
+            # this via _on_workspace_changed — but only when the index actually
+            # moves, so opening a file while already on Front left the widgets
+            # (fill tick, tint colors, guide sizes) showing the previous document.
+            self._restore_ws_sidebar_state(self._active_ws)
+            self.view.fit_view(self._fit_rect(self._active_ws))
+            self._active_ws.fitted = True
+        except Exception as e:
+            self._abandon_failed_open(path, e)
+            return
+        left_out = data.get("left_out") or []
+        if left_out:
+            self._warn_partial_open(path, [], left_out)
+            self._current_path = None     # Save asks for a new name (above)
+            self._dirty = True
+            self._update_title()
+            self._status.showMessage(f"Opened with errors: {os.path.basename(path)}")
+            return
         self._current_path = path
+        self._remember_disk_state(path)
         self._clear_dirty()
         self._clear_autosave()      # the recovery slot held the previous document
         self._add_recent(path)
-        self.view.fit_view(self.scene.sceneRect())
         bm = self._workspaces[0].bookmarks
         self._status.showMessage(
             f"Opened: {os.path.basename(path)}"
@@ -9227,37 +11139,42 @@ class MainWindow(QMainWindow):
             all_data = load_gdraw(path)
         except Exception as e:
             if not quiet:
-                QMessageBox.critical(self, "Open failed", str(e))
+                QMessageBox.critical(self, "Could Not Open the File",
+                                     _open_error_text(path, e))
             return None
         self._settle_before_replacing_document()
-        tab_names = ["front", "temple_r", "temple_l", "hinge"]
-        for ws, tab in zip(self._workspaces, tab_names, strict=True):
-            self._load_ws_data(ws, all_data[tab])
-        # Switch to the active tab stored in the file
-        active = all_data.get("active_tab", "front")
-        target_idx = tab_names.index(active) if active in tab_names else 0
-        self._loading = True
+        tab_names = ["front", "temple_r", "temple_l", "component"]
         try:
-            self._ws_tab_widget.setCurrentIndex(target_idx)
-        finally:
-            self._loading = False
-        # See _open_svg: a no-op tab change fires no restore of its own.
-        self._restore_ws_sidebar_state(self._active_ws)
-        self.view.fit_view(self.scene.sceneRect())
+            for ws, tab in zip(self._workspaces, tab_names, strict=True):
+                self._load_ws_data(ws, all_data[tab])
+            # Switch to the active tab stored in the file. Inside the try, as
+            # the filling is: a failure here (a calibration that made the zoom
+            # NaN) left the previous design's path over this one's content.
+            active = all_data.get("active_tab", "front")
+            target_idx = tab_names.index(active) if active in tab_names else 0
+            self._loading = True
+            try:
+                self._ws_tab_widget.setCurrentIndex(target_idx)
+            finally:
+                self._loading = False
+            # See _open_svg: a no-op tab change fires no restore of its own.
+            self._restore_ws_sidebar_state(self._active_ws)
+            self.view.fit_view(self._fit_rect(self._active_ws))
+            self._active_ws.fitted = True
+        except Exception as e:
+            self._abandon_failed_open(path, e, quiet=quiet)
+            return None
 
         errors = all_data.get("errors") or []
-        if errors:
-            # A corrupt tab loaded empty: do NOT keep the path — Save would
-            # overwrite the original file with that empty content. Force
-            # Save As and flag the document as unsaved.
+        left_out = all_data.get("left_out") or []
+        if errors or left_out:
+            # A corrupt tab loaded empty, or parts of one were left out: do NOT
+            # keep the path — Save would overwrite the original file with less
+            # than it holds. Force Save As and flag the document as unsaved.
             if not quiet:
-                QMessageBox.warning(
-                    self, "Some workspaces failed to load",
-                    "These workspaces could not be read and were loaded empty:\n\n"
-                    + "\n".join(f"• {e}" for e in errors)
-                    + "\n\nThe original file will not be touched — saving will "
-                      "ask for a new file name (Save As).")
+                self._warn_partial_open(path, errors, left_out)
             self._current_path = None
+            self._remember_disk_state(None)
             self._dirty = True
             self._update_title()
             self._status.showMessage(
@@ -9265,12 +11182,100 @@ class MainWindow(QMainWindow):
             return "errors"
 
         self._current_path = path
+        self._remember_disk_state(path)
         self._clear_dirty()
         if remember:
             self._add_recent(path)
             self._clear_autosave()  # the recovery slot held the previous document
-        self._status.showMessage(f"Opened: {os.path.basename(path)}")
+        self._status.showMessage(f"Opened: {os.path.basename(path)}"
+                                 + self._unshown_note() + self._stand_in_note(),
+                                 15000)
         return "ok"
+
+    def _stand_in_note(self) -> str:
+        """'  (Arial shows as Liberation Sans here …)' for the engraving fonts
+        this computer does not have, or ''."""
+        from .textpath import font_stand_in
+        seen = {}
+        for ws in self._workspaces:
+            for t in ws.doc_texts:
+                shown = font_stand_in(t.family)
+                if shown:
+                    seen[t.family] = shown
+        if not seen:
+            return ""
+        said = "; ".join(f"{f} shows as {s}" for f, s in seen.items())
+        return (f"  ({said}: not installed here. GuildModel engraves with the "
+                "fonts its own computer has.)")
+
+    def _unshown_note(self) -> str:
+        """'  (2 reference images could not be shown …)', or '' — the photos
+        an open left out of view (WorkspaceState.unshown_faces)."""
+        unshown = [fi for ws in self._workspaces for fi in ws.unshown_faces]
+        away = sum(1 for fi in unshown if not fi.stored)
+        bad = len(unshown) - away
+        said = []
+        if away:
+            said.append(f"{away} reference image{'s' if away != 1 else ''} not "
+                        "on this computer: Locate… on the Canvas tab finds "
+                        f"{'them' if away != 1 else 'it'}")
+        if bad:
+            said.append(f"{bad} reference image{'s' if bad != 1 else ''} could "
+                        "not be shown: too large, damaged or not found. "
+                        f"{'It stays' if bad == 1 else 'They stay'} in the file")
+        return f"  ({'; '.join(said)}.)" if said else ""
+
+    def _warn_partial_open(self, path: str, errors: list, left_out: list):
+        """Say what of *path* could not be read: whole tabs (*errors*,
+        "tab: reason") and single parts left out of a tab (*left_out*,
+        "tab: 2 curves (…)"; a plain .svg's carry no tab)."""
+        def tab_and_text(entry: str):
+            tab, sep, rest = entry.partition(": ")
+            if sep and tab in _TAB_TITLES:
+                return _TAB_TITLES[tab], rest
+            return "", entry
+        name = os.path.basename(path)
+        parts = []
+        if errors:
+            broken = [tab_and_text(e) for e in errors]
+            parts.append(f"{_and_list(t for t, _r in broken)} could not be read "
+                         f"in {name} and opened empty.")
+        if left_out:
+            parts.append(f"Some parts of {name} could not be read and were left "
+                         "out (one may come from a later GuildDraw):\n"
+                         + "\n".join(f"• {t + ': ' if t else ''}{w}"
+                                     for t, w in map(tab_and_text, left_out)))
+        parts.append("The rest of the design opened as saved. The file itself "
+                     "is untouched: saving asks for a new name, so the original "
+                     "stays as it is.")
+        if errors:
+            parts.append("Technical detail:\n" + "\n".join(
+                f"• {t}: {r}" for t, r in map(tab_and_text, errors)))
+        QMessageBox.warning(
+            self, "Some Tabs Could Not Be Read" if errors and not left_out
+            else "Some of the Design Could Not Be Read", "\n\n".join(parts))
+
+    def _abandon_failed_open(self, path: str, exc: Exception,
+                             quiet: bool = False):
+        """A file read but failed while filling the workspaces: leave an empty,
+        unsaved document with no path, never the mixture. The front held the
+        new file's curves and a temple the old one's, with the old path kept
+        and the document clean, so Ctrl+S wrote the mixture over the previous
+        file and the next save rotated its .bak away (the 2.0 bug hunt)."""
+        for ws in self._workspaces:
+            self._reset_workspace(ws)
+        self._restore_ws_sidebar_state(self._active_ws)
+        self._refresh_timeline_list()
+        self._update_undo_actions()
+        self._current_path = None       # Save asks for a name
+        self._remember_disk_state(None)
+        self._clear_dirty()             # nothing is left to lose
+        self._status.showMessage(f"Open failed: {os.path.basename(path)}")
+        if not quiet:
+            QMessageBox.critical(
+                self, "Could Not Open the File",
+                _open_error_text(path, exc) + "\n\nNothing from it was kept, "
+                "and the previous design is closed; its file is untouched.")
 
     def _load_ws_data(self, ws: "WorkspaceState", data: dict):
         """Populate a WorkspaceState from a load_svg result dict.  Clears first."""
@@ -9316,33 +11321,38 @@ class MainWindow(QMainWindow):
             ws.boxing_guide.set_bevel_depth(ws.bevel_depth)
 
         ws.scene.clear_faces()
-        ws.face_image_paths.clear()
+        ws.unshown_faces = []
         ws.selected_face_idx = -1
         face_images_data = data.get("face_images", [])
+        placed = []                 # (scene index, record) of the photos loaded
         for fi in face_images_data:
-            if fi.path and os.path.isfile(fi.path):
-                idx = ws.scene.add_face(fi.path)
-                if idx is not None:
-                    ws.face_image_paths.append(fi.path)
-                    ws.scene.set_face_opacity(idx, fi.opacity)
-                    ws.scene.set_face_rotation(idx, fi.rotation)
+            if not fi.stored:
+                # Found by its id on this computer, never by a path in the file.
+                fi = dataclasses.replace(fi, path=image_links.find(fi.link_id) or "")
+            idx = self._place_face(ws, fi)
+            if idx is not None:
+                placed.append((idx, fi))
+            elif fi.path or fi.link_id:
+                ws.unshown_faces.append(fi)
 
         cal = data.get("calibration", Calibration())
         if cal.is_set:
             ws.image_px_per_mm = cal.px_per_mm
-            if ws is self._active_ws:
-                self._apply_calibration(cal.px_per_mm)
-            else:
-                ws.scene.set_face_calibration(cal.px_per_mm)
+            ws.scene.set_face_calibration(cal.px_per_mm)   # every photo, as before 2.0
+        for idx, fi in placed:                             # then each its own
+            if fi.px_per_mm:
+                ws.scene.set_face_calibration(fi.px_per_mm, idx)
+        if ws is self._active_ws:
+            self._show_calibration(ws)
 
-        visible_idx = 0
-        for fi in face_images_data:
-            if fi.path and os.path.isfile(fi.path):
-                if fi.tx != 0.0 or fi.ty != 0.0:
-                    item = ws.scene.get_face_item(visible_idx)
-                    if item is not None:
-                        item.setPos(fi.tx, fi.ty)
-                visible_idx += 1
+        # By the index each photo got: a photo that exists but fails to decode
+        # gets none, and counting files moved every later photo to the
+        # position of the one before it.
+        for idx, fi in placed:
+            if fi.tx != 0.0 or fi.ty != 0.0:
+                item = ws.scene.get_face_item(idx)
+                if item is not None:
+                    item.setPos(fi.tx, fi.ty)
 
         for dim in data.get("dims", []):
             ws.add_dim(dim)
@@ -9352,22 +11362,35 @@ class MainWindow(QMainWindow):
 
         ws.bookmarks = list(data.get("bookmarks", []))
 
-        # Guide sizes (2.0). Absent in older files, which leave the session's
-        # sizes as they are; out-of-range values are held to the sidebar's.
+        # Guide sizes (2.0). Absent in older files, which take the sizes
+        # Preferences start a workspace at: they used to keep the previous
+        # document's, which the next save wrote into the file, and GuildModel
+        # seeds a new project's blank from them. Out-of-range values are held
+        # to the sidebar's.
         guides = data.get("guides")
         guides = guides if isinstance(guides, dict) else {}
+        sw, sh, pw, ph = self._guide_defaults(ws)
         stock = guides.get("stock")
         if isinstance(stock, dict):
-            ws.stock_w = _num_or(stock.get("width_mm"), ws.stock_w, 5.0, 400.0)
-            ws.stock_h = _num_or(stock.get("height_mm"), ws.stock_h, 5.0, 200.0)
-            ws.stock_guide.set_width(ws.stock_w)
-            ws.stock_guide.set_height(ws.stock_h)
+            sw = _num_or(stock.get("width_mm"), sw, 5.0, 400.0)
+            sh = _num_or(stock.get("height_mm"), sh, 5.0, 200.0)
         pad = guides.get("pad")
         if isinstance(pad, dict):
-            ws.pad_w = _num_or(pad.get("width_mm"), ws.pad_w, 10.0, 200.0)
-            ws.pad_h = _num_or(pad.get("height_mm"), ws.pad_h, 10.0, 200.0)
-            ws.pad_guide.set_width(ws.pad_w)
-            ws.pad_guide.set_height(ws.pad_h)
+            pw = _num_or(pad.get("width_mm"), pw, 10.0, 200.0)
+            ph = _num_or(pad.get("height_mm"), ph, 10.0, 200.0)
+        self._set_guide_sizes(ws, (sw, sh), (pw, ph))
+        self._reset_measure_guides(ws)        # what an older file did not save
+        cons = guides.get("construction")
+        if isinstance(cons, dict):
+            ws.crest_height = _num_or(cons.get("crest_height_mm"), ws.crest_height,
+                                      -50.0, 50.0)
+            ws.arm_spread = _num_or(cons.get("crest_width_mm"), ws.arm_spread, 0.0, 100.0)
+            ws.arm_drop = _num_or(cons.get("angle_height_mm"), ws.arm_drop, -50.0, 100.0)
+        box = guides.get("boxing")
+        if isinstance(box, dict):
+            ws.boxing_a = _num_or(box.get("a_mm"), ws.boxing_a, 0.0, 120.0)
+            ws.boxing_b = _num_or(box.get("b_mm"), ws.boxing_b, 0.0, 100.0)
+            ws.boxing_dbl = _num_or(box.get("dbl_mm"), ws.boxing_dbl, 0.0, 60.0)
 
         fill = data.get("fill") or {}
         ws.fill_visible = bool(fill.get("visible", False))
@@ -9434,44 +11457,45 @@ class MainWindow(QMainWindow):
             self._apical_spin.blockSignals(True)
             self._apical_spin.setValue(ws.apical_radius)
             self._apical_spin.blockSignals(False)
-            self._face_list.clear()
-            for p in ws.face_image_paths:
-                item = QListWidgetItem(os.path.basename(p))
-                item.setData(Qt.ItemDataRole.UserRole, p)
-                self._face_list.addItem(item)
-            if ws.scene.face_count() > 0:
-                self._face_list.setCurrentRow(0)
+            # The first row, shown or not: one not on this computer is where
+            # Locate… starts.
+            ws.selected_face_idx = 0
+            self._refresh_face_list(ws)
             self._refresh_timeline_list()
             self._update_undo_actions()
 
-    def _save(self):
-        if not hasattr(self, "_current_path") or not self._current_path:
-            self._save_as()
-        else:
-            self._do_save(self._current_path)
+    def _save(self) -> bool:
+        """Save to the document's path, or ask for one. True when a file was
+        written."""
+        if not getattr(self, "_current_path", None):
+            return self._save_as()
+        return self._do_save(self._current_path)
 
-    def _save_as(self, start: str | None = None):
+    def _save_as(self, start: str | None = None) -> bool:
         # Untitled project: suggest the frame-size notation (49□27.gdraw) so
         # the □ is in the filename without typing it — the native Windows
         # dialog can't receive the insert-□ application shortcut.
         start = start or getattr(self, "_current_path", "") or ""
         if not start:
             size = self._size_string()
-            if size:
-                start = f"{size}.gdraw"
+            start = os.path.join(self._dialog_dir(), f"{size or 'design'}.gdraw")
         path, chosen = QFileDialog.getSaveFileName(
             self, "Save GuildDraw File", start,
             "GuildDraw Project (*.gdraw);;SVG Files (*.svg)"
         )
         if not path:
-            return
+            return False
         if not path.lower().endswith((".gdraw", ".svg")):
             # Non-native dialogs hand back exactly what was typed; a bare
             # name used to fall through to the single-workspace SVG writer.
-            path += ".svg" if "svg" in chosen.lower() else ".gdraw"
+            path = self._final_path(path, ".svg" if "svg" in chosen.lower()
+                                    else ".gdraw")
+            if path is None:
+                return False
+        self._remember_dir(path)
         # _do_save takes the path on success only: set before it, a failed
         # Save As left every later Ctrl+S aimed at the file that failed.
-        self._do_save(path)
+        return self._do_save(path)
 
     def _size_string(self) -> str | None:
         """Frame-size notation ``A□DBL`` from the front workspace's finished
@@ -9532,7 +11556,7 @@ class MainWindow(QMainWindow):
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle("Save as .svg?")
         box.setText(f"{os.path.basename(path)} can hold only the Frame Front. "
-                    f"{', '.join(others)} would not be saved.")
+                    f"{_and_list(others)} would not be saved.")
         box.setInformativeText("Save the whole design as a .gdraw project instead?")
         as_gdraw = box.addButton("Save as .gdraw…", QMessageBox.ButtonRole.AcceptRole)
         front = box.addButton("Save Front Only", QMessageBox.ButtonRole.DestructiveRole)
@@ -9542,6 +11566,48 @@ class MainWindow(QMainWindow):
         clicked = box.clickedButton()
         return ("gdraw" if clicked is as_gdraw
                 else "front" if clicked is front else "cancel")
+
+    def _remember_disk_state(self, path: str | None) -> None:
+        """What the design's file looked like when this window last read or
+        wrote it, for _ok_to_overwrite."""
+        try:
+            st = os.stat(path) if path else None
+        except OSError:
+            st = None
+        self._disk_state = ((os.path.realpath(path), st.st_mtime_ns, st.st_size)
+                            if st else None)
+
+    def _ok_to_overwrite(self, target: str) -> bool:
+        """Before a save over *target*: if another window or program changed
+        it since this window read or wrote it, ask. The second window's save
+        replaced the first's unasked, and one more took it off the disk."""
+        known = getattr(self, "_disk_state", None)
+        if known is None or known[0] != target:
+            return True
+        try:
+            st = os.stat(target)
+        except OSError:
+            return True                       # gone: nothing to overwrite
+        if (st.st_mtime_ns, st.st_size) == known[1:]:
+            return True
+        answer = self._ask_changed_on_disk(os.path.basename(target))
+        if answer == "save_as":
+            QTimer.singleShot(0, self, self._save_as)
+        return answer == "overwrite"
+
+    def _ask_changed_on_disk(self, name: str) -> str | None:
+        """'overwrite', 'save_as' or None (Cancel) for a file changed on disk."""
+        box = QMessageBox(
+            QMessageBox.Icon.Warning, "File Changed on Disk",
+            f"{name} was changed on disk since this window opened or saved it, "
+            "by another window or program. Overwrite it with this design, or "
+            "save this design under another name?",
+            QMessageBox.StandardButton.Cancel, self)
+        over = box.addButton("Overwrite", QMessageBox.ButtonRole.DestructiveRole)
+        other = box.addButton("Save As…", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(other)
+        box.exec()
+        return {over: "overwrite", other: "save_as"}.get(box.clickedButton())
 
     def _do_save(self, path: str) -> bool:
         """Atomic save: write a temp file, keep the previous version as .bak,
@@ -9553,38 +11619,79 @@ class MainWindow(QMainWindow):
             others = self._other_workspaces_in_use()
             if others:
                 # Ctrl+S on a legacy .svg used to write the front, clear the
-                # star and drop the temple and hinge work without a word.
+                # star and drop the temple and component work without a word.
                 choice = self._ask_svg_scope(path, others)
                 if choice == "gdraw":
-                    self._save_as(start=os.path.splitext(path)[0] + ".gdraw")
-                    return False
+                    return bool(self._save_as(
+                        start=os.path.splitext(path)[0] + ".gdraw"))
                 if choice != "front":
                     return False
                 front_only = True
-        tmp = path + ".tmp"
+        # Through a link to the file it names (a design kept in a synced
+        # folder): the link was replaced by a regular file, and the real one
+        # never got the save.
+        target = os.path.realpath(path)
+        if os.path.exists(target) and not os.access(target, os.W_OK):
+            QMessageBox.warning(
+                self, "File Is Read-Only",
+                f"{os.path.basename(path)} is read-only, so GuildDraw left it as "
+                "it is. Save the design under another name with File ▸ Save "
+                "As…, or make the file writable first.")
+            return False
+        if not self._ok_to_overwrite(target):
+            return False
+        notes: list = []
+        tmp = None
         try:
+            tmp = _sibling_tmp(target)
             if path.lower().endswith(".gdraw"):
-                self._do_save_gdraw(tmp)
+                notes = self._do_save_gdraw(tmp, carry_from=target) or []
             else:
                 self._do_save_svg(tmp)
-            if os.path.exists(path):
+            # On disk before it replaces anything: a crash or a power cut
+            # after the swap could otherwise leave an empty file at the path.
+            with open(tmp, "r+b") as f:
+                os.fsync(f.fileno())
+            if os.path.exists(target):
+                # A copy, not a rename: the previous version stays at the path
+                # until the one atomic replace below (the rename left no file
+                # there between the two steps). The copy goes through a
+                # temporary file too: one that failed half-way had already cut
+                # the good .bak short.
                 try:
-                    os.replace(path, path + ".bak")
+                    _atomic_copy(target, target + ".bak")
                 except OSError:
                     pass   # backup is best-effort; the save still proceeds
-            os.replace(tmp, path)
+                try:
+                    shutil.copymode(target, tmp)   # a shared file stays shared
+                except OSError:
+                    pass
+            else:
+                _give_default_mode(tmp)
+            os.replace(tmp, target)
+            _fsync_folder(target)
         except Exception as e:
             try:
-                if os.path.exists(tmp):
+                if tmp and os.path.exists(tmp):
                     os.unlink(tmp)
             except OSError:
                 pass
-            QMessageBox.critical(self, "Save failed", str(e))
+            QMessageBox.critical(self, "Could Not Save",
+                                 _write_error_text("save the design", path, e))
             return False
+        self._remember_disk_state(target)
+        if notes:
+            QMessageBox.warning(
+                self, "Some Images Were Not Carried",
+                f"{os.path.basename(path)} was saved, without these images:\n"
+                + "\n".join(f"• {_TAB_TITLES.get(t, t)}: {w}"
+                            for t, _sep, w in (n.partition(": ") for n in notes))
+                + "\n\nAdd them again with Add Image… (Canvas tab) or the "
+                "fill's Choose…, then save.")
         self._current_path = path
         self._add_recent(path)
         if front_only:
-            # The temples and hinge are still unsaved: keep the star, the
+            # The temples and component are still unsaved: keep the star, the
             # close prompt and the recovery slot.
             self._update_title()
             self._status.showMessage(
@@ -9593,8 +11700,29 @@ class MainWindow(QMainWindow):
             return True
         self._clear_dirty()
         self._clear_autosave()
-        self._status.showMessage(f"Saved: {os.path.basename(path)}")
+        self._status.showMessage(f"Saved: {os.path.basename(path)}"
+                                 + self._svg_images_note(path), 12000)
         return True
+
+    def _svg_images_note(self, path: str) -> str:
+        """For a .svg save: the reference images and swatches it names but
+        does not hold, which a .gdraw keeps inside it. Saved as .svg from a
+        .gdraw, they lived in the image cache, and reopened as nothing."""
+        if not path.lower().endswith(".svg"):
+            return ""
+        ws = self._workspaces[0]
+        folder = os.path.dirname(os.path.abspath(path)) + os.sep
+        # The stored photos only: one not stored is never named by a file.
+        stored = [ws.scene.face_path(i) for i in range(ws.scene.face_count())
+                  if ws.scene.face_stored(i)]
+        named = [p for p in [*stored, ws.fill_image, ws.inlay_fill_image]
+                 if p and not os.path.abspath(p).startswith(folder)]
+        if not named:
+            return ""
+        return (f"  ·  {len(named)} image{'s' if len(named) != 1 else ''} it "
+                f"names {'are' if len(named) != 1 else 'is'} not beside it: "
+                "a .svg names its images and does not hold them; save as "
+                ".gdraw to keep them with the design")
 
     def _ws_to_data_dict(self, ws: "WorkspaceState") -> dict:
         """Build the data dict for save_svg from a WorkspaceState."""
@@ -9619,13 +11747,21 @@ class MainWindow(QMainWindow):
             "bevel": BevelSpec(preset=ws.bevel_preset, depth_mm=ws.bevel_depth),
             "face_images": [
                 FaceImage(
-                    path     = ws.face_image_paths[i] if i < len(ws.face_image_paths) else "",
+                    path     = ws.scene.face_path(i),
                     tx       = ws.scene.face_scene_pos(i)[0],
                     ty       = ws.scene.face_scene_pos(i)[1],
                     rotation = ws.scene.face_rotation(i),
                     opacity  = ws.scene.face_opacity(i),
+                    px_per_mm = ws.scene.face_calibration(i),
+                    visible  = ws.scene.face_visible(i),
+                    locked   = ws.scene.face_is_locked(i),
+                    stored   = ws.scene.face_stored(i),
+                    link_id  = ws.scene.face_link(i),
                 )
                 for i in range(ws.scene.face_count())
+            ] + [
+                # Carried as they came (see WorkspaceState.unshown_faces).
+                fi for fi in getattr(ws, "unshown_faces", [])
             ],
             "bookmarks": ws.bookmarks,
             # The blank and the pad block the design is drawn against (2.0):
@@ -9633,7 +11769,16 @@ class MainWindow(QMainWindow):
             # project's stock once its reader knows the key.
             "guides": {
                 "stock": {"width_mm": ws.stock_w, "height_mm": ws.stock_h},
-                **({"pad": {"width_mm": ws.pad_w, "height_mm": ws.pad_h}}
+                **({"pad": {"width_mm": ws.pad_w, "height_mm": ws.pad_h},
+                    # The customer's measurements the design is drawn to
+                    # (2.0): they were the session's, and leaked into the
+                    # next design. A/B/DBL are the free box's, kept while it
+                    # is snapped to the lens.
+                    "construction": {"crest_height_mm": ws.crest_height,
+                                     "crest_width_mm": ws.arm_spread,
+                                     "angle_height_mm": ws.arm_drop},
+                    "boxing": {"a_mm": ws.boxing_a, "b_mm": ws.boxing_b,
+                               "dbl_mm": ws.boxing_dbl}}
                    if ws.workspace_type == "front" else {}),
             },
             "fill": {
@@ -9664,7 +11809,8 @@ class MainWindow(QMainWindow):
             "texts": ws.doc_texts,
         }
 
-    def _do_save_svg(self, path: str, ws: "WorkspaceState | None" = None):
+    def _do_save_svg(self, path: str, ws: "WorkspaceState | None" = None,
+                     export: bool = False):
         """Write one workspace as a plain SVG. Used by File > Save/Save As
         for a .svg document (legacy single-workspace format: always the
         Frame Front, whatever tab is showing — otherwise Ctrl+S from a
@@ -9692,19 +11838,23 @@ class MainWindow(QMainWindow):
             lens_fill       = d["lens_fill"],
             texts           = d["texts"],
             bevel           = d["bevel"],
+            text_outlines   = export,
         )
 
-    def _do_save_gdraw(self, path: str):
-        """Save all three workspaces as a .gdraw ZIP."""
+    def _do_save_gdraw(self, path: str, carry_from: str | None = None) -> list[str]:
+        """Save all three workspaces as a .gdraw ZIP. *carry_from* is the file
+        the save replaces (its images stand in for any that cannot be read
+        now); returns notes on the images not carried (gdraw.save_gdraw)."""
         # Flush sidebar into active workspace before building data dicts
         self._save_ws_sidebar_state(self._active_ws)
-        tab_names = ["front", "temple_r", "temple_l", "hinge"]
+        tab_names = ["front", "temple_r", "temple_l", "component"]
         from .export.gdraw import save_gdraw
         ws_data = {}
         for ws, tab in zip(self._workspaces, tab_names, strict=True):
             ws_data[tab] = self._ws_to_data_dict(ws)
         active_tab = tab_names[self._ws_tab_widget.currentIndex()]
-        save_gdraw(ws_data, path, active_tab=active_tab)
+        return save_gdraw(ws_data, path, active_tab=active_tab,
+                          carry_from=carry_from)
 
     # ------------------------------------------------------------------
     # Exports
@@ -9722,9 +11872,14 @@ class MainWindow(QMainWindow):
         """One-line GuildModel-readiness summary for the active workspace, used
         as the status-bar marker after a (never-blocked) DXF export."""
         from .export.validate import validate
+        ws = self._active_ws
         errors, warnings = validate(self._doc_curves, self._act_mirror.isChecked(),
-                                    self._active_ws.workspace_type,
-                                    stock_mm=self._stock_mm(self._active_ws))
+                                    ws.workspace_type, stock_mm=self._stock_mm(ws))
+        if ws.workspace_type == "component":
+            # GuildModel builds no part from this tab (the dot says so too).
+            return (f"not ready for the library ({errors[0]})" if errors
+                    else "a component for the library; GuildModel reads it "
+                         "only once it is placed on the front or a temple")
         if errors:
             return f"not yet GuildModel-ready ({errors[0]})"
         if warnings:
@@ -9735,12 +11890,17 @@ class MainWindow(QMainWindow):
         # DXF export is never blocked on the contract: the maker may want a
         # partial frame, or an unusual multi-lens shape GuildModel will finish.
         # The readiness dot and the status note below report GuildModel-readiness.
+        if self._tab_is_empty("Export DXF"):
+            return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export DXF", "", "DXF Files (*.dxf)"
+            self, "Export DXF", self._suggested(".dxf", per_tab=True),
+            "DXF Files (*.dxf)"
         )
         if not path:
             return
-        path = self._ensure_suffix(path, ".dxf")
+        path = self._final_path(path, ".dxf")
+        if path is None:
+            return
         try:
             from .export.dxf import export_dxf
             # TextObjects become outline splines on their layer at export
@@ -9750,22 +11910,16 @@ class MainWindow(QMainWindow):
                 from .textpath import text_to_curves
                 for tobj in self._active_ws.doc_texts:
                     curves.extend(text_to_curves(tobj))
-            export_dxf(
-                curves     = curves,
-                path       = path,
-                mirror_on  = self._act_mirror.isChecked(),
-                axis_x     = self.scene.mirror.x if self.scene.mirror else 0.0,
-                horizontal = (self._active_ws.workspace_type
-                              in ("temple_r", "temple_l")),
-            )
+            export_dxf(curves=curves, path=path)
             self._status.showMessage(
                 f"DXF exported: {os.path.basename(path)} — {self._readiness_note()}")
         except Exception as e:
-            QMessageBox.critical(self, "DXF export failed", str(e))
+            QMessageBox.critical(self, "Could Not Export the DXF",
+                                 _write_error_text("export the DXF", path, e))
 
     def _export_all_dxf(self):
         """File > Export > Export All DXF… — one DXF per populated workspace
-        (<base>_front.dxf, _temple_r, _temple_l, _hinge). Export is never
+        (<base>_front.dxf, _temple_r, _temple_l, _component). Export is never
         blocked; the per-workspace validator only annotates which files aren't
         GuildModel-ready yet (reported after the write)."""
         from .export.batch import (
@@ -9777,7 +11931,7 @@ class MainWindow(QMainWindow):
         self._save_ws_sidebar_state(self._active_ws)
 
         items = []
-        tab_names = ["front", "temple_r", "temple_l", "hinge"]
+        tab_names = ["front", "temple_r", "temple_l", "component"]
         for ws, tab in zip(self._workspaces, tab_names, strict=True):
             curves = [c for c in ws.doc_curves if not c.mirrored]
             if ws.doc_texts:
@@ -9788,7 +11942,6 @@ class MainWindow(QMainWindow):
                 workspace_type = tab,
                 curves         = curves,
                 mirror_on      = ws.mirror_enabled,
-                axis_x         = ws.scene.mirror.x if ws.scene.mirror else 0.0,
                 stock_mm       = self._stock_mm(ws),
             ))
 
@@ -9798,24 +11951,38 @@ class MainWindow(QMainWindow):
             return
 
         ws_titles = {"front": "Frame Front", "temple_r": "Temple R",
-                     "temple_l": "Temple L",  "hinge": "Hinge Pocket"}
+                     "temple_l": "Temple L",  "component": "Component"}
         # Validation never blocks the batch export — it only annotates which
         # workspaces aren't GuildModel-ready yet (reported after the write).
         report = check_batch(items)
 
-        suggested = ""
-        if self._current_path:
-            suggested = os.path.splitext(self._current_path)[0] + ".dxf"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export All DXF — choose base name", suggested,
-            "DXF Files (*.dxf)")
+            self, "Export Every Tab as DXF: Choose a Base Name",
+            self._suggested(".dxf"), "DXF Files (*.dxf)")
         if not path:
             return
+        self._remember_dir(path)
         base = base_from_path(path)
+        # The dialog asked about <base>.dxf, which is never written; the files
+        # that are were replaced unasked, a hand-edited one among them.
+        from .export.batch import batch_paths
+        there = [p for p in batch_paths(base, items).values() if os.path.exists(p)]
+        if there:
+            more = f" and {len(there) - 1} more" if len(there) > 1 else ""
+            r = QMessageBox.question(
+                self, "Replace Files?",
+                f"{os.path.basename(there[0])}{more} already exist"
+                f"{'s' if len(there) == 1 else ''}. Replace "
+                f"{'it' if len(there) == 1 else 'them'}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if r != QMessageBox.StandardButton.Yes:
+                return
         try:
             written = write_batch(items, base)
         except Exception as e:
-            QMessageBox.critical(self, "Batch DXF export failed", str(e))
+            QMessageBox.critical(self, "Could Not Export Every Tab",
+                                 _write_error_text("export every tab as DXF", base + ".dxf", e))
             return
         names = ", ".join(os.path.basename(p) for p in written)
         msg = f"Exported {len(written)} DXF file(s): {names}"
@@ -9842,17 +12009,24 @@ class MainWindow(QMainWindow):
     def _export_svg(self):
         """Export the active workspace as SVG without touching the current
         document path or window title (unlike File > Save)."""
+        if self._tab_is_empty("Export SVG"):
+            return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export SVG", "", "SVG Files (*.svg)"
+            self, "Export SVG", self._suggested(".svg", per_tab=True),
+            "SVG Files (*.svg)"
         )
         if not path:
             return
-        path = self._ensure_suffix(path, ".svg")
+        path = self._final_path(path, ".svg")
+        if path is None:
+            return
         try:
-            self._do_save_svg(path, self._active_ws)
+            ws = self._active_ws
+            _atomic_write(path, lambda tmp: self._do_save_svg(tmp, ws, export=True))
             self._status.showMessage(f"SVG exported: {os.path.basename(path)}")
         except Exception as e:
-            QMessageBox.critical(self, "SVG export failed", str(e))
+            QMessageBox.critical(self, "Could Not Export the SVG",
+                                 _write_error_text("export the SVG", path, e))
 
     _PNG_DPI_CHOICES = [
         ("150 dpi — draft",       150),
@@ -9891,23 +12065,27 @@ class MainWindow(QMainWindow):
         return rect if not rect.isEmpty() else None
 
     def _export_png(self):
+        if self._tab_is_empty("Export PNG") and not self.scene.face_count():
+            return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export PNG", "", "PNG Files (*.png)"
+            self, "Export PNG", self._suggested(".png", per_tab=True),
+            "PNG Files (*.png)"
         )
         if not path:
             return
         # Some file dialogs hand back exactly what was typed. Without the
         # suffix the raster lands somewhere the maker won't find it (and used
         # to not land at all), so add it here rather than trust the dialog.
-        if not path.lower().endswith(".png"):
-            path += ".png"
+        path = self._final_path(path, ".png")
+        if path is None:
+            return
         labels = [lbl for lbl, _dpi in self._PNG_DPI_CHOICES]
         dpis   = [dpi for _lbl, dpi in self._PNG_DPI_CHOICES]
         last   = self._prefs.get("png_export_dpi", 600)
         idx    = dpis.index(last) if last in dpis else 2
         choice, ok = QInputDialog.getItem(
             self, "Export PNG",
-            "Resolution (scene mm rendered at true print scale):",
+            "Resolution (the drawing at true size):",
             labels, idx, False)
         if not ok:
             return
@@ -9915,45 +12093,62 @@ class MainWindow(QMainWindow):
         if dpi != last:
             self._prefs["png_export_dpi"] = dpi
             self._save_prefs()
+        # The drawing, not the editing: the selection's glow, its node and
+        # handle dots and the Move gizmo were in the image.
+        selected = list(self.scene.selectedItems())
+        had_gizmo = self._move_gizmo is not None
+        self._edit_tool.clear()
+        self._hide_move_gizmo()
+        self.scene.blockSignals(True)
+        self.scene.clearSelection()
+        self.scene.blockSignals(False)
         try:
             from .export.png import render_png
             # WYSIWYG, View Obverse included: the image is the canvas as seen.
             obverse = self.view.is_obverse()
-            render_png(self.scene, path, dpi=dpi,
-                       rect=self._png_content_rect(),
-                       background=theme.color("canvas.bg"),
-                       mirrored=obverse)
+            written = _atomic_write_result(path, lambda tmp: render_png(
+                self.scene, tmp, dpi=dpi, rect=self._png_content_rect(),
+                background=theme.color("canvas.bg"), mirrored=obverse))
+            capped = (f"  ·  at {written:.0f} dpi: the largest image is "
+                      "8192 px a side" if written and written < dpi - 0.5 else "")
             self._status.showMessage(
-                f"PNG exported: {os.path.basename(path)}"
+                f"PNG exported: {os.path.basename(path)}" + capped
                 + (f"  ·  the {_OBVERSE_FACE[self._active_ws.workspace_type]}, "
                    "as View Obverse shows it" if obverse else ""))
         except Exception as e:
-            QMessageBox.critical(self, "PNG export failed", str(e))
+            QMessageBox.critical(self, "Could Not Export the PNG",
+                                 _write_error_text("export the PNG", path, e))
+        finally:
+            self.scene.select_items(selected)
+            if had_gizmo and selected:
+                self._show_move_gizmo()
 
     # ------------------------------------------------------------------
     # OMA lens-trace interchange (M7)
     # ------------------------------------------------------------------
 
-    def _import_dxf(self):
+    def _import_dxf(self, path: str | None = None):
         """File > Import > DXF… — pour any DXF's geometry into the active
         workspace.  Recognized GuildDraw layer names valid for this workspace
         are kept; everything else lands on the active layer, ungrouped, so the
         maker can drag each path to the right layer in the Layers panel."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import DXF", "", "DXF Files (*.dxf);;All Files (*)")
-        if not path:
-            return
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Import DXF", self._dialog_dir(), "DXF Files (*.dxf);;All Files (*)")
+            if not path:
+                return
+        self._remember_dir(path)
         ws = self._active_ws
         try:
             from .export.dxf_import import import_dxf
             curves, notes = import_dxf(path, ws.active_layer, ws.workspace_type)
         except Exception as e:
-            QMessageBox.critical(self, "DXF import failed", str(e))
+            QMessageBox.critical(self, "Could Not Import the DXF", str(e))
             return
         if not curves:
             extra = ("\n\n" + "\n".join(notes)) if notes else ""
             QMessageBox.information(
-                self, "Nothing imported",
+                self, "Nothing Imported",
                 f"No supported geometry was found in this DXF.{extra}")
             return
 
@@ -9968,7 +12163,7 @@ class MainWindow(QMainWindow):
             msg += "  " + "  ".join(notes)
         self._status.showMessage(msg)
 
-    def _import_svg(self):
+    def _import_svg(self, path: str | None = None):
         """File > Import > SVG… — pour any SVG's geometry into the active
         workspace: a logo for a temple engraving, a shape from a colleague's
         drawing, an outline traced in another editor.  Paths arrive as the
@@ -9977,21 +12172,23 @@ class MainWindow(QMainWindow):
         active layer, selected.  A file that declares no physical size is
         read at 96 px/in and offered a size, since a logo drawn at page size
         is never wanted at page size on a temple."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import SVG", "", "SVG Files (*.svg);;All Files (*)")
-        if not path:
-            return
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Import SVG", self._dialog_dir(), "SVG Files (*.svg);;All Files (*)")
+            if not path:
+                return
+        self._remember_dir(path)
         ws = self._active_ws
         try:
             from .export.svg_import import place_curves, read_svg
             doc = read_svg(path, ws.active_layer, ws.workspace_type)
         except Exception as e:
-            QMessageBox.critical(self, "SVG import failed", str(e))
+            QMessageBox.critical(self, "Could Not Import the SVG", str(e))
             return
         if not doc.curves:
             extra = ("\n\n" + "\n".join(doc.notes)) if doc.notes else ""
             QMessageBox.information(
-                self, "Nothing imported",
+                self, "Nothing Imported",
                 f"No supported geometry was found in this SVG.{extra}")
             return
 
@@ -10096,7 +12293,7 @@ class MainWindow(QMainWindow):
             "Shrink the imported shape by the bevel depth to recover the "
             "drawn lens? Importing at the same depth the file was exported "
             "with round-trips exactly.",
-            default_depth, "Apply Reduction", "Import As Traced")
+            default_depth, "Shrink to the Drawn Lens", "Import As Traced")
 
     def _ask_oma_export_bevel(self, default_depth: float) -> float | None:
         """Ask whether to grow the exported OMA trace by the bevel depth.
@@ -10112,7 +12309,7 @@ class MainWindow(QMainWindow):
             "receive the finished size? The depth defaults to the boxing "
             "guide's bevel setting; HBOX/VBOX/DBL are computed from the "
             "same geometry either way.",
-            default_depth, "Apply Increase", "Export As-Is")
+            default_depth, "Export the Finished Lens", "Export the Drawn Opening")
 
     def _ask_oma_bevel(self, title: str, note_html: str, default_depth: float,
                        apply_label: str, asis_label: str) -> float | None:
@@ -10152,27 +12349,29 @@ class MainWindow(QMainWindow):
             return None
         return spin.value() if result.get("mode") == "apply" else 0.0
 
-    def _import_oma(self):
+    def _import_oma(self, path: str | None = None):
         """File > Import > OMA Lens Trace… — traced lens shapes (from a frame
         tracer / lab DCS file) become editable LENS splines in Frame Front."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import OMA Lens Trace", "",
-            "OMA / DCS Trace Files (*.oma *.dcs *.txt);;All Files (*)")
-        if not path:
-            return
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Import OMA Lens Trace", self._dialog_dir(),
+                "OMA / DCS Trace Files (*.oma *.dcs *.txt);;All Files (*)")
+            if not path:
+                return
+        self._remember_dir(path)
         try:
             from .export.oma import parse_oma, trace_to_curve
             with open(path, encoding="ascii", errors="replace") as f:
                 job = parse_oma(f.read())
             if not job.traces:
                 QMessageBox.information(
-                    self, "No trace data",
+                    self, "No Trace Data",
                     "This file contains no TRCFMT/R lens-trace records.")
                 return
             lenses = {side: trace_to_curve(tr.radii_mm)
                       for side, tr in job.traces.items()}
         except Exception as e:
-            QMessageBox.critical(self, "OMA import failed", str(e))
+            QMessageBox.critical(self, "Could Not Import the OMA Trace", str(e))
             return
 
         # DBL from the file when present, else the boxing-guide setting.
@@ -10193,7 +12392,7 @@ class MainWindow(QMainWindow):
                           for side, c in lenses.items()}
             except Exception as e:
                 QMessageBox.warning(
-                    self, "Bevel reduction failed",
+                    self, "Bevel Reduction Failed",
                     f"Could not shrink the trace by {shrink:.2f} mm "
                     f"({e}).\nImporting at traced (finished) size instead.")
                 shrink = 0.0
@@ -10224,10 +12423,20 @@ class MainWindow(QMainWindow):
                 if nd.cp_out:
                     nd.cp_out.x += tx;  nd.cp_out.y += ty
 
+        # A front with lenses already: replace them, or add the traced ones
+        # beside them? Both went in, unasked, one pair over the other.
+        drawn = [c for c in front.doc_curves
+                 if c.layer == Layer.LENS and not c.mirrored]
+        mode = self._ask_oma_import_mode(len(drawn)) if drawn else "add"
+        if mode is None:
+            return
         # Traces always land in Frame Front — switch first so the undo
         # snapshot and status bar belong to the workspace that changes.
         self._ws_tab_widget.setCurrentIndex(0)
         self._push_undo_snapshot()
+        if mode == "replace":
+            for c in drawn:
+                self._active_ws.remove_curve(c)
         for c in lenses.values():
             self._active_ws.add_curve(c)
 
@@ -10248,8 +12457,23 @@ class MainWindow(QMainWindow):
         if job.drills:
             msg += f"  +{len(job.drills)} drill hole(s) on DRILL."
         if len(lenses) == 1:
-            msg += " Single-side file — the mirror ghost previews the other side."
+            msg += (" One lens in the file: the Ghost previews the other; bake it "
+                    "with Mirror before handing the front to GuildModel.")
         self._status.showMessage(msg)
+
+    def _ask_oma_import_mode(self, n: int) -> str | None:
+        """'replace' or 'add' for traced lenses coming into a front that has
+        *n* drawn lenses already; None to cancel."""
+        box = QMessageBox(
+            QMessageBox.Icon.Question, "Import OMA Lens Trace",
+            f"The Frame Front already has {n} lens{'es' if n != 1 else ''}. "
+            "Replace them with the traced lenses, or add the traced lenses "
+            "beside them?", QMessageBox.StandardButton.Cancel, self)
+        replace = box.addButton("Replace", QMessageBox.ButtonRole.AcceptRole)
+        add = box.addButton("Add", QMessageBox.ButtonRole.ActionRole)
+        box.setDefaultButton(replace)
+        box.exec()
+        return {replace: "replace", add: "add"}.get(box.clickedButton())
 
     def _export_oma(self):
         """File > Export > OMA Trace… — write the two LENS contours as a
@@ -10262,27 +12486,32 @@ class MainWindow(QMainWindow):
         HBOX/VBOX/DBL come from the same chosen geometry, so at the guide
         depth the file agrees with the boxing panel's finished read-outs."""
         if self._active_ws.workspace_type != "front":
-            QMessageBox.information(
-                self, "OMA export",
-                "OMA lens traces are exported from the Frame Front workspace.")
-            return
+            # The lenses are the front's: go there, as Import OMA does (the
+            # export refused from a temple with a note to switch by hand).
+            self._ws_tab_widget.setCurrentIndex(0)
+            QApplication.processEvents()
 
         from .export.oma import (
             OmaJob, OmaTrace, build_oma, curve_to_trace, points_to_trace,
             boxing_center,
         )
         from .boxing import finished_geometry
-        lenses = [c for c in self._doc_curves
-                  if not c.mirrored and c.layer == Layer.LENS]
-        if self._act_mirror.isChecked():
-            axis_x = self.scene.mirror.x if self.scene.mirror else 0.0
-            lenses += [mirror_curve(c, axis_x) for c in list(lenses)]
+        # The Ghost pairs a lens drawn alone, as the canvas shows it; a pair
+        # drawn (or baked) is two, Ghost or not: it read as four.
+        drawn_lenses = [c for c in self._doc_curves
+                        if not c.mirrored and c.layer == Layer.LENS]
+        ghosted = self._ghost_twins(self._active_ws, drawn_lenses)
+        lenses = drawn_lenses + ghosted
         if len(lenses) != 2:
+            found = (f"{len(lenses)} ({len(drawn_lenses)} drawn, {len(ghosted)} "
+                     "from the Ghost)" if ghosted else f"{len(lenses)}")
+            how = ("Delete the extra lenses." if len(lenses) > 2 else
+                   "Draw the other lens, or turn the Ghost on (View ▸ Ghost) to "
+                   "pair the one drawn.")
             QMessageBox.warning(
-                self, "OMA export",
-                f"OMA export needs exactly 2 LENS contours "
-                f"(found {len(lenses)}).\nMirror doubling counts — draw one "
-                "lens with Ghost on, or both lenses with it off.")
+                self, "OMA Export",
+                f"An OMA trace holds one lens per eye, and the front has {found}. "
+                + how)
             return
         for c in lenses:
             if not c.closed and len(c.nodes) >= 2:
@@ -10290,7 +12519,7 @@ class MainWindow(QMainWindow):
                 gap = math.hypot(n1.x - n0.x, n1.y - n0.y)
                 if gap > 0.1:
                     QMessageBox.warning(
-                        self, "OMA export",
+                        self, "OMA Export",
                         f"A LENS contour is not closed "
                         f"(endpoint gap {gap:.3f} mm > 0.1 mm).")
                     return
@@ -10323,33 +12552,41 @@ class MainWindow(QMainWindow):
             job.set_record("DBL", f"{boxes['L'][0] - boxes['R'][2]:.2f}")
             job.set_record("FED", ";".join(
                 f"{2.0 * max(job.traces[s].radii_mm):.2f}" for s in ("R", "L")))
-        except ValueError as e:
-            QMessageBox.critical(self, "OMA export failed", str(e))
+        except Exception as e:
+            # Any failure, not only the tracer's ValueError: a geometry error
+            # from a lens with a broken shape left the menu doing nothing.
+            QMessageBox.critical(
+                self, "Could Not Export the OMA Trace",
+                f"The lenses could not be traced: {e}")
             return
 
         # Drill-mount holes (DRILL layer) → DRILLE features, in the binocular
         # frame system: origin midway between the two lens centers, y-up.
         from .export.oma import OmaDrill
-        origin_x = (boxing_center(od)[0] + boxing_center(os_lens)[0]) / 2.0
-        mirror_on = self._act_mirror.isChecked()
-        axis_x = (self.scene.mirror.x if (mirror_on and self.scene.mirror)
-                  else origin_x)
-        for c in self._doc_curves:
-            if (c.mirrored or c.layer != Layer.DRILL
-                    or c.kind != "circle" or not c.nodes):
-                continue
+        # Both coordinates from that center: y was taken from the scene
+        # origin, and on a front drawn 7 mm above it a hole 5 mm above its
+        # lens went to the lab as 12 mm (the import places the center at the
+        # origin, so the round trip moved the hole too).
+        center_r, center_l = boxing_center(od), boxing_center(os_lens)
+        origin_x = (center_r[0] + center_l[0]) / 2.0
+        origin_y = (center_r[1] + center_l[1]) / 2.0
+        holes = [c for c in self._doc_curves
+                 if not c.mirrored and c.layer == Layer.DRILL
+                 and c.kind == "circle" and c.nodes]
+        # The Ghost's twin of a hole drawn on one eye only, as for the lenses.
+        for c in holes + self._ghost_twins(self._active_ws, holes):
             hx, hy = c.nodes[0].x, c.nodes[0].y
             dia = 2.0 * (c.radius or 0.7)
-            job.drills.append(OmaDrill(hx - origin_x, -hy, dia))
-            if mirror_on:
-                job.drills.append(OmaDrill((2.0 * axis_x - hx) - origin_x, -hy, dia))
+            job.drills.append(OmaDrill(hx - origin_x, -(hy - origin_y), dia))
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export OMA Trace", "",
+            self, "Export OMA Trace", self._suggested(".oma"),
             "OMA / DCS Trace Files (*.oma);;All Files (*)")
         if not path:
             return
-        path = self._ensure_suffix(path, ".oma")
+        path = self._final_path(path, ".oma")
+        if path is None:
+            return
         try:
             with open(path, "w", encoding="ascii", newline="") as f:
                 f.write(build_oma(job))
@@ -10358,7 +12595,8 @@ class MainWindow(QMainWindow):
             self._status.showMessage(
                 f"OMA trace exported: {os.path.basename(path)} — {size}.")
         except Exception as e:
-            QMessageBox.critical(self, "OMA export failed", str(e))
+            QMessageBox.critical(self, "Could Not Export the OMA Trace",
+                                 _write_error_text("export the OMA trace", path, e))
 
     # ------------------------------------------------------------------
     # Print / PDF at 1:1 scale (M8)
@@ -10385,7 +12623,7 @@ class MainWindow(QMainWindow):
         try:
             clipped = self._render_1to1(printer, self._view_source_rect())
         except Exception as e:
-            QMessageBox.critical(self, "Print failed", str(e))
+            QMessageBox.critical(self, "Could Not Print", str(e))
             return
         self._status.showMessage(
             "Printed at 1:1 — view larger than the page, edges cropped."
@@ -10399,17 +12637,21 @@ class MainWindow(QMainWindow):
                 "Nothing to export — this workspace has no visible geometry.")
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export PDF (current view, 1:1)", "", "PDF Files (*.pdf)")
+            self, "Export PDF (Current View, 1:1)",
+            self._suggested(".pdf", per_tab=True), "PDF Files (*.pdf)")
         if not path:
             return
-        path = self._ensure_suffix(path, ".pdf")
+        path = self._final_path(path, ".pdf")
+        if path is None:
+            return
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
         printer.setOutputFileName(path)
         try:
             clipped = self._render_1to1(printer, self._view_source_rect())
         except Exception as e:
-            QMessageBox.critical(self, "PDF export failed", str(e))
+            QMessageBox.critical(self, "Could Not Export the PDF",
+                                 _write_error_text("export the PDF", path, e))
             return
         self._status.showMessage(
             f"PDF exported at 1:1: {os.path.basename(path)}"
@@ -10434,7 +12676,6 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QRectF as _QRectF
         from PySide6.QtPrintSupport import QPrinter
         from .canvas.items import build_path
-        from .geometry import mirror_curve
         from .textpath import text_outline_path
 
         cfg    = self._prefs.get("catalog_pdf", {})
@@ -10447,7 +12688,6 @@ class MainWindow(QMainWindow):
 
         target_w = source.width()  * px_mm_x
         target_h = source.height() * px_mm_y
-        clipped = target_w > page.width() or target_h > page.height()
         target = _QRectF((page.width()  - target_w) / 2,
                          (page.height() - target_h) / 2 + off_mm * px_mm_y,
                          target_w, target_h)
@@ -10455,14 +12695,22 @@ class MainWindow(QMainWindow):
         # Visible-layer geometry + mirror ghost (guides/photos never print).
         vis = [c for c in self._doc_curves
                if c.nodes and not c.mirrored and self.scene.is_layer_visible(c.layer)]
-        draw = list(vis)
-        if self._act_mirror.isChecked() and self.scene.mirror is not None:
-            horizontal = self._active_ws.workspace_type in ("temple_r", "temple_l")
-            axis_x = self.scene.mirror.x
-            # The layers the canvas ghosts, no others: a REF line printed
-            # twice though the screen showed it once.
-            draw += [mirror_curve(c, axis_x, horizontal=horizontal)
-                     for c in vis if c.layer in _GHOST_LAYERS]
+        draw = list(vis) + self._ghost_twins(self._active_ws, vis)
+        texts = [t for t in self._active_ws.doc_texts
+                 if self.scene.is_layer_visible(t.layer)]
+        # Cropped when the drawing shown in the view runs off the page: the
+        # view's rectangle was tested, and a front that fit was "cropped".
+        shown = _QRectF()
+        for c in draw:
+            shown = shown.united(build_path(c).boundingRect())
+        for t in texts:
+            shown = shown.united(text_outline_path(t).boundingRect())
+        shown = shown.intersected(source)
+        on_page = _QRectF(target.left() + (shown.left() - source.left()) * px_mm_x,
+                          target.top() + (shown.top() - source.top()) * px_mm_y,
+                          shown.width() * px_mm_x, shown.height() * px_mm_y)
+        clipped = (not shown.isEmpty() and not _QRectF(
+            0, 0, page.width(), page.height()).contains(on_page))
 
         # begin() checked, as the template and catalog exports do: an
         # unwritable PDF path left the painter inactive and the status bar
@@ -10490,9 +12738,7 @@ class MainWindow(QMainWindow):
                 painter.setPen(pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawPath(build_path(c))
-            for t in self._active_ws.doc_texts:
-                if not self.scene.is_layer_visible(t.layer):
-                    continue
+            for t in texts:
                 pen = QPen(QColor(theme.default_layer_color(t.layer.value, False)))
                 pen.setCosmetic(True)
                 pen.setWidthF(cos_w)
@@ -10501,22 +12747,10 @@ class MainWindow(QMainWindow):
                 painter.drawPath(text_outline_path(t))
             painter.restore()
 
-            # 50 mm verification ruler, bottom-left of the printable area
-            pen = QPen(QColor("#000000"))
-            pen.setWidthF(0.3 * px_mm_x)
-            painter.setPen(pen)
-            rx, ry = 5.0 * px_mm_x, page.height() - 6.0 * px_mm_y
-            painter.drawLine(QPointF(rx, ry), QPointF(rx + 50.0 * px_mm_x, ry))
-            for mm in (0.0, 50.0):
-                x = rx + mm * px_mm_x
-                painter.drawLine(QPointF(x, ry - 1.5 * px_mm_y),
-                                 QPointF(x, ry + 1.5 * px_mm_y))
-            font = painter.font()
-            font.setPixelSize(round(3.0 * px_mm_y))
-            painter.setFont(font)
-            painter.drawText(
-                QPointF(rx, ry - 2.5 * px_mm_y),
-                "50 mm — measure to verify 1:1 (print with scaling/'fit to page' OFF)")
+            # The scale check the templates carry (one ruler, one caption).
+            from .export.template_print import paint_ruler_strip
+            paint_ruler_strip(painter, px_mm_x, page.height() / px_mm_y,
+                              page.width() / px_mm_x - 10.0, origin_mm=5.0)
         finally:
             painter.end()
 
@@ -10534,10 +12768,76 @@ class MainWindow(QMainWindow):
         ezdxf happily write to a suffix-less name)."""
         return path if path.lower().endswith(suffix) else path + suffix
 
+    def _dialog_dir(self, kind: str = "last_dir") -> str:
+        """Where a file dialog starts: the folder last used for this *kind*
+        ("last_dir" for designs and exports, "last_image_dir" for reference
+        images), else beside the open design, else home. Most dialogs opened
+        in the working folder with no name at all."""
+        last = self._prefs.get(kind, "")
+        if isinstance(last, str) and last and os.path.isdir(last):
+            return last
+        if self._current_path:
+            return os.path.dirname(os.path.abspath(self._current_path))
+        return os.path.expanduser("~")
+
+    def _remember_dir(self, path: str, kind: str = "last_dir") -> None:
+        folder = os.path.dirname(os.path.abspath(path))
+        if folder and self._prefs.get(kind) != folder:
+            self._prefs[kind] = folder
+            _prefs_mod.save(self._prefs)
+
+    def _suggested(self, ext: str, per_tab: bool = False) -> str:
+        """A starting name for an export: <folder>/<design>[_<tab>]<ext>, the
+        names Export Every Tab gives its files."""
+        stem = self._design_name() or "design"
+        if per_tab:
+            stem += f"_{self._active_ws.workspace_type}"
+        return os.path.join(self._dialog_dir(), stem + ext)
+
+    def _final_path(self, path: str, ext: str) -> str | None:
+        """*path* with *ext*, asking before replacing a file the dialog never
+        saw: it checked the name typed ("front"), and the suffix added after
+        made it "front.dxf", replaced unasked. None to stop."""
+        full = self._ensure_suffix(path, ext)
+        if full != path and os.path.exists(full):
+            r = QMessageBox.question(
+                self, "Replace File?",
+                f"{os.path.basename(full)} already exists. Replace it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if r != QMessageBox.StandardButton.Yes:
+                return None
+        self._remember_dir(full)
+        return full
+
+    def _tab_is_empty(self, what: str) -> bool:
+        """Say so when the active tab holds nothing to export: an empty DXF and
+        a blank PNG were written without a word."""
+        ws = self._active_ws
+        if ws.doc_curves or ws.doc_texts or ws.doc_dims:
+            return False
+        QMessageBox.information(
+            self, what, f"The {_TAB_TITLES.get(ws.workspace_type, 'tab')} is "
+            "empty: there is nothing to export.")
+        return True
+
     def _design_name(self) -> str:
         """The open file's stem, or '' for an unsaved design."""
         return (os.path.splitext(os.path.basename(self._current_path))[0]
                 if self._current_path else "")
+
+    def _ghost_twins(self, ws: "WorkspaceState", curves: list) -> list:
+        """The Ghost's twins of *curves* as the canvas casts them
+        (``ghost_eligible``), less those a drawn curve stands for: a closed
+        whole outline printed its own mirror, and a baked pair printed twice
+        over (the 2.0 bug hunt). Empty with the Ghost off."""
+        if not ws.mirror_enabled or ws.scene.mirror is None:
+            return []
+        from .export.validate import ghost_twins
+        horizontal = ws.workspace_type in ("temple_r", "temple_l")
+        drawn = [c for c in ws.doc_curves if not c.mirrored]
+        return ghost_twins(drawn, [c for c in curves if ws.scene.ghost_eligible(c)],
+                           ws.scene.mirror.x, horizontal=horizontal)
 
     def _gather_template_components(self) -> dict:
         """What each of the front and temple workspaces currently shows —
@@ -10552,11 +12852,7 @@ class MainWindow(QMainWindow):
             vis = [c for c in ws.doc_curves
                    if c.nodes and not c.mirrored
                    and ws.scene.is_layer_visible(c.layer)]
-            curves = list(vis)
-            if ws.mirror_enabled and ws.scene.mirror is not None:
-                horizontal = ws.workspace_type in ("temple_r", "temple_l")
-                curves += [mirror_curve(c, ws.scene.mirror.x, horizontal=horizontal)
-                           for c in vis if c.layer in _GHOST_LAYERS]
+            curves = list(vis) + self._ghost_twins(ws, vis)
             texts = [t for t in ws.doc_texts
                      if t.text.strip() and ws.scene.is_layer_visible(t.layer)]
             out[key] = {"curves": curves, "texts": texts}
@@ -10589,7 +12885,7 @@ class MainWindow(QMainWindow):
             pages, clipped = render_template_pages(
                 printer, components, cfg, self._design_name())
         except Exception as e:
-            QMessageBox.critical(self, "Print failed", str(e))
+            QMessageBox.critical(self, "Could Not Print", str(e))
             return
         self._template_print_status("Printed", pages, clipped)
 
@@ -10603,18 +12899,22 @@ class MainWindow(QMainWindow):
                 "visible geometry.")
             return
         base = self._design_name()
-        suggested = f"{base} templates.pdf" if base else "templates.pdf"
+        suggested = os.path.join(
+            self._dialog_dir(), f"{base} templates.pdf" if base else "templates.pdf")
         path, _ = QFileDialog.getSaveFileName(
-            self, "PDF Front + Temples (1:1 templates)", suggested,
+            self, "PDF Front + Temples (1:1 Templates)", suggested,
             "PDF Files (*.pdf)")
         if not path:
             return
-        path = self._ensure_suffix(path, ".pdf")
+        path = self._final_path(path, ".pdf")
+        if path is None:
+            return
         try:
             pages, clipped = export_template_pdf(
                 path, components, self._prefs.get("template_print", {}), base)
         except Exception as e:
-            QMessageBox.critical(self, "PDF export failed", str(e))
+            QMessageBox.critical(self, "Could Not Export the PDF",
+                                 _write_error_text("export the PDF", path, e))
             return
         self._template_print_status(
             f"Templates PDF exported ({os.path.basename(path)}):", pages, clipped)
@@ -10626,17 +12926,10 @@ class MainWindow(QMainWindow):
     def _catalog_component_curves(self, ws, layer_names) -> list:
         """Selected-layer geometry for one workspace, INCLUDING the mirror ghost
         so the full frame (not just the drawn half) reaches the catalog."""
-        from .geometry import mirror_curve
         wanted = set(layer_names)
         base = [c for c in ws.doc_curves
                 if c.layer.value in wanted and not c.mirrored and c.nodes]
-        out = list(base)
-        if ws.mirror_enabled and ws.scene.mirror is not None:
-            horizontal = ws.workspace_type in ("temple_r", "temple_l")
-            axis_x = ws.scene.mirror.x
-            out += [mirror_curve(c, axis_x, horizontal=horizontal)
-                    for c in base if c.layer in _GHOST_LAYERS]
-        return out
+        return list(base) + self._ghost_twins(ws, base)
 
     def _gather_catalog_components(self) -> dict:
         cfg = self._prefs.get("catalog_pdf", {})
@@ -10678,12 +12971,15 @@ class MainWindow(QMainWindow):
                 "Preferences ▸ PDF).")
             return
         base = self._design_name()
-        suggested = f"{base}.pdf" if base else "catalog.pdf"
+        suggested = os.path.join(self._dialog_dir(),
+                                 f"{base}.pdf" if base else "catalog.pdf")
         path, _ = QFileDialog.getSaveFileName(
             self, "PDF for Catalog", suggested, "PDF Files (*.pdf)")
         if not path:
             return
-        path = self._ensure_suffix(path, ".pdf")
+        path = self._final_path(path, ".pdf")
+        if path is None:
+            return
         caption = base or os.path.splitext(os.path.basename(path))[0]
         try:
             from .export.catalog_pdf import export_catalog_pdf
@@ -10692,7 +12988,8 @@ class MainWindow(QMainWindow):
             self._status.showMessage(
                 f"Catalog PDF exported: {os.path.basename(path)}")
         except Exception as e:
-            QMessageBox.critical(self, "Catalog PDF export failed", str(e))
+            QMessageBox.critical(self, "Could Not Export the Catalog PDF",
+                                 _write_error_text("export the catalog PDF", path, e))
 
     def _export_catalog_folder(self):
         """File ▸ Export ▸ Catalog PDFs for a Folder… (Road to 1.4, item 3):
@@ -10705,7 +13002,7 @@ class MainWindow(QMainWindow):
         start = (os.path.dirname(self._current_path) if self._current_path
                  else last.get("library", ""))
         library = QFileDialog.getExistingDirectory(
-            self, "Folder of .gdraw designs", start)
+            self, "Folder of .gdraw Designs", start)
         if not library:
             return
         if not library_files(library):
@@ -10727,7 +13024,9 @@ class MainWindow(QMainWindow):
             progress=lambda i, n, v: (progress.step(i, n, v.line()),
                                       QApplication.processEvents()),
             should_stop=progress.canceled)
-        progress.finish(report.summary())
+        progress.finish(report.summary(),
+                        str(report.out_dir) if report.out_dir is not None
+                        and report.pdfs and not report.dry_run else None)
         progress.exec()
 
     def _run_catalog_batch(self, library: str, opts, progress=None,
@@ -10817,14 +13116,21 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
 
+    def _fit_rect(self, ws: "WorkspaceState") -> QRectF:
+        """What Fit frames on *ws*: the drawing and the stock guide when it
+        is shown, with a margin; the scene rectangle (the photo, or the
+        default extents) when nothing is drawn. Fitting the 300 × 200 mm
+        scene rectangle always left a 10 mm hinge 30 px wide on the Component
+        tab, and a front at 45 % of the canvas."""
+        content = ws.scene.geometry_rect()
+        if content.isNull() or content.width() + content.height() < 1e-6:
+            return ws.scene.sceneRect()
+        content = content.united(ws.stock_guide.rect())
+        m = 0.08 * max(content.width(), content.height(), 5.0)
+        return content.adjusted(-m, -m, m, m)
+
     def _fit_view(self):
-        # Include geometry drawn/imported beyond the pinned scene rect —
-        # fitting sceneRect alone left far-from-origin DXF imports off-screen.
-        rect = self.scene.sceneRect()
-        content = self.scene.geometry_rect()
-        if not content.isNull():
-            rect = rect.united(content)
-        self.view.fit_view(rect)
+        self.view.fit_view(self._fit_rect(self._active_ws))
         self._update_info_label()
 
 

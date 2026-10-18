@@ -38,6 +38,25 @@ _COLORS = {
 
 _DIAMETER = 10  # px — subtle
 
+# What to draw first, per tab, while there is nothing to hand off.
+_START = {
+    "front":     "Nothing to hand off yet: draw the OUTLINE, then the lenses.",
+    "temple_r":  "Nothing to hand off yet: draw the temple's OUTLINE.",
+    "temple_l":  "Nothing to hand off yet: draw the temple's OUTLINE.",
+    "component": "Nothing for the library yet: draw the COMPONENT curves.",
+}
+_MAX_LISTED = 6
+
+
+def _listed(items: list) -> str:
+    """*items* as bullet lines, the first few: the tooltip named only the
+    first error, so a second one surfaced only once the first was fixed."""
+    shown = items[:_MAX_LISTED]
+    out = "\n".join(f"• {e}" for e in shown)
+    if len(items) > len(shown):
+        out += f"\n• and {len(items) - len(shown)} more"
+    return out
+
 
 def readiness_state(curves: list, mirror_on: bool,
                     workspace_type: str = "front",
@@ -54,15 +73,22 @@ def readiness_state(curves: list, mirror_on: bool,
     has_machined = any((not c.mirrored) and c.layer in MACHINED_LAYERS
                        for c in curves)
     if not has_machined:
-        return OFF, "Nothing to hand off yet — draw machined geometry first"
+        return OFF, _START.get(workspace_type, _START["front"])
 
     errors, warnings = validate(curves, mirror_on, workspace_type,
                                 stock_mm=stock_mm)
+    if workspace_type == "component":
+        # GuildModel builds no part from this tab: a component drawn here
+        # reaches it only once placed on the front or a temple.
+        if errors:
+            return AMBER, "Not ready for the library:\n" + _listed(errors)
+        return OFF, ("GuildModel does not read this tab: save the component "
+                     "to the library and place it on the front or a temple.")
     if errors:
-        return AMBER, "Not ready for GuildModel — " + errors[0]
+        return AMBER, "Not ready for GuildModel:\n" + _listed(errors)
     if warnings:
-        return GREEN, "Ready for GuildModel (with warnings — " + warnings[0] + ")"
-    return GREEN, "Ready for GuildModel"
+        return GREEN, "Ready for GuildModel. To note:\n" + _listed(warnings)
+    return GREEN, "Ready for GuildModel."
 
 
 class ReadinessDot(QWidget):
@@ -73,7 +99,7 @@ class ReadinessDot(QWidget):
         self._state = OFF
         self._dark = False
         self.setFixedSize(_DIAMETER + 8, _DIAMETER + 6)
-        self.setToolTip("Nothing to hand off yet")
+        self.setToolTip(_START["front"])
 
     def state(self) -> str:
         return self._state

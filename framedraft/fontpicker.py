@@ -169,6 +169,12 @@ class FontFilterCombo(QComboBox):
         Qt's default at render time — the engraving would come out in a face
         the maker never chose."""
         text = self.lineEdit().text().strip()
+        if text == self._family:
+            # The box as set_family left it: the stored family stands, even
+            # one this machine lacks. Resolving it found the first family it
+            # was a prefix of, and OK on an untouched Edit Text changed an
+            # engraving's font (the 2.0 bug hunt).
+            return
         resolved = resolve_family(text) if text else ""
         if resolved:
             self._family = resolved

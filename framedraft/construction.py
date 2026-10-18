@@ -8,7 +8,7 @@ These guides are NEVER exported as DXF machined geometry.
 """
 
 import math
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QPen, QColor, QPainterPath
 
 from . import theme
@@ -85,12 +85,16 @@ class ConstructionGuides:
 
         R      = self._apical_radius_mm   # already mm = scene units
         spread = self._spread_mm
-        py     = self._pivot_y_mm
-        ch     = self._crest_height_mm
+        # The crest height is above the datum line, positive up as the optical
+        # convention measures it (the scene is y-down); the arms' pivots hang
+        # from the crest, as the Angle height says. They were placed from the
+        # datum line, and a crest of 10 put them above the apex.
+        top    = -self._crest_height_mm
+        py     = top + self._pivot_y_mm
 
         arc_path = QPainterPath()
-        arc_path.moveTo(R, R + ch)
-        arc_path.arcTo(-R, ch, 2 * R, 2 * R, 0, 180)
+        arc_path.moveTo(R, R + top)
+        arc_path.arcTo(-R, top, 2 * R, 2 * R, 0, 180)
         arc = self._scene.addPath(arc_path, pen)
         arc.setZValue(_Z)
         arc.setVisible(self._visible)
@@ -222,15 +226,17 @@ class BoxingGuide:
         via Shapely so it stays clean on complex curves)."""
         from .boxing import finished_geometry
         from .document import Layer
-        from .geometry import mirror_curve
 
         lenses = []
         if self._lens_provider:
             lenses = [c for c in self._lens_provider()
                       if c.layer == Layer.LENS and not c.mirrored and c.nodes]
         draw_curves = list(lenses)
-        if self._mirror_on:
-            draw_curves += [mirror_curve(c, self._axis_x) for c in lenses]
+        if self._mirror_on and lenses:
+            # Boxes for the eyes the Ghost adds only: with both lenses drawn
+            # every lens cast a twin box over the other, four boxes in all.
+            from .export.validate import ghost_twins
+            draw_curves += ghost_twins(lenses, lenses, self._axis_x)
 
         depth = self._bevel_depth
         out_pen = QPen(_boxing_color(self._dark), 0)
@@ -297,6 +303,14 @@ class RectGuide:
     @property
     def core_line(self) -> bool:
         return self._core_line
+
+    def rect(self) -> QRectF:
+        """The guide's rectangle in scene mm while it is shown, else a null
+        rectangle (what Fit frames along with the drawing)."""
+        if not self._visible:
+            return QRectF()
+        w, h = self._width_mm, self._height_mm
+        return QRectF(-w / 2, -h / 2, w, h)
 
     def set_visible(self, on: bool):
         self._visible = on

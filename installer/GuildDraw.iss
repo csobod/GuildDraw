@@ -8,16 +8,16 @@
 ; Compile manually:
 ;   "%LocalAppData%\Programs\Inno Setup 6\ISCC.exe" installer\GuildDraw.iss
 ; Or, with overrides from the release script:
-;   ISCC.exe /DMyAppVersion=1.0.0-rc2 /DMyAppVersionNumeric=1.0.0.0 installer\GuildDraw.iss
+;   ISCC.exe /DMyAppVersion=2.0.0 /DMyAppVersionNumeric=2.0.0.0 installer\GuildDraw.iss
 ;
 ; The release script (scripts\build_release.ps1) passes the version defines and
 ; builds dist\GuildDraw first. Defaults below let the script be compiled by hand.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.3.1"
+  #define MyAppVersion "2.0.0"
 #endif
 #ifndef MyAppVersionNumeric
-  #define MyAppVersionNumeric "1.3.1.0"
+  #define MyAppVersionNumeric "2.0.0.0"
 #endif
 #ifndef MySourceDir
   #define MySourceDir "..\dist\GuildDraw"

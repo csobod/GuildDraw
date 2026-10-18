@@ -24,6 +24,16 @@ from pathlib import Path
 _CHECK_GLYPH = {False: Path(__file__).parent / "resources" / "icons" / "check-light.svg",
                 True:  Path(__file__).parent / "resources" / "icons" / "check-dark.svg"}
 
+
+def _chevron(direction: str, dark: bool, off: bool = False) -> str:
+    """The arrow a spin box or a combo box shows, in that mode's chrome ink,
+    or its disabled ink when *off* (one file each, as for the check mark).
+    The stylesheet styles these fields, and Qt then draws no arrows of its
+    own: before 2.0 every spin box and combo box looked like a plain text
+    field."""
+    name = f"chevron-{direction}-{'dark' if dark else 'light'}{'-off' if off else ''}.svg"
+    return (Path(__file__).parent / "resources" / "icons" / name).as_posix()
+
 # token -> (light, dark)
 _TOKENS: dict[str, tuple[str, str]] = {
     # ── UI chrome (drives the QSS template) ──────────────────────────────
@@ -346,6 +356,12 @@ QLabel:disabled, QCheckBox:disabled, QRadioButton:disabled, QGroupBox:disabled,
 QDoubleSpinBox:disabled, QSpinBox:disabled, QLineEdit:disabled,
 QComboBox:disabled { color: %(disabled_ink)s; }
 QToolBar::separator { background: %(border)s; width: 1px; margin: 4px 3px; }
+QProgressBar { border: 1px solid %(border)s; border-radius: 3px; text-align: center; }
+QProgressBar::chunk { background-color: %(checked_bg)s; border-radius: 2px; }
+/* The tool bar stands on the left edge: a vertical bar's separator is a
+   horizontal rule, and the width-only rule above drew nothing, so the tools,
+   the toggles and the operations ran together. */
+QToolBar::separator:vertical { height: 1px; width: auto; margin: 4px 6px; }
 /* The overflow ⋯ is only PM_ToolBarExtensionExtent (12 px) deep: the button
    padding above left it no room, and it drew as an empty pill. */
 QToolButton#qt_toolbar_ext_button {
@@ -361,6 +377,7 @@ QMenuBar { background-color: %(bg)s; color: %(ink)s; }
 QMenuBar::item:selected { background-color: %(panel)s; }
 QMenu { background-color: %(panel)s; color: %(ink)s; border: 1px solid %(menu_border)s; }
 QMenu::item:selected { background-color: %(checked_bg)s; color: %(checked_ink)s; }
+QMenu::item:disabled { color: %(disabled_ink)s; }
 QMenu::separator { height: 1px; background: %(border)s; margin: 2px 6px; }
 QDockWidget { background-color: %(bg)s; }
 QDockWidget::title {
@@ -399,7 +416,33 @@ QDoubleSpinBox, QSpinBox, QLineEdit, QComboBox {
     color: %(ink)s;
 }
 QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus { border-color: %(focus_border)s; }
-QComboBox::drop-down { border: none; }
+/* The arrows of a spin box and a combo box, drawn here because the rules
+   above take the fields away from the platform style. */
+QDoubleSpinBox, QSpinBox { padding-right: 18px; }
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
+    subcontrol-origin: border; width: 16px;
+    border: none; border-left: 1px solid %(border)s; background: transparent;
+}
+QAbstractSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 3px; }
+QAbstractSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 3px; }
+QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover {
+    background-color: %(hover)s;
+}
+QAbstractSpinBox::up-arrow { image: url("%(up_img)s"); width: 9px; height: 9px; }
+QAbstractSpinBox::down-arrow { image: url("%(down_img)s"); width: 9px; height: 9px; }
+QAbstractSpinBox::up-arrow:disabled, QAbstractSpinBox::up-arrow:off {
+    image: url("%(up_off_img)s");
+}
+QAbstractSpinBox::down-arrow:disabled, QAbstractSpinBox::down-arrow:off {
+    image: url("%(down_off_img)s");
+}
+QComboBox { padding-right: 20px; }
+QComboBox::drop-down {
+    subcontrol-origin: padding; subcontrol-position: center right;
+    width: 18px; border: none;
+}
+QComboBox::down-arrow { image: url("%(down_img)s"); width: 10px; height: 10px; }
+QComboBox::down-arrow:disabled { image: url("%(down_off_img)s"); }
 QComboBox QAbstractItemView {
     background-color: %(panel)s;
     border: 1px solid %(menu_border)s;
@@ -420,6 +463,17 @@ QSlider::handle:horizontal {
     border-radius: 6px;
 }
 QSlider::handle:horizontal:hover { background: %(slider_hover)s; }
+QSlider::handle:horizontal:disabled {
+    background: %(disabled_ink)s; border-color: %(disabled_ink)s;
+}
+/* Lists and trees: rows alternate in the chrome's own colors, and a picked
+   row takes the checked fill. The platform's near-white alternate row left
+   the dark theme's pale text unreadable. */
+QAbstractItemView {
+    alternate-background-color: %(panel)s;
+    selection-background-color: %(checked_bg)s;
+    selection-color: %(checked_ink)s;
+}
 QTabWidget::pane { border-top: 1px solid %(border)s; }
 QTabBar::tab {
     background: %(panel)s;
@@ -521,6 +575,10 @@ def build_qss() -> str:
         # dark, where the border token is too close to the background.
         "check_border":    color("chrome.muted") if dark else ink,
         "check_img":       _CHECK_GLYPH[dark].as_posix(),
+        "up_img":          _chevron("up", dark),
+        "down_img":        _chevron("down", dark),
+        "up_off_img":      _chevron("up", dark, off=True),
+        "down_off_img":    _chevron("down", dark, off=True),
         "btn_border":   border if dark else ink,
         "menu_border":  border if dark else ink,
         "focus_border": ink,

@@ -87,21 +87,42 @@ def test_open_lens_reports_leak_and_stays_hidden():
     assert scene._lens_fill_items == []
 
 
-def test_edit_that_opens_every_lens_turns_the_fill_off():
+def test_edit_that_opens_every_lens_pauses_the_fill():
     lens = closed_diamond(0, 0, 12, layer=Layer.LENS)
     scene = _scene(lens)
     assert scene.set_lens_fill_visible(True) == "ok"
     seen = []
     scene.lens_fill_auto_disabled = seen.append
 
+    nodes = lens.nodes
     lens.closed = False
-    lens.nodes = lens.nodes[:2]      # a bare open segment encloses nothing
+    lens.nodes = nodes[:2]           # a bare open segment encloses nothing
     scene.refresh_curve(lens)
     scene.rebuild_lens_fill()
 
     assert seen == ["leak"]
-    assert scene.lens_fill_state()["visible"] is False
+    assert scene.lens_fill_state()["visible"] is True     # on, waiting
     assert scene._lens_fill_items == []
+
+    lens.closed, lens.nodes = True, nodes                  # it closes again
+    scene.refresh_curve(lens)
+    scene.rebuild_lens_fill()
+    assert len(scene._lens_fill_items) == 1
+
+
+def test_a_hidden_lens_layer_still_opens_the_frame_fill():
+    """Hidden, LENS left the frame fill solid over the openings, as if the
+    frame had no lenses (the 2.0 bug hunt)."""
+    from PySide6.QtCore import QPointF
+    scene = _scene(closed_diamond(0, 0, 40, layer=Layer.OUTLINE),
+                   circle(-15, 0, 8), circle(15, 0, 8))
+    assert scene.set_fill_visible(True) == "ok"
+    scene.set_layer_visible(Layer.LENS, False)
+    scene.rebuild_fill()
+    path = scene._fill_item.path()
+    assert scene._fill_item.isVisible()
+    assert not path.contains(QPointF(-15, 0)) and not path.contains(QPointF(15, 0))
+    assert path.contains(QPointF(0, 0))                   # the bridge is filled
 
 
 def test_hidden_lens_layer_is_not_tinted():

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QLabel
 
 from ..canvas.items import CurveItem
 from .trim import curve_item_at
+from ..typed import typed_char
 
 
 _PREVIEW_COLOR = "#ffd580"   # amber — matches the Offset preview
@@ -201,10 +202,11 @@ class RebuildSplineTool(QObject):
 
         # Count mode accepts digits only; tolerance mode adds "." for decimals.
         allowed = "0123456789" + ("." if self._mode == MODE_TOL else "")
-        if text and text in allowed:
-            if text == "." and "." in self._input_str:
+        ch = typed_char(text)
+        if ch and ch in allowed:
+            if ch == "." and "." in self._input_str:
                 return True
-            self._input_str += text
+            self._input_str += ch
             self._update_hud()
             self._update_preview()
             return True

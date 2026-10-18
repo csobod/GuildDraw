@@ -310,8 +310,9 @@ def test_gather_includes_ghost_hidden_layers_and_text(win):
     # the hidden REF line is left out
     assert len(comps["front"]["curves"]) == 4
     assert all(c.layer is not Layer.REF for c in comps["front"]["curves"])
-    # temple: its outline (+ the horizontal ghost) and only the real text
-    assert len(comps["temple_r"]["curves"]) == 2
+    # temple: its outline, and no Ghost of it: the canvas casts none for a
+    # closed temple outline (it printed one before 2.0); only the real text
+    assert len(comps["temple_r"]["curves"]) == 1
     assert [t.text for t in comps["temple_r"]["texts"]] == ["R"]
     assert comps["temple_l"] == {"curves": [], "texts": []}
 

@@ -74,7 +74,7 @@ def test_the_box_lives_where_the_inlay_layer_does(fresh):
         fresh._ws_tab_widget.setCurrentIndex(i)
         QApplication.processEvents()
         shown.append(not fresh._inlay_fill_box.isHidden())
-    assert shown == [True, True, True, False]      # front, temples; not the hinge
+    assert shown == [True, True, True, False]      # front, temples; not the component tab
     fresh._ws_tab_widget.setCurrentIndex(0)
 
 

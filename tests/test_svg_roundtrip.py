@@ -51,7 +51,7 @@ def nodes_equal(a, b, tol=1e-9):
 def saved(tmp_path):
     curves = [
         line([(0, 0), (10, 0), (10, 10)], layer=Layer.REF),
-        line([(0, 0), (20, 0), (20, 20), (0, 20)], closed=True, layer=Layer.HINGE),
+        line([(0, 0), (20, 0), (20, 20), (0, 20)], closed=True, layer=Layer.COMPONENT),
         spline([(0, -20), (25, 0), (0, 20), (-25, 0)], closed=True, layer=Layer.OUTLINE),
         circle(30, 0, 12, layer=Layer.LENS),
         arc(0, 0, 8, 30, 200),

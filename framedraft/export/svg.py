@@ -16,6 +16,8 @@ geometry coordinates, which are already in mm.
 """
 
 import json
+import math
+import re
 import os
 from xml.etree import ElementTree as ET
 
@@ -27,6 +29,7 @@ from ..document import (
     TextObject, BevelSpec,
 )
 from ..canvas.items import build_path
+from ..image_links import is_id
 
 
 _NS  = "http://www.w3.org/2000/svg"
@@ -39,12 +42,16 @@ _NS  = "http://www.w3.org/2000/svg"
 # C:\Users\<name>\… path (which leaked into shared files).
 
 def portable_face_images(face_images: list, doc_path: str) -> list:
-    """Return FaceImage copies whose paths carry no personal directory info."""
+    """Return FaceImage copies whose paths carry no personal directory info:
+    none at all for an image the design does not store."""
     import dataclasses
     doc_dir = os.path.dirname(os.path.abspath(doc_path))
     out = []
     for fi in face_images or []:
         p = fi.path
+        if not fi.stored:
+            out.append(dataclasses.replace(fi, path=""))
+            continue
         if not p or not os.path.isabs(p):
             out.append(fi)
             continue
@@ -52,19 +59,29 @@ def portable_face_images(face_images: list, doc_path: str) -> list:
     return out
 
 
+def _beside_document(p: str, doc_dir: str) -> str:
+    """Where *p*, a path from the file, is honored: inside the document's own
+    folder only. An absolute path, a drive or a UNC path (a crafted file
+    naming a private photo, which the next save would embed; on Windows a
+    \\\\host path the open would contact) is looked for there by its bare
+    name. Returns the file found, or the name to keep when there is none."""
+    if (os.path.isabs(p) or p.startswith(("\\\\", "//"))
+            or re.match(r"^[A-Za-z]:", p)):
+        p = re.split(r"[\\\\/]", p)[-1]
+    cand = os.path.normpath(os.path.join(doc_dir, p))
+    if p and cand.startswith(doc_dir + os.sep) and os.path.isfile(cand):
+        return cand
+    return p
+
+
 def resolve_face_images(face_images: list, doc_path: str) -> None:
-    """Resolve relative FaceImage paths against the document's folder,
-    in place. Honored only when the result stays inside that folder, so a
-    crafted file can't point at arbitrary local images. Absolute paths pass
-    through unchanged (pre-1.0 files; honored downstream only if they exist)."""
+    """Resolve FaceImage paths against the document's folder, in place
+    (_beside_document): never outside it, so a crafted file can't point at
+    arbitrary local images."""
     doc_dir = os.path.dirname(os.path.abspath(doc_path))
     for fi in face_images or []:
-        p = fi.path
-        if not p or os.path.isabs(p):
-            continue
-        cand = os.path.normpath(os.path.join(doc_dir, p))
-        if cand.startswith(doc_dir + os.sep) and os.path.isfile(cand):
-            fi.path = cand
+        if fi.path:
+            fi.path = _beside_document(fi.path, doc_dir)
 
 
 def _portable_path(p: str, doc_dir: str) -> str:
@@ -101,12 +118,10 @@ def resolve_fill_image(fill: dict | None, doc_path: str) -> None:
     if not fill:
         return
     p = fill.get("image")
-    if not p or os.path.isabs(p):
+    if not isinstance(p, str) or not p:
         return
     doc_dir = os.path.dirname(os.path.abspath(doc_path))
-    cand = os.path.normpath(os.path.join(doc_dir, p))
-    if cand.startswith(doc_dir + os.sep) and os.path.isfile(cand):
-        fill["image"] = cand
+    fill["image"] = _beside_document(p, doc_dir)
 
 
 # ---------- path-data helpers ----------
@@ -193,6 +208,11 @@ def _curve_to_dict(curve: Curve) -> dict:
         d["end_angle"] = curve.end_angle
     if curve.group_id:
         d["group"] = curve.group_id
+    # A component's kind (2.0): the library folder it was placed from.
+    # "component_kind", since "kind" is the curve's type; a curve off the
+    # COMPONENT layer carries none, whatever it once had.
+    if curve.component_kind and curve.layer == Layer.COMPONENT:
+        d["component_kind"] = curve.component_kind
     return d
 
 
@@ -201,8 +221,11 @@ def _dim_to_dict(d: DimLine) -> dict:
 
 
 def _dim_from_dict(d: dict) -> DimLine:
-    return DimLine(x0=d["x0"], y0=d["y0"], x1=d["x1"], y1=d["y1"],
-                   offset=d.get("offset", 0.0))
+    if not isinstance(d, dict):
+        raise ValueError("a dimension is not an object")
+    return DimLine(x0=_num(d.get("x0"), "a dimension"), y0=_num(d.get("y0"), "a dimension"),
+                   x1=_num(d.get("x1"), "a dimension"), y1=_num(d.get("y1"), "a dimension"),
+                   offset=_num_default(d.get("offset"), 0.0))
 
 
 def _text_to_dict(t: TextObject) -> dict:
@@ -213,15 +236,18 @@ def _text_to_dict(t: TextObject) -> dict:
 
 
 def _text_from_dict(t: dict) -> TextObject:
+    if not isinstance(t, dict) or not isinstance(t.get("text"), str):
+        raise ValueError("a text object has no text")
+    family = t.get("family")
     return TextObject(
         text        = t["text"],
-        family      = t.get("family", "Arial"),
-        size_mm     = t.get("size_mm", 5.0),
-        rotation    = t.get("rotation", 0.0),
-        anchor_x    = t.get("anchor_x", 0.0),
-        anchor_y    = t.get("anchor_y", 0.0),
+        family      = family if isinstance(family, str) and family else "Arial",
+        size_mm     = _num(t.get("size_mm", 5.0), "a text size"),
+        rotation    = _num_default(t.get("rotation"), 0.0),
+        anchor_x    = _num(t.get("anchor_x", 0.0), "a text position"),
+        anchor_y    = _num(t.get("anchor_y", 0.0), "a text position"),
         layer       = Layer(t.get("layer", "ENGRAVING")),
-        line_weight = t.get("line_weight", 1.0),
+        line_weight = _num_default(t.get("line_weight"), 1.0),
     )
 
 
@@ -242,7 +268,11 @@ def save_svg(
     inlay_fill:       dict | None = None,   # fill's keys plus "tumble" (2.0)
     texts:            list | None = None,   # list[TextObject]
     bevel:            BevelSpec | None = None,
+    text_outlines:    bool = False,
 ) -> None:
+    """*text_outlines*: also draw each text as its letters' outlines, for an
+    exported SVG another program shows (the native file keeps the text in
+    its metadata, which is all GuildDraw and GuildModel read)."""
     ET.register_namespace("", _NS)
     root = ET.Element(f"{{{_NS}}}svg")
     root.set("version", "1.1")
@@ -271,9 +301,14 @@ def save_svg(
             "depth_mm": machined_bridge.depth_mm,
             "width_mm": machined_bridge.width_mm,
         },
+        # An image the design does not store is written without its path:
+        # its id is all the file says of it (image_links), whoever calls.
         "face_images": [
-            {"path": fi.path, "tx": fi.tx, "ty": fi.ty,
-             "rotation": fi.rotation, "opacity": fi.opacity}
+            {"path": fi.path if fi.stored else "", "tx": fi.tx, "ty": fi.ty,
+             "rotation": fi.rotation, "opacity": fi.opacity,
+             **({"px_per_mm": fi.px_per_mm} if fi.px_per_mm else {}),
+             "visible": fi.visible, "locked": fi.locked, "stored": fi.stored,
+             **({"link_id": fi.link_id} if fi.link_id else {})}
             for fi in (face_images or [])
         ],
         "curves": [_curve_to_dict(c) for c in curves if not c.mirrored],
@@ -290,6 +325,9 @@ def save_svg(
                               for d in bm["snapshot"].get("dims", [])],
                 "texts":     [_text_to_dict(t)
                               for t in bm["snapshot"].get("texts", [])],
+                # The Ghost the bookmark was taken with (2.0); absent before.
+                **({"mirror": bool(bm["snapshot"]["mirror"])}
+                   if "mirror" in bm["snapshot"] else {}),
             }
             for bm in bookmarks
         ]
@@ -309,7 +347,10 @@ def save_svg(
         state["bevel"] = {"preset": bevel.preset, "depth_mm": bevel.depth_mm}
     if texts:
         state["texts"] = [_text_to_dict(t) for t in texts]
-    meta_el.text = json.dumps(state, indent=2)
+    # allow_nan=False: a NaN written out read back as no number at all, and the
+    # tab opened empty. A document holding one fails to save, with a message,
+    # instead of writing a file GuildDraw cannot read back.
+    meta_el.text = json.dumps(state, indent=2, allow_nan=False)
 
     for curve in non_mirrored:
         pe = ET.SubElement(root, f"{{{_NS}}}path")
@@ -318,7 +359,24 @@ def save_svg(
         pe.set("data-kind",  curve.kind)
         pe.set("fill",       "none")
         pe.set("stroke",     "#1f1f1f")
+        # The weight is the canvas's, in screen pixels: in a file drawn in
+        # millimeters it was a 1.5 mm stroke. Non-scaling, it is 1.5 px as on
+        # the canvas, at any zoom.
         pe.set("stroke-width", str(curve.line_weight))
+        pe.set("vector-effect", "non-scaling-stroke")
+
+    if text_outlines:
+        from ..textpath import text_to_curves
+        for t in texts or []:
+            for c in text_to_curves(t):
+                pe = ET.SubElement(root, f"{{{_NS}}}path")
+                pe.set("d", _path_d(c))
+                pe.set("data-layer", c.layer.value)
+                pe.set("data-kind",  "text")
+                pe.set("fill",       "none")
+                pe.set("stroke",     "#1f1f1f")
+                pe.set("stroke-width", str(c.line_weight))
+                pe.set("vector-effect", "non-scaling-stroke")
 
     tree = ET.ElementTree(root)
     ET.indent(tree, space="  ")
@@ -369,61 +427,189 @@ def _read_checked_svg(path: str) -> bytes:
     return data
 
 
+# ---------- type checks ----------
+# A shared file is untrusted, and load_svg used to hand on whatever the JSON
+# held: a layer flag of `true`, a node coordinate that is a string. The window
+# then failed halfway through filling the workspaces, and the next save wrote
+# the mixture over the previous file (the 2.0 bug hunt). Geometry that is not
+# what it claims raises, and the tab fails to load as a whole (gdraw.load_gdraw
+# reports it); display state that is the wrong shape falls back to its default.
+
+def _num(v, what: str) -> float:
+    """*v* as a finite float, or ValueError naming *what*."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        raise ValueError(f"{what} is not a number: {v!r}")
+    return float(v)
+
+
+def _opt_num(v, what: str) -> float | None:
+    return None if v is None else _num(v, what)
+
+
+def _num_default(v, default: float) -> float:
+    """*v* as a finite float, or *default* when it is anything else."""
+    try:
+        return _num(v, "")
+    except ValueError:
+        return default
+
+
+def _dict(v) -> dict:
+    return v if isinstance(v, dict) else {}
+
+
+def _list(v, what: str) -> list:
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        raise ValueError(f"{what} is not a list")
+    return v
+
+
+def _point(d, what: str) -> ControlPoint:
+    if not isinstance(d, dict):
+        raise ValueError(f"{what} is not a point")
+    return ControlPoint(_num(d.get("x"), f"{what} x"), _num(d.get("y"), f"{what} y"))
+
+
+_CURVE_KINDS = ("line", "spline", "circle", "arc")
+
+
 def _curve_from_dict(d: dict) -> Curve:
+    if not isinstance(d, dict):
+        raise ValueError("a curve is not an object")
+    kind = d.get("kind")
+    if kind not in _CURVE_KINDS:
+        raise ValueError(f"unknown curve kind: {kind!r}")
     nodes = []
-    for nd in d["nodes"]:
-        n = SplineNode(x=nd["x"], y=nd["y"])
-        if "cp_in" in nd:
-            n.cp_in  = ControlPoint(nd["cp_in"]["x"],  nd["cp_in"]["y"])
-        if "cp_out" in nd:
-            n.cp_out = ControlPoint(nd["cp_out"]["x"], nd["cp_out"]["y"])
+    for nd in _list(d.get("nodes"), "a curve's nodes"):
+        p = _point(nd, "a node")
+        n = SplineNode(x=p.x, y=p.y)
+        if nd.get("cp_in") is not None:
+            n.cp_in  = _point(nd["cp_in"], "a handle")
+        if nd.get("cp_out") is not None:
+            n.cp_out = _point(nd["cp_out"], "a handle")
         nodes.append(n)
+    if not nodes:
+        # Every reader and tool takes a curve to have a node (a circle's or an
+        # arc's is its center): one with none crashed the open, or every
+        # readiness check after it.
+        raise ValueError(f"a {kind} has no nodes")
+    group = d.get("group")
+    try:
+        layer = Layer(d["layer"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("a layer this GuildDraw does not know: "
+                         f"{d.get('layer')!r}") from None
+    ck = d.get("component_kind")
     return Curve(
-        kind        = d["kind"],
-        layer       = Layer(d["layer"]),
+        kind        = kind,
+        layer       = layer,
         nodes       = nodes,
-        closed      = d.get("closed",      False),
-        mirrored    = d.get("mirrored",    False),
-        line_weight = d.get("line_weight", 1.5),
-        radius      = d.get("radius"),
-        start_angle = d.get("start_angle"),
-        end_angle   = d.get("end_angle"),
-        group_id    = d.get("group"),
+        closed      = bool(d.get("closed",   False)),
+        mirrored    = bool(d.get("mirrored", False)),
+        line_weight = _num_default(d.get("line_weight"), 1.5),
+        radius      = _opt_num(d.get("radius"), "a radius"),
+        start_angle = _opt_num(d.get("start_angle"), "an arc's start angle"),
+        end_angle   = _opt_num(d.get("end_angle"), "an arc's end angle"),
+        group_id    = group if isinstance(group, str) and group else None,
+        component_kind = (ck if isinstance(ck, str) and ck
+                          and layer == Layer.COMPONENT else None),
+    )
+
+
+def _face_image(fi) -> FaceImage | None:
+    """One face photo's record, or None when it is not one (a photo is
+    display state: a malformed one is dropped, not the drawing)."""
+    if not isinstance(fi, dict) or not isinstance(fi.get("path", ""), str):
+        return None
+    px = _num_default(fi.get("px_per_mm"), 0.0)
+    # A file from before 2.0 stored every photo and says nothing of it.
+    stored = fi["stored"] if isinstance(fi.get("stored"), bool) else True
+    link = fi.get("link_id")
+    return FaceImage(
+        # Not stored, the image is found by its id on this computer: a path
+        # beside it, from a crafted file, is never followed.
+        path    =fi.get("path", "") if stored else "",
+        visible =fi["visible"] if isinstance(fi.get("visible"), bool) else True,
+        locked  =fi["locked"] if isinstance(fi.get("locked"), bool) else True,
+        stored  =stored,
+        link_id =link if is_id(link) else "",
+        tx      =_num_default(fi.get("tx"), 0.0),
+        ty      =_num_default(fi.get("ty"), 0.0),
+        rotation=_num_default(fi.get("rotation"), 0.0),
+        opacity =min(1.0, max(0.0, _num_default(fi.get("opacity"), 0.7))),
+        px_per_mm=(px if _CALIBRATION_RANGE[0] <= px <= _CALIBRATION_RANGE[1]
+                   else None),
     )
 
 
 def _load_face_images(state: dict) -> list[FaceImage]:
     """Parse face_images list, falling back to legacy face_image single-object."""
     if "face_images" in state:
-        return [
-            FaceImage(
-                path    =fi.get("path",     ""),
-                tx      =fi.get("tx",        0.0),
-                ty      =fi.get("ty",        0.0),
-                rotation=fi.get("rotation",  0.0),
-                opacity =fi.get("opacity",   0.7),
-            )
-            for fi in state["face_images"]
-        ]
+        raw = state["face_images"] if isinstance(state["face_images"], list) else []
+        return [f for f in (_face_image(fi) for fi in raw) if f is not None]
     # Legacy single-object key
-    fi = state.get("face_image", {})
+    fi = _dict(state.get("face_image"))
     if fi.get("path"):
-        return [FaceImage(
-            path    =fi.get("path",     ""),
-            tx      =fi.get("tx",        0.0),
-            ty      =fi.get("ty",        0.0),
-            rotation=fi.get("rotation",  0.0),
-            opacity =fi.get("opacity",   0.7),
-        )]
+        one = _face_image(fi)
+        return [one] if one is not None else []
     return []
+
+
+def _layer_flags(layers) -> dict:
+    """The per-layer visibility and lock flags, each a bool; anything else
+    in the block is dropped."""
+    out = {}
+    for name, flags in _dict(layers).items():
+        if isinstance(name, str) and isinstance(flags, dict):
+            out[name] = {k: bool(flags[k]) for k in ("visible", "locked")
+                         if k in flags}
+    return out
+
+
+def _each(items: list, parse, noun: str, left_out: list) -> list:
+    """*items* parsed one by one; one that does not read is left out and
+    noted in *left_out* as (noun, reason). One curve on a layer from a later
+    GuildDraw, or holding a number that is not one, failed the whole tab, and
+    the tab opened empty (the 2.0 bug hunt)."""
+    out = []
+    for it in items:
+        try:
+            out.append(parse(it))
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            left_out.append((noun, str(exc)))
+    return out
+
+
+def _left_out_text(left_out: list) -> list[str]:
+    """('curve', reason) pairs said as '2 curves (the first: a layer …)'."""
+    by_noun: dict = {}
+    for noun, reason in left_out:
+        by_noun.setdefault(noun, []).append(reason)
+    out = []
+    for noun, reasons in by_noun.items():
+        n = len(reasons)
+        first = "" if n == 1 else "the first: "
+        out.append(f"{n} {noun}{'s' if n != 1 else ''} ({first}{reasons[0]})")
+    return out
+
+
+# A photo calibration outside this range (image px per mm) is no calibration:
+# one near 1e308 px/mm made the scale subnormal, the zoom NaN, and every later
+# open in that window failed.
+_CALIBRATION_RANGE = (1e-3, 1e5)
 
 
 def load_svg(path: str) -> dict:
     """
     Return a dict with keys: curves, dims, texts, calibration, mirror,
     forming, machined_bridge, face_images, bookmarks, layers, guides, fill,
-    lens_fill, inlay_fill, bevel.  Keys absent from an older file come back
-    as their empty defaults.  Raises on parse error.
+    lens_fill, inlay_fill, bevel, left_out.  Keys absent from an older file
+    come back as their empty defaults.  A curve, dimension, text or bookmark
+    that does not read is left out and said in ``left_out`` (a list of
+    strings, empty when everything read). Raises when the file itself
+    cannot be read.
     """
     root = ET.fromstring(_read_checked_svg(path))
 
@@ -432,54 +618,86 @@ def load_svg(path: str) -> dict:
         raise ValueError("SVG has no GuildDraw metadata block.")
 
     state = json.loads(meta_el.text)
+    if not isinstance(state, dict):
+        raise ValueError("The GuildDraw metadata block is not an object.")
 
-    cal_d  = state.get("calibration", {})
-    mir_d  = state.get("mirror",      {})
-    frm_d  = state.get("forming",     {})
-    mb_d   = state.get("machined_bridge", {})
+    cal_d  = _dict(state.get("calibration"))
+    mir_d  = _dict(state.get("mirror"))
+    frm_d  = _dict(state.get("forming"))
+    mb_d   = _dict(state.get("machined_bridge"))
+    bev_d  = state.get("bevel")
 
-    bookmarks = [
-        {
-            "name":      bm.get("name", ""),
-            "timestamp": bm.get("timestamp", ""),
-            "snapshot":  {
-                "curves": [_curve_from_dict(c) for c in bm.get("curves", [])],
-                "dims":   [_dim_from_dict(d) for d in bm.get("dims", [])],
-                "texts":  [_text_from_dict(t) for t in bm.get("texts", [])],
-            },
+    left_out: list = []
+
+    def bookmark(bm) -> dict:
+        # A bookmark reads whole or not at all: half a revision would restore
+        # as something the maker never drew.
+        if not isinstance(bm, dict):
+            raise ValueError("a bookmark is not an object")
+        name, stamp = bm.get("name", ""), bm.get("timestamp", "")
+        snapshot = {
+            "curves": [_curve_from_dict(c)
+                       for c in _list(bm.get("curves"), "a bookmark's curves")],
+            "dims":   [_dim_from_dict(d)
+                       for d in _list(bm.get("dims"), "a bookmark's dimensions")],
+            "texts":  [_text_from_dict(t)
+                       for t in _list(bm.get("texts"), "a bookmark's texts")],
         }
-        for bm in state.get("bookmarks", [])
-    ]
+        if isinstance(bm.get("mirror"), bool):
+            snapshot["mirror"] = bm["mirror"]
+        return {
+            "name":      name if isinstance(name, str) else "",
+            "timestamp": stamp if isinstance(stamp, str) else "",
+            "snapshot":  snapshot,
+        }
 
-    dims = [_dim_from_dict(d) for d in state.get("dims", [])]
+    bookmarks = _each(_list(state.get("bookmarks"), "the bookmarks"), bookmark,
+                      "bookmark", left_out)
+    curves = _each(_list(state.get("curves"), "the curves"), _curve_from_dict,
+                   "curve", left_out)
+    dims = _each(_list(state.get("dims"), "the dimensions"), _dim_from_dict,
+                 "dimension", left_out)
+    texts = _each(_list(state.get("texts"), "the texts"), _text_from_dict,
+                  "text", left_out)
+    px = cal_d.get("px_per_mm")
+    px = _num_default(px, 0.0) if px is not None else None
+    if px is not None and not (_CALIBRATION_RANGE[0] <= px <= _CALIBRATION_RANGE[1]):
+        px = None
+
+    def block(key):
+        """A display block as saved, or None when absent or not an object."""
+        v = state.get(key)
+        return v if isinstance(v, dict) else None
 
     return {
-        "curves": [_curve_from_dict(c) for c in state.get("curves", [])],
+        "curves": curves,
         "dims":   dims,
-        "calibration": Calibration(px_per_mm=cal_d.get("px_per_mm")),
+        "calibration": Calibration(px_per_mm=px if px and px > 0 else None),
         "mirror": MirrorAxis(
-            enabled=mir_d.get("enabled", True),
-            x=mir_d.get("x", 0.0),
+            enabled=bool(mir_d.get("enabled", True)),
+            x=_num_default(mir_d.get("x"), 0.0),
         ),
         "forming": FormingMetadata(
-            bridge_angle_deg=frm_d.get("bridge_angle_deg", 0.0),
-            apical_radius_mm=frm_d.get("apical_radius_mm", 0.0),
+            bridge_angle_deg=_num_default(frm_d.get("bridge_angle_deg"), 0.0),
+            apical_radius_mm=_num_default(frm_d.get("apical_radius_mm"), 0.0),
         ),
         "machined_bridge": MachinedBridge(
-            depth_mm=mb_d.get("depth_mm", 4.0),
-            width_mm=mb_d.get("width_mm", 5.0),
+            depth_mm=_num_default(mb_d.get("depth_mm"), 4.0),
+            width_mm=_num_default(mb_d.get("width_mm"), 5.0),
         ),
         "face_images": _load_face_images(state),
         "bookmarks": bookmarks,
-        "layers": state.get("layers", {}),
-        "guides": state.get("guides"),         # None when absent (pre-2.0 files)
-        "fill": state.get("fill"),   # None when absent (pre-0.9.8 files)
-        "lens_fill": state.get("lens_fill"),   # None when absent (pre-1.2 files)
-        "inlay_fill": state.get("inlay_fill"), # None when absent (pre-2.0 files)
+        "layers": _layer_flags(state.get("layers")),
+        "guides": block("guides"),         # None when absent (pre-2.0 files)
+        "fill": block("fill"),   # None when absent (pre-0.9.8 files)
+        "lens_fill": block("lens_fill"),   # None when absent (pre-1.2 files)
+        "inlay_fill": block("inlay_fill"), # None when absent (pre-2.0 files)
         "bevel": (
-            BevelSpec(preset=state["bevel"].get("preset", "acetate"),
-                      depth_mm=state["bevel"].get("depth_mm", 1.0))
-            if isinstance(state.get("bevel"), dict) else None
+            BevelSpec(preset=(bev_d.get("preset") if isinstance(bev_d.get("preset"), str)
+                              else "acetate"),
+                      depth_mm=_num_default(bev_d.get("depth_mm"), 1.0))
+            if isinstance(bev_d, dict) else None
         ),   # None when absent (pre-rc2 files)
-        "texts": [_text_from_dict(t) for t in state.get("texts", [])],
+        "texts": texts,
+        "left_out": _left_out_text(left_out),
     }

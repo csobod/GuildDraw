@@ -33,33 +33,51 @@ def test_amber_when_incomplete_front():
     assert "LENS" in tip   # the named gap
 
 
-def test_green_front_with_mirror_doubling():
-    # OUTLINE x1 + one LENS; mirror doubling -> LENS x2. Contract met.
+def test_amber_front_with_one_lens_and_the_ghost():
+    # GuildModel never applies the Ghost: one lens drawn in an outline for two
+    # is the other eye cut solid, Ghost or not.
     outline = closed_diamond(cx=0.0, r=30.0, layer=Layer.OUTLINE)
     lens    = _front_lens(cx=-20.0)
-    state, tip = readiness_state([outline, lens], mirror_on=True,
-                                 workspace_type="front")
-    assert state == GREEN
-    assert "Ready for GuildModel" in tip
+    for mirror_on in (True, False):
+        state, tip = readiness_state([outline, lens], mirror_on=mirror_on,
+                                     workspace_type="front")
+        assert state == AMBER
+
+
+def test_green_front_with_both_lenses_drawn():
+    outline = closed_diamond(cx=0.0, r=40.0, layer=Layer.OUTLINE)
+    lenses  = [_front_lens(cx=-20.0), _front_lens(cx=20.0)]
+    for mirror_on in (True, False):
+        state, tip = readiness_state([outline, *lenses], mirror_on=mirror_on,
+                                     workspace_type="front")
+        assert state == GREEN
+        assert "Ready for GuildModel" in tip
 
 
 def test_green_front_with_bridge_keyhole():
     # Aviator: perimeter + a second closed OUTLINE spline inside it (the
     # bridge keyhole) — multiple OUTLINE curves are GuildModel-ready now, so
     # the dot stays green (the openings note rides in the tooltip warning).
-    outline = closed_diamond(cx=0.0, r=30.0, layer=Layer.OUTLINE)
+    outline = closed_diamond(cx=0.0, r=40.0, layer=Layer.OUTLINE)
     keyhole = closed_diamond(cx=0.0, cy=5.0, r=4.0, layer=Layer.OUTLINE)
-    lens    = _front_lens(cx=-18.0)
-    state, tip = readiness_state([outline, keyhole, lens], mirror_on=True,
+    lenses  = [_front_lens(cx=-20.0), _front_lens(cx=20.0)]
+    state, tip = readiness_state([outline, keyhole, *lenses], mirror_on=True,
                                  workspace_type="front")
     assert state == GREEN
     assert "Ready for GuildModel" in tip
 
 
-def test_green_hinge():
-    hinge = closed_diamond(cx=0.0, r=5.0, layer=Layer.HINGE)
-    state, _ = readiness_state([hinge], mirror_on=False, workspace_type="hinge")
-    assert state == GREEN
+def test_the_component_tab_never_says_ready_for_guildmodel():
+    # GuildModel builds no part from this tab; a component reaches it placed
+    # on the front or a temple.
+    pocket = closed_diamond(cx=0.0, r=5.0, layer=Layer.COMPONENT)
+    state, tip = readiness_state([pocket], mirror_on=False, workspace_type="component")
+    assert state == OFF
+    assert "does not read this tab" in tip
+    opened = line([(0, 0), (5, 0), (5, 5)], layer=Layer.COMPONENT)
+    state, tip = readiness_state([opened], mirror_on=False, workspace_type="component")
+    assert state == AMBER
+    assert "Ready for GuildModel" not in tip
 
 
 def test_amber_temple_with_lens():
@@ -79,4 +97,4 @@ def test_green_with_a_warning_when_the_temple_is_off_the_core_line():
     state, tip = readiness_state([arm], mirror_on=False,
                                  workspace_type="temple_r", stock_mm=(170.0, 30.0))
     assert state == GREEN
-    assert "with warnings" in tip and "core line" in tip
+    assert "To note:\n•" in tip and "core line" in tip

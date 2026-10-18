@@ -15,12 +15,19 @@ class CalibTool(QObject):
     Because the scene is already in mm, the calibration only affects the
     face image scale — it does not change any drawn geometry.
     """
-    calibrated = Signal(float)    # emits px_per_mm (image pixels per real mm)
+    # (px_per_mm, photo index): image pixels per real mm, for that photo
+    calibrated = Signal(float, int)
     status_message = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._state = 0   # 0=idle, 1=waiting p1, 2=waiting p2
+        # The photo to calibrate when the first click lands on none (the one
+        # selected in the Canvas tab); set by the app before start().
+        self.preferred_index = 0
+        # Why a photo may not be calibrated now (locked, hidden), or None;
+        # set by the app. Asked at the first click, before a second is spent.
+        self.refusal = None
         self._p1: QPointF | None = None
         self._line_item = None
 
@@ -45,6 +52,13 @@ class CalibTool(QObject):
     def handle_press(self, pos: QPointF, scene) -> bool:
         """Return True if event was consumed."""
         if self._state == 1:
+            index = scene.face_index_at(pos)
+            why = self.refusal(self.preferred_index if index is None else index) \
+                if self.refusal is not None else None
+            if why:
+                self._state = 0
+                self.status_message.emit(why)
+                return True
             self._p1 = pos
             self._state = 2
             self.status_message.emit("Calibrate: click second reference point  |  Esc to cancel")
@@ -57,7 +71,13 @@ class CalibTool(QObject):
         return False
 
     def _do_calibrate(self, scene, p2: QPointF):
-        face_item = scene.get_face_item(0)
+        # The photo the landmarks are on: under the first click, else the one
+        # selected. Measured in the first photo's pixels whatever was clicked,
+        # a second photo's calibration came out wrong for both.
+        index = scene.face_index_at(self._p1)
+        if index is None:
+            index = self.preferred_index
+        face_item = scene.get_face_item(index)
         if face_item is None:
             self.status_message.emit("No face image loaded — calibration canceled")
             return
@@ -81,7 +101,7 @@ class CalibTool(QObject):
             real_mm = dlg.real_mm()
             if real_mm > 0:
                 px_per_mm = pixel_dist / real_mm
-                self.calibrated.emit(px_per_mm)
+                self.calibrated.emit(px_per_mm, index)
         else:
             self.status_message.emit("Calibration canceled")
 

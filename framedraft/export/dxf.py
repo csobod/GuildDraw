@@ -9,7 +9,8 @@ Contract (confirmed against GuildModel Session 5):
   - $INSUNITS = 4 (mm) as a convention signal; GuildModel ignores it.
   - One closed entity per outline; endpoints within 0.1 mm for closure.
   - Strict layer vocabulary: OUTLINE (>=1: largest = profile, closed curves
-    inside it = decorative openings Hole1…), LENS (>=1), BRIDGE, HINGE, REF.
+    inside it = decorative openings Hole1…), LENS (two, or one for a monocle),
+    BRIDGE, COMPONENT (HINGE before 2.0, read as COMPONENT by GuildModel), REF.
   - Do NOT flatten splines to polylines.
 
 Y-axis convention:
@@ -24,11 +25,14 @@ Arc angles:
   (because the Y-flip reverses the sweep direction).
 """
 
+import os
+import shutil
+import tempfile
+
 import ezdxf
 from ezdxf.math import Bezier4P, bezier_to_bspline, Vec3
 
-from ..document import Curve, ControlPoint, MIRRORED_LAYERS
-from ..geometry import mirror_curve
+from ..document import Curve, ControlPoint
 
 
 def _spline_segments(nodes: list, closed: bool) -> list:
@@ -97,19 +101,16 @@ def _add_curve(msp, curve: Curve):
             sp.dxf.flags = sp.dxf.flags | 1   # CLOSED flag
 
 
-# Layers that get a mirrored OS copy when mirror is on (document.MIRRORED_LAYERS:
-# LENS, HINGE, SCULPT, DRILL). OUTLINE and BRIDGE span the full frame (drawn
-# symmetric) — never mirrored here; an open OUTLINE half is closed separately.
-_MIRROR_LAYERS = MIRRORED_LAYERS
-
-
 def export_dxf(
     curves:     list,        # Curve objects, coordinates in mm
     path:       str,
-    mirror_on:  bool,
-    axis_x:     float = 0.0,   # mirror axis in mm (vertical mirror)
-    horizontal: bool = False,  # temple workspaces mirror across y=0
 ) -> None:
+    """Write the curves drawn, and only those. The Ghost is a drawing aid:
+    GuildModel never applies it (2026-10-16), and the .gdraw carries the
+    curves drawn, so the DXF does too, and one drawing gives GuildModel the
+    same lenses through either file. Before 2.0 the Ghost's layers were
+    doubled here. A twin wanted in the file is baked with Mirror first; the
+    validator names each one the Ghost alone draws."""
     doc = ezdxf.new("R2000")
     doc.units = ezdxf.units.MM   # $INSUNITS = 4 (signal only)
     msp = doc.modelspace()
@@ -118,7 +119,27 @@ def export_dxf(
         if curve.mirrored:
             continue
         _add_curve(msp, curve)
-        if mirror_on and curve.layer in _MIRROR_LAYERS:
-            _add_curve(msp, mirror_curve(curve, axis_x, horizontal=horizontal))
 
-    doc.saveas(path)
+    # Through a temporary file beside it and one replace, fsynced: written in
+    # place, a failure half-way left a cut-short file over the good one.
+    target = os.path.realpath(path)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target) or ".",
+                               prefix=".guilddraw-", suffix=".tmp")
+    os.close(fd)
+    try:
+        doc.saveas(tmp)
+        with open(tmp, "r+b") as f:
+            os.fsync(f.fileno())
+        if os.path.exists(target):
+            try:
+                shutil.copymode(target, tmp)
+            except OSError:
+                pass
+        elif os.name == "posix":
+            mask = os.umask(0)
+            os.umask(mask)
+            os.chmod(tmp, 0o666 & ~mask)
+        os.replace(tmp, target)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)

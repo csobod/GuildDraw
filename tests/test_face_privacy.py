@@ -3,8 +3,10 @@
 Shared files must never carry the author's absolute C:\\Users\\<name>\\…
 image paths: .gdraw EMBEDS the photo as a zip member ("images/…") and
 extracts it to ~/.guilddraw/imagecache/ on load; plain .svg stores a
-document-relative path or bare basename. Old files with absolute paths
-keep loading unchanged.
+document-relative path or bare basename. A path in a file is never
+followed outside the document's folder: an absolute one (a pre-1.0 file, or
+a crafted one naming a private photo) is looked for beside the document by
+its bare name (the 2.0 bug hunt).
 """
 import json
 import os
@@ -29,7 +31,7 @@ def cache_root(tmp_path, monkeypatch):
 
 def _face_data(img_path: str) -> dict:
     return {"front": {
-        "face_images": [FaceImage(path=img_path, tx=3.0, ty=-2.0,
+        "face_images": [FaceImage(stored=True, path=img_path, tx=3.0, ty=-2.0,
                                   rotation=15.0, opacity=0.6)],
     }}
 
@@ -85,23 +87,43 @@ def test_gdraw_vanished_source_stores_basename_only(tmp_path, cache_root):
     assert not os.path.isfile(loaded["front"]["face_images"][0].path)
 
 
-def test_gdraw_legacy_absolute_path_passes_through(tmp_path, cache_root):
-    """Pre-1.0 files carry absolute paths; they must load unchanged."""
+def _legacy_gdraw(tmp_path, img_path):
     from framedraft.export import svg as svg_mod
     from framedraft.document import (Calibration, FormingMetadata,
                                      MachinedBridge, MirrorAxis)
-    img = tmp_path / "face.png"
-    img.write_bytes(_PNG_BYTES)
     svg_file = tmp_path / "front.svg"
     svg_mod.save_svg(
         curves=[], path=str(svg_file), calibration=Calibration(),
         mirror=MirrorAxis(), forming=FormingMetadata(),
         machined_bridge=MachinedBridge(),
-        face_images=[FaceImage(path=str(img))])
+        face_images=[FaceImage(stored=True, path=str(img_path))])
     doc = tmp_path / "legacy.gdraw"
     with zipfile.ZipFile(doc, "w") as zf:
         zf.write(svg_file, "front.svg")
+    return doc
 
+
+def test_an_absolute_path_elsewhere_is_never_followed(tmp_path, cache_root):
+    """A shared file naming a private photo showed it, and the recipient's
+    next save embedded it and sent it back."""
+    private = tmp_path / "Pictures" / "passport scan.png"
+    private.parent.mkdir()
+    private.write_bytes(_PNG_BYTES)
+    designs = tmp_path / "designs"
+    designs.mkdir()
+    doc = _legacy_gdraw(designs, private)
+    fi = load_gdraw(str(doc))["front"]["face_images"][0]
+    assert fi.path == "passport scan.png"            # a name, looked for beside it
+    for unc in ("\\\\host\\share\\x.png", "//host/share/x.png", "C:\\Users\\x.png"):
+        assert gdraw_mod._outside_name(unc) == "x.png"
+
+
+def test_gdraw_legacy_absolute_path_beside_the_document_loads(tmp_path, cache_root):
+    """Pre-1.0 files carry absolute paths; a photo beside the document still
+    loads by its name."""
+    img = tmp_path / "face.png"
+    img.write_bytes(_PNG_BYTES)
+    doc = _legacy_gdraw(tmp_path, img)
     loaded = load_gdraw(str(doc))
     assert loaded["front"]["face_images"][0].path == str(img)
 
@@ -112,7 +134,7 @@ def test_portable_relative_inside_doc_dir(tmp_path):
     (tmp_path / "photos").mkdir()
     img = tmp_path / "photos" / "face.png"
     img.write_bytes(_PNG_BYTES)
-    out = portable_face_images([FaceImage(path=str(img))],
+    out = portable_face_images([FaceImage(stored=True, path=str(img))],
                                str(tmp_path / "frame.svg"))
     assert out[0].path == "photos/face.png"
 
@@ -123,7 +145,7 @@ def test_portable_outside_doc_dir_is_basename(tmp_path):
     img.write_bytes(_PNG_BYTES)
     doc_dir = tmp_path / "designs"
     doc_dir.mkdir()
-    out = portable_face_images([FaceImage(path=str(img))],
+    out = portable_face_images([FaceImage(stored=True, path=str(img))],
                                str(doc_dir / "frame.svg"))
     assert out[0].path == "face.png"
     assert "secret_home" not in out[0].path
@@ -133,7 +155,7 @@ def test_resolve_inside_doc_dir(tmp_path):
     (tmp_path / "photos").mkdir()
     img = tmp_path / "photos" / "face.png"
     img.write_bytes(_PNG_BYTES)
-    fis = [FaceImage(path="photos/face.png")]
+    fis = [FaceImage(stored=True, path="photos/face.png")]
     resolve_face_images(fis, str(tmp_path / "frame.svg"))
     assert fis[0].path == str(img)
 
@@ -143,6 +165,6 @@ def test_resolve_rejects_traversal_outside_doc_dir(tmp_path):
     outside.write_bytes(_PNG_BYTES)
     doc_dir = tmp_path / "designs"
     doc_dir.mkdir()
-    fis = [FaceImage(path="../loot.png")]
+    fis = [FaceImage(stored=True, path="../loot.png")]
     resolve_face_images(fis, str(doc_dir / "frame.svg"))
     assert fis[0].path == "../loot.png"          # left unresolved

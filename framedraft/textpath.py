@@ -19,11 +19,22 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtGui import QFont, QFontMetricsF, QPainterPath, QTransform
+from PySide6.QtGui import QFont, QFontInfo, QFontMetricsF, QPainterPath, QTransform
 
-from .document import ControlPoint, Curve, SplineNode, TextObject
+from .document import ControlPoint, Curve, Layer, SplineNode, TextObject
 
 _BASE_PX = 256.0   # build glyphs at this pixel size, then scale to mm
+
+
+def font_stand_in(family: str) -> str | None:
+    """The family this computer draws *family* in, when it is not that one
+    (the font is not installed); None when it is. The text was drawn, and
+    exported, in a stand-in without a word, and GuildModel engraves with the
+    font its own computer resolves."""
+    if not family:
+        return None
+    shown = QFontInfo(QFont(family)).family()
+    return shown if shown.casefold() != family.casefold() else None
 
 
 def text_outline_path(t: TextObject) -> QPainterPath:
@@ -91,8 +102,13 @@ def mirror_text(t: TextObject, axis_x: float = 0.0,
 
 def text_to_curves(t: TextObject) -> list[Curve]:
     """Convert a TextObject to closed spline Curves (one per letter outline
-    or counter-shape). Used at DXF-export time; results are transient."""
+    or counter-shape). Used at DXF-export time; results are transient.
+
+    A text is engraving or reference, never a cut: one an older file holds on
+    another layer goes out on ENGRAVING. On OUTLINE its letters went into the
+    DXF as decorative cut-outs, while GuildModel's .gdraw read dropped it."""
     path = text_outline_path(t)
+    layer = t.layer if t.layer in (Layer.ENGRAVING, Layer.REF) else Layer.ENGRAVING
     curves: list[Curve] = []
     nodes: list[SplineNode] = []
 
@@ -109,7 +125,7 @@ def text_to_curves(t: TextObject) -> list[Curve]:
                     first.cp_in = last.cp_in
                 nodes.pop()
             if len(nodes) >= 2:
-                curves.append(Curve(kind="spline", layer=t.layer, nodes=nodes,
+                curves.append(Curve(kind="spline", layer=layer, nodes=nodes,
                                     closed=True, line_weight=t.line_weight))
         nodes = []
 

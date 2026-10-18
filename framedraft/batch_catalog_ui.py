@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtGui import QColor, QFont, QIcon, QPixmap
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QColorDialog, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
@@ -94,7 +95,8 @@ class BatchCatalogOptionsDialog(QDialog):
 
         self._save_chk = QCheckBox("Save the fill into the files (originals "
                                    "backed up first)")
-        self._save_chk.setChecked(bool(last.get("save_fill", True)))
+        # Off on a first run: the run writes into the maker's designs.
+        self._save_chk.setChecked(bool(last.get("save_fill", False)))
         self._save_chk.setToolTip(
             "Each design whose fill changes is written back, after a copy of "
             "the original goes to _backup/<timestamp>/ in the folder. Off: "
@@ -107,6 +109,8 @@ class BatchCatalogOptionsDialog(QDialog):
         self._dry_chk = QCheckBox("Report only; write nothing")
         self._dry_chk.setToolTip("See what would change without writing a "
                                  "file or a PDF.")
+        # Report only writes nothing, so Save means nothing beside it.
+        self._dry_chk.toggled.connect(lambda on: self._save_chk.setEnabled(not on))
         for chk in (self._save_chk, self._ghost_chk, self._dry_chk):
             form.addRow(chk)
 
@@ -220,10 +224,16 @@ class BatchCatalogProgressDialog(QDialog):
         self._bar.setValue(i)
         self._log.appendPlainText(line)
 
-    def finish(self, summary: str):
+    def finish(self, summary: str, folder: str | None = None):
         self._log.appendPlainText("")
         self._log.appendPlainText(summary)
         self._buttons.clear()
+        if folder and os.path.isdir(folder):
+            show = self._buttons.addButton(
+                "Open Folder", QDialogButtonBox.ButtonRole.ActionRole)
+            show.setToolTip(folder)
+            show.clicked.connect(lambda: QDesktopServices.openUrl(
+                QUrl.fromLocalFile(folder)))
         self._buttons.addButton(QDialogButtonBox.StandardButton.Close)
         self._buttons.button(QDialogButtonBox.StandardButton.Close).setDefault(True)
 

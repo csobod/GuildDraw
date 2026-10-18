@@ -16,8 +16,6 @@ Keyboard
   Esc  in the field → return focus to canvas.
 """
 
-import math
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -25,14 +23,11 @@ from PySide6.QtWidgets import (
 )
 
 from .. import theme
+from ..typed import parse_typed
 
 
 def _parse_float(text: str) -> float | None:
-    try:
-        v = float(text.strip())
-        return v if math.isfinite(v) else None
-    except (ValueError, TypeError):
-        return None
+    return parse_typed(text)        # a comma is the decimal point too
 
 
 class _NumEdit(QLineEdit):

@@ -61,7 +61,9 @@ class MirrorAxis:
             self._item = self._scene.addLine(r.left(), 0.0, r.right(), 0.0, pen)
         else:
             self._item = self._scene.addLine(self._x, r.top(), self._x, r.bottom(), pen)
-        self._item.setZValue(5)
+        # Above the stock guide's core line (z 5), which it lies on along a
+        # temple: at the same z the red axis was hidden under it.
+        self._item.setZValue(5.5)
 
     def scene_rect_changed(self):
         """Call when the scene rect grows (e.g. after loading an image)."""

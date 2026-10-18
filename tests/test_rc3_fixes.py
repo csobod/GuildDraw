@@ -248,7 +248,7 @@ def test_save_actions_have_shortcuts(fresh):
     win = fresh
     shortcuts = {}
     for top in win.menuBar().actions():
-        if top.text() == "File" and top.menu() is not None:
+        if top.text().replace("&", "") == "File" and top.menu() is not None:
             for act in top.menu().actions():
                 shortcuts[act.text()] = act.shortcut().toString()
     assert shortcuts["Save"] == "Ctrl+S"
@@ -304,6 +304,7 @@ def test_grid_toggle_and_config_propagate(fresh):
     win = fresh
     win._prefs["grid_spacing_mm"] = 8.0
     win._prefs["grid_major"] = 4
+    win._prefs["grid_visible"] = True
     win._apply_grid_config()
     for ws in win._workspaces:
         assert ws.snap._grid_spacing == 8.0        # overlay + snap share spacing
@@ -313,6 +314,8 @@ def test_grid_toggle_and_config_propagate(fresh):
     assert all(ws.view._grid_visible for ws in win._workspaces)
     win._act_grid.setChecked(False)
     assert not any(ws.view._grid_visible for ws in win._workspaces)
+    # A hidden grid snaps nothing (the 2.0 bug hunt).
+    assert all(ws.snap._grid_spacing == 0.0 for ws in win._workspaces)
 
 
 def test_failed_insert_keeps_redo_stack(fresh):

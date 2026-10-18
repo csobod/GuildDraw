@@ -67,12 +67,23 @@ def test_an_arc_and_a_line_meeting_are_pieces_too():
 def test_a_rim_the_ghost_alone_draws_asks_for_a_bake():
     curves = [rim(-24), circle(-24, 0, 9)]
     errors, _ = validate(curves, mirror_on=True)
-    assert errors == ["The other rim is the Ghost's only: select the rim and "
-                      "its lens and Mirror (bake) them, so both rims are real "
-                      "for GuildModel."]
+    assert errors == ["The other rim is the Ghost's only, and GuildModel reads "
+                      "only the curves drawn: select the rim and its lens and "
+                      "Mirror (bake) them, or turn the Ghost off for a monocle."]
+    # Baked, the twin stands for itself.
+    errors, _ = validate(curves + [rim(24), circle(24, 0, 9)], mirror_on=True)
+    assert errors == []
     # A whole front crossing the axis is no rim, Ghost or not.
     errors, _ = validate([closed_diamond(0, 0, 45), circle(17, 0, 11)], mirror_on=True)
-    assert errors == []
+    assert not any("rim" in e for e in errors)
+
+
+def test_separated_rims_with_one_lens_are_not_ready_with_the_ghost_on():
+    # The second rim, drawn without its lens, is a stray to GuildModel; the
+    # Ghost's lens lands in it and is never cut.
+    curves = [rim(-24), rim(24), circle(-24, 0, 9)]
+    errors, _ = validate(curves, mirror_on=True)
+    assert any("other lens is the Ghost's only" in e for e in errors)
 
 
 def test_a_lens_outside_every_body_is_an_error():
@@ -176,9 +187,9 @@ def test_join_then_bake_hands_off_both_rims(win):
 
 # ── The bridge's seat across the gap ──────────────────────────────────────
 
-@pytest.mark.parametrize("layer", [Layer.HINGE, Layer.INLAY])
+@pytest.mark.parametrize("layer", [Layer.COMPONENT, Layer.INLAY])
 def test_a_bridge_seat_spanning_the_gap_is_accepted(layer):
-    # From behind on HINGE, from the front on INLAY: one shape across the
+    # From behind on COMPONENT, from the front on INLAY: one shape across the
     # gap, reaching into each rim's nasal end, a step open at each edge.
     seat = line([(-10, -14), (10, -14), (10, -8), (-10, -8)], closed=True,
                 layer=layer)

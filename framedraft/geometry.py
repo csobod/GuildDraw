@@ -185,7 +185,8 @@ def circle_to_spline(curve: Curve) -> Curve:
         n.cp_in  = ControlPoint(x - tx * k, y - ty * k)
         nodes.append(n)
     return Curve(kind="spline", layer=curve.layer, nodes=nodes, closed=True,
-                 line_weight=curve.line_weight, group_id=curve.group_id)
+                 line_weight=curve.line_weight, group_id=curve.group_id,
+                 component_kind=curve.component_kind)
 
 
 def arc_to_spline(curve: Curve) -> Curve:
@@ -212,7 +213,8 @@ def arc_to_spline(curve: Curve) -> Curve:
     nodes[0].cp_in   = None
     nodes[-1].cp_out = None
     return Curve(kind="spline", layer=curve.layer, nodes=nodes, closed=False,
-                 line_weight=curve.line_weight, group_id=curve.group_id)
+                 line_weight=curve.line_weight, group_id=curve.group_id,
+                 component_kind=curve.component_kind)
 
 
 def compute_catmull_handles(nodes: list, closed: bool) -> None:
@@ -242,12 +244,13 @@ def mirror_curve(curve: Curve, axis_x: float = 0.0,
                  horizontal: bool = False) -> Curve:
     """Reflect *curve* across the mirror axis, returning a new independent Curve.
 
-    horizontal=False: vertical axis at x = axis_x (front / hinge workspaces).
+    horizontal=False: vertical axis at x = axis_x (front / component workspaces).
     horizontal=True : horizontal axis at y = 0 (temple workspaces); axis_x unused.
 
-    Single source of truth for mirror math — used by scene ghosts, DXF export,
+    Single source of truth for mirror math — used by scene ghosts, the validator,
     Mirror (bake), Temple Copy, and draw-tool preview ghosts. The result is
-    plain geometry (mirrored=False); callers decide its role.
+    plain geometry (mirrored=False); callers decide its role. A component's
+    kind goes with it: the twin of a hinge is a hinge.
     """
     def mp(x: float, y: float) -> Tuple[float, float]:
         if horizontal:
@@ -258,7 +261,8 @@ def mirror_curve(curve: Curve, axis_x: float = 0.0,
         cx, cy = mp(curve.nodes[0].x, curve.nodes[0].y)
         return Curve(kind="circle", layer=curve.layer,
                      nodes=[SplineNode(x=cx, y=cy)], closed=curve.closed,
-                     radius=curve.radius, line_weight=curve.line_weight)
+                     radius=curve.radius, line_weight=curve.line_weight,
+                     component_kind=curve.component_kind)
 
     if curve.kind == "arc":
         cx, cy = mp(curve.nodes[0].x, curve.nodes[0].y)
@@ -274,7 +278,8 @@ def mirror_curve(curve: Curve, axis_x: float = 0.0,
                      nodes=[SplineNode(x=cx, y=cy)], closed=curve.closed,
                      radius=curve.radius,
                      start_angle=new_start, end_angle=new_end,
-                     line_weight=curve.line_weight)
+                     line_weight=curve.line_weight,
+                     component_kind=curve.component_kind)
 
     mirrored: List[SplineNode] = []
     for n in curve.nodes:
@@ -288,7 +293,54 @@ def mirror_curve(curve: Curve, axis_x: float = 0.0,
             mn.cp_out = ControlPoint(ox, oy)
         mirrored.append(mn)
     return Curve(kind=curve.kind, layer=curve.layer, nodes=mirrored,
-                 closed=curve.closed, line_weight=curve.line_weight)
+                 closed=curve.closed, line_weight=curve.line_weight,
+                 component_kind=curve.component_kind)
+
+
+def curve_is_finite(curve: Curve) -> bool:
+    """Every number *curve* holds is finite. An importer's NaN, or an overflow
+    such as SVG's scale(1e200), drew nothing, raised in every paint, and the
+    saved tab read back empty (the 2.0 bug hunt)."""
+    def ok(v) -> bool:
+        return v is None or math.isfinite(v)
+    for n in curve.nodes:
+        if not (math.isfinite(n.x) and math.isfinite(n.y)):
+            return False
+        for cp in (n.cp_in, n.cp_out):
+            if cp is not None and not (math.isfinite(cp.x) and math.isfinite(cp.y)):
+                return False
+    return ok(curve.radius) and ok(curve.start_angle) and ok(curve.end_angle)
+
+
+def drop_end_handles(curve: Curve) -> Curve:
+    """Clear the handles past an open curve's ends, the first node's cp_in
+    and the last node's cp_out: nothing draws with them, yet they showed as
+    handle dots, and Smooth tied them to the real ones. Returns *curve*."""
+    if not curve.closed and curve.kind in ("spline", "line") and curve.nodes:
+        curve.nodes[0].cp_in = None
+        curve.nodes[-1].cp_out = None
+    return curve
+
+
+def open_ends(curve: Curve) -> list:
+    """The free ends of an open curve, as ``(x, y, node)``: a line's or a
+    spline's first and last node, or an arc's two rim points at its start and
+    end angles (*node* None: an arc's one node is its center, which E and the
+    node-drag magnet took for an end). A closed curve has none."""
+    if curve.closed or not curve.nodes:
+        return []
+    if curve.kind == "arc":
+        if (not curve.radius or curve.start_angle is None
+                or curve.end_angle is None):
+            return []
+        c, r = curve.nodes[0], curve.radius
+        return [(c.x + r * math.cos(math.radians(a)),
+                 c.y + r * math.sin(math.radians(a)), None)
+                for a in (curve.start_angle, curve.end_angle)]
+    if curve.kind == "circle":
+        return []
+    first, last = curve.nodes[0], curve.nodes[-1]
+    return [(first.x, first.y, first), (last.x, last.y, last)]
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +356,9 @@ def sample_curve(curve: Curve,
     """
     result: List[Tuple[float, float, float]] = []
     nodes = curve.nodes
+
+    if curve.kind in ("circle", "arc") and not nodes:
+        return result                 # no center: nothing to draw
 
     if curve.kind == "circle":
         cx, cy, r = nodes[0].x, nodes[0].y, curve.radius or 0.0
@@ -349,6 +404,52 @@ def sample_curve(curve: Curve,
             result.append((x, y, global_t))
 
     return result
+
+
+def flatten_curve(curve: Curve, tol_mm: float = 0.01) -> List[Tuple[float, float]]:
+    """The curve as a polyline within *tol_mm* of it, with as few points as
+    that takes: a straight run is its two ends, a Bézier is cut by its flatness
+    (the bound on a cubic's second difference), an arc by its sagitta. The
+    fills stitched 16 samples a segment of every spline, and a dense imported
+    spline froze the canvas for two seconds a mouse move (the 2.0 bug hunt).
+    A closed curve's polyline ends where it starts."""
+    nodes = curve.nodes
+    if curve.kind in ("circle", "arc"):
+        if not nodes:
+            return []
+        cx, cy, r = nodes[0].x, nodes[0].y, curve.radius or 0.0
+        if r <= 0.0:
+            return [(cx, cy)]
+        step = 2.0 * math.acos(max(-1.0, 1.0 - tol_mm / r)) if tol_mm < r else math.pi / 2
+        step = max(step, 1e-3)
+        if curve.kind == "circle":
+            n = max(8, math.ceil(2 * math.pi / step))
+            pts = [(cx + r * math.cos(2 * math.pi * i / n),
+                    cy + r * math.sin(2 * math.pi * i / n)) for i in range(n)]
+            return pts + pts[:1]
+        sa = math.radians(curve.start_angle or 0.0)
+        sw = math.radians(_arc_sweep_deg(curve))
+        n = max(2, math.ceil(abs(sw) / step))
+        return [(cx + r * math.cos(sa + sw * i / n), cy + r * math.sin(sa + sw * i / n))
+                for i in range(n + 1)]
+    if len(nodes) < 2:
+        return [(n.x, n.y) for n in nodes]
+    if curve.kind == "line":
+        pts = [(n.x, n.y) for n in nodes]
+        return pts + pts[:1] if curve.closed else pts
+    out = [(nodes[0].x, nodes[0].y)]
+    for seg_i in range(_n_segs(curve)):
+        a, b = _seg_nodes(curve, seg_i)
+        p0, p1, p2, p3 = _seg_pts(a, b)
+        if a.cp_out is None and b.cp_in is None:
+            out.append(p3)                     # a straight run
+            continue
+        d = max(math.hypot(p0[0] - 2 * p1[0] + p2[0], p0[1] - 2 * p1[1] + p2[1]),
+                math.hypot(p1[0] - 2 * p2[0] + p3[0], p1[1] - 2 * p2[1] + p3[1]))
+        n = max(1, min(64, math.ceil(math.sqrt(0.75 * d / tol_mm))))
+        for j in range(1, n + 1):
+            out.append(_bezier_eval(p0, p1, p2, p3, j / n))
+    return out
 
 
 def _refine_t(curve: Curve, px: float, py: float,
@@ -642,7 +743,8 @@ def _extract_spline_segment(curve: Curve,
         result[0].cp_in   = None
         result[-1].cp_out = None
     return Curve(kind="spline", layer=curve.layer, nodes=result,
-                 closed=False, line_weight=curve.line_weight)
+                 closed=False, line_weight=curve.line_weight,
+                 component_kind=curve.component_kind)
 
 
 # ---------------------------------------------------------------------------
@@ -670,7 +772,8 @@ def _extract_line_segment(curve: Curve,
     new_nodes.append(_pt(t_end))
 
     return Curve(kind="line", layer=curve.layer, nodes=new_nodes,
-                 closed=False, line_weight=curve.line_weight)
+                 closed=False, line_weight=curve.line_weight,
+                 component_kind=curve.component_kind)
 
 
 # ---------------------------------------------------------------------------
@@ -700,7 +803,8 @@ def extract_open_segment(curve: Curve,
                      radius=curve.radius,
                      start_angle=t_start * 360.0,
                      end_angle=t_end * 360.0,
-                     line_weight=curve.line_weight)
+                     line_weight=curve.line_weight,
+                     component_kind=curve.component_kind)
 
     if curve.kind == "arc":
         sweep = _arc_sweep_deg(curve)
@@ -711,7 +815,8 @@ def extract_open_segment(curve: Curve,
                      nodes=[SplineNode(x=cx, y=cy)], closed=False,
                      radius=curve.radius,
                      start_angle=sa, end_angle=ea,
-                     line_weight=curve.line_weight)
+                     line_weight=curve.line_weight,
+                     component_kind=curve.component_kind)
 
     if curve.kind == "line":
         return _extract_line_segment(curve, t_start, t_end)
@@ -750,7 +855,8 @@ def extract_wrapping_segment(curve: Curve,
     if curve.kind == "line":
         combined = seg_hi.nodes[:-1] + seg_lo.nodes
         return Curve(kind="line", layer=curve.layer, nodes=combined,
-                     closed=False, line_weight=curve.line_weight)
+                     closed=False, line_weight=curve.line_weight,
+                     component_kind=curve.component_kind)
 
     # spline: merge seam at the original nodes[0] position
     hi_end   = seg_hi.nodes[-1]
@@ -760,7 +866,8 @@ def extract_wrapping_segment(curve: Curve,
     seam.cp_out = lo_start.cp_out
     combined    = seg_hi.nodes[:-1] + [seam] + seg_lo.nodes[1:]
     return Curve(kind="spline", layer=curve.layer, nodes=combined,
-                 closed=False, line_weight=curve.line_weight)
+                 closed=False, line_weight=curve.line_weight,
+                 component_kind=curve.component_kind)
 
 
 def split_curve_at_t(curve: Curve,
@@ -1291,7 +1398,8 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
             new_nodes = _line_nodes(-d_mm)
 
     return Curve(kind="line", layer=curve.layer, nodes=new_nodes,
-                 closed=closed, line_weight=curve.line_weight)
+                 closed=closed, line_weight=curve.line_weight,
+                 component_kind=curve.component_kind)
 
 
 # ---------------------------------------------------------------------------

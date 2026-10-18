@@ -21,7 +21,7 @@ SNAP_TYPES: list[tuple[str, str, str]] = [
     ("perpendicular", "Perpendicular", "Perpendicular to a line/curve from the point being drawn"),
     ("handle",        "Handle",        "Bézier control-point handles"),
     ("curve",         "On-curve",      "Nearest point along a curve"),
-    ("grid",          "Grid",          "Nearest grid intersection (in empty space)"),
+    ("grid",          "Grid",          "Nearest grid intersection, in empty space, while the grid is shown"),
     ("mirror",        "Mirror axis",   "Project onto the mirror axis"),
     ("axis",          "Origin",        "The scene origin (0, 0)"),
 ]

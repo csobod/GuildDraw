@@ -7,14 +7,14 @@ import pytest
 from framedraft.document import Layer
 from framedraft.export.dxf import export_dxf
 from framedraft.export.dxf_import import import_dxf
-from framedraft.geometry import point_at_t
+from framedraft.geometry import point_at_t, sample_curve
 from helpers import line, circle, arc, closed_diamond
 
 
 def export_and_import(tmp_path, curves, active_layer=Layer.OUTLINE,
                       workspace_type="front"):
     path = tmp_path / "rt.dxf"
-    export_dxf(curves=curves, path=str(path), mirror_on=False)
+    export_dxf(curves=curves, path=str(path))
     return import_dxf(str(path), active_layer, workspace_type)
 
 
@@ -125,19 +125,26 @@ def test_recognized_but_invalid_for_workspace_dumps(tmp_path):
 # Extra entity kinds
 # ---------------------------------------------------------------------------
 
-def test_bulged_polyline_expands_to_line_and_arc(tmp_path):
+def test_bulged_polyline_imports_as_one_closed_curve(tmp_path):
+    """Expanded into its lines and arcs, a rounded shape arrived as open
+    pieces to join by hand (the 2.0 bug hunt): it is one closed spline."""
     path = tmp_path / "bulge.dxf"
     doc = ezdxf.new("R2000")
     msp = doc.modelspace()
-    # square-ish path with one bulged (arc) segment
+    # square-ish path with one bulged (arc) segment: a half circle on (10,0)-(10,10)
     msp.add_lwpolyline(
         [(0, 0, 0.0), (10, 0, 1.0), (10, 10, 0.0), (0, 10, 0.0)],
         format="xyb", dxfattribs={"layer": "OUTLINE"}, close=True)
     doc.saveas(str(path))
 
     curves, _ = import_dxf(str(path), Layer.OUTLINE, "front")
-    kinds = sorted(c.kind for c in curves)
-    assert "arc" in kinds and "line" in kinds
+    [c] = curves
+    assert c.kind == "spline" and c.closed
+    # The bulge 1 half circle bulges out to x = 15 about (10, -5) (scene y-down).
+    pts = sample_curve(c)
+    on_arc = [(x, y) for x, y, _t in pts if x > 10.001]
+    assert on_arc and max(x for x, _y in on_arc) == pytest.approx(15.0, abs=1e-3)
+    assert all(abs(math.hypot(x - 10, y + 5) - 5) < 2e-3 for x, y in on_arc)
 
 
 def test_ellipse_imports_as_closed_spline(tmp_path):

@@ -24,30 +24,122 @@ def test_drill_holes_on_front_are_accepted():
     assert errors == [] and warnings == []
 
 
-def test_mirror_doubles_lens_count():
-    # One drawn lens + mirror ghost = a pair at export time; both the mirrored
-    # and un-mirrored forms are valid now that any positive LENS count passes.
+def test_the_ghost_is_never_counted():
+    # GuildModel reads only the curves drawn (2026-10-16): one lens with the
+    # Ghost on is one lens, and in an outline drawn for two the other eye
+    # would be cut solid. With the Ghost on, the twin is named as the gap.
     curves = [outline(), circle(15, 0, 10)]
     errors, _ = validate(curves, mirror_on=True)
-    assert errors == []
+    assert errors == ["The other lens is the Ghost's only, and GuildModel reads "
+                      "only the curves drawn: select the lens and Mirror (bake) it, "
+                      "or turn the Ghost off for a monocle."]
     errors, _ = validate(curves, mirror_on=False)
-    assert errors == []
+    assert errors == ["One lens in an outline drawn for two: GuildModel would cut "
+                      "the other eye solid. Draw the second lens, or Mirror "
+                      "(bake) this one."]
+    both = curves + [circle(-15, 0, 10)]
+    assert validate(both, mirror_on=True)[0] == []
+    assert validate(both, mirror_on=False)[0] == []
 
 
-def test_lens_count_is_flexible():
-    # Aviators (bridge opening) and shapes like peace-sign glasses carry more
-    # than the classic pair — any positive LENS count is accepted; only a total
-    # absence of LENS geometry is flagged.
+def test_a_front_holds_two_lenses_or_one():
+    # GuildModel refuses a third lens rather than guess which two are the
+    # eyes; one lens is a monocle when the outline is one rim around it.
     four = [outline(),
             circle(-20, 0, 8), circle(20, 0, 8),
             circle(-8, 12, 5), circle(8, 12, 5)]
-    assert validate(four, mirror_on=False)[0] == []
+    assert any("found 4" in e for e in validate(four, mirror_on=False)[0])
 
-    one = [outline(), circle(0, 0, 10)]
-    assert validate(one, mirror_on=False)[0] == []
+    monocle = [outline(), circle(0, 0, 10)]
+    assert validate(monocle, mirror_on=False)[0] == []
+    assert validate(monocle, mirror_on=True)[0] == []
 
     none = [outline()]
     assert any("LENS" in e for e in validate(none, mirror_on=False)[0])
+
+
+def test_a_monocle_beside_the_axis_with_the_ghost_on_asks_for_a_choice():
+    rim = closed_diamond(-30, 0, 20, layer=Layer.OUTLINE)
+    curves = [rim, circle(-30, 0, 10)]
+    assert validate(curves, mirror_on=False)[0] == []
+    errors, _ = validate(curves, mirror_on=True)
+    assert errors and "turn the Ghost off for a monocle" in errors[0]
+
+
+def test_a_front_component_on_one_end_only_is_the_ghosts_twin():
+    pocket = closed_diamond(35, 0, 3, layer=Layer.COMPONENT)
+    curves = [outline(), circle(-15, 0, 10), circle(15, 0, 10), pocket]
+    errors, _ = validate(curves, mirror_on=True)
+    assert errors == ["1 COMPONENT curve has a twin that is the Ghost's only, and "
+                      "GuildModel reads only the curves drawn: Mirror (bake) it, "
+                      "or turn the Ghost off."]
+    assert validate(curves, mirror_on=False)[0] == []
+    twin = closed_diamond(-35, 0, 3, layer=Layer.COMPONENT)
+    assert validate(curves + [twin], mirror_on=True)[0] == []
+
+
+def test_a_curve_across_the_axis_is_its_own_twin():
+    # A temple's pocket across the core line, a front's bridge mount across
+    # the bridge: the Ghost overlaps the curve itself.
+    arm = closed_diamond(60, 0, 50, layer=Layer.OUTLINE)
+    pocket = line([(95, -4), (99, 3), (91, 2), (95, -4)], layer=Layer.COMPONENT)
+    pocket.closed = True
+    assert validate([arm, pocket], True, "temple_r")[0] == []
+    bridge = line([(-3, -30), (4, -29), (4, -25), (-3, -26), (-3, -30)],
+                  layer=Layer.COMPONENT)
+    bridge.closed = True
+    curves = [outline(), circle(-15, 0, 10), circle(15, 0, 10), bridge]
+    assert validate(curves, mirror_on=True)[0] == []
+
+
+def test_a_lens_crossing_its_rims_edge_is_an_error():
+    # Out past the rim's edge at x = 40 by 3 mm (at x = 30 it touches the edge
+    # from inside, which a coarse trace read as a crossing).
+    curves = [outline(), circle(-15, 0, 10), circle(33, 0, 10)]
+    errors, _ = validate(curves, mirror_on=False)
+    assert any("LENS 2 crosses the edge of its rim" in e for e in errors)
+
+
+def test_a_curve_lying_on_another_is_an_error():
+    # A Mirror baked over an outline already whole reads as separated rims.
+    curves = [outline(), outline(), circle(-15, 0, 10), circle(15, 0, 10)]
+    errors, _ = validate(curves, mirror_on=False)
+    assert errors == ["1 OUTLINE curve lies on top of another OUTLINE curve, and "
+                      "GuildModel reads each: delete the copy."]
+
+
+def test_a_self_crossing_or_flat_lens_is_an_error_and_no_lens():
+    # A fishtail at a corner: the ring crosses itself.
+    fish = line([(-25, -8), (-5, -8), (-5, 8), (-27, 6), (-23, 10),
+                 (-25, -8)], layer=Layer.LENS)
+    fish.closed = True
+    curves = [outline(), fish, circle(15, 0, 10)]
+    errors, _ = validate(curves, mirror_on=False)
+    assert any("LENS curve crosses itself" in e for e in errors)
+    # A closed two-node lens folded flat encloses nothing and is not counted.
+    flat = line([(-25, 0), (-5, 0)], layer=Layer.LENS)
+    flat.closed = True
+    errors, _ = validate([outline(), flat, circle(15, 0, 10)], mirror_on=False)
+    assert any("LENS curve encloses no area" in e for e in errors)
+    assert any("One lens in an outline drawn for two" in e for e in errors)
+
+
+def test_degenerate_curves_are_errors():
+    one_node = line([(0, 0)], layer=Layer.LENS)
+    no_radius = circle(-20, 5, 0.7, layer=Layer.DRILL)
+    no_radius.radius = None
+    curves = [outline(), circle(-15, 0, 10), circle(15, 0, 10), one_node, no_radius]
+    errors, _ = validate(curves, mirror_on=False)
+    assert any("single node" in e for e in errors)
+    assert any("DRILL circle has no radius" in e for e in errors)
+
+
+def test_an_open_arc_on_a_machined_layer_is_not_closed():
+    from helpers import arc
+    curves = [outline(), circle(-15, 0, 10), circle(15, 0, 10),
+              arc(-25, 20, 3, 0, 180, layer=Layer.COMPONENT)]
+    errors, _ = validate(curves, mirror_on=False)
+    assert any("COMPONENT contour is not closed" in e for e in errors)
 
 
 def test_missing_outline_is_an_error():
@@ -113,14 +205,14 @@ def test_temple_workspace_rules():
     assert any("LENS" in e for e in errors)
 
 
-def test_hinge_workspace_rules():
-    pocket = circle(0, 0, 2, layer=Layer.HINGE)
-    errors, _ = validate([pocket], mirror_on=False, workspace_type="hinge")
+def test_component_workspace_rules():
+    pocket = circle(0, 0, 2, layer=Layer.COMPONENT)
+    errors, _ = validate([pocket], mirror_on=False, workspace_type="component")
     assert errors == []
-    errors, _ = validate([], mirror_on=False, workspace_type="hinge")
-    assert any("HINGE" in e for e in errors)
+    errors, _ = validate([], mirror_on=False, workspace_type="component")
+    assert any("COMPONENT" in e for e in errors)
     errors, _ = validate([pocket, outline()], mirror_on=False,
-                         workspace_type="hinge")
+                         workspace_type="component")
     assert any("OUTLINE" in e for e in errors)
 
 
@@ -215,9 +307,9 @@ def test_temple_past_the_blank_across_the_core_line_warns():
     assert not any("drawn off the core line" in w for w in warnings)
 
 
-def test_hinge_pocket_has_no_stock_or_origin_rule():
-    pocket = circle(30, 30, 2, layer=Layer.HINGE)
-    errors, warnings = validate([pocket], False, "hinge", stock_mm=(10.0, 20.0))
+def test_the_component_tab_has_no_stock_or_origin_rule():
+    pocket = circle(30, 30, 2, layer=Layer.COMPONENT)
+    errors, warnings = validate([pocket], False, "component", stock_mm=(10.0, 20.0))
     assert errors == [] and warnings == []
 
 
@@ -268,14 +360,13 @@ def test_an_inlay_never_crosses_a_decorative_opening():
     assert errors == []
 
 
-def test_the_ghost_lens_counts_as_cut():
-    # One lens drawn on the right with the Ghost on: the seat on the left
-    # sits in the mirrored aperture.
+def test_the_ghost_lens_is_never_cut():
+    # One lens drawn on the right with the Ghost on: GuildModel never cuts the
+    # Ghost's lens, so a seat where it would be crosses nothing.
     curves = [outline(), circle(15, 0, 10), seat(-15, 0)]
-    errors, _ = validate(curves, mirror_on=True)
-    assert any("crosses a LENS" in e for e in errors)
-    errors, _ = validate(curves, mirror_on=False)
-    assert not any("crosses a LENS" in e for e in errors)
+    for mirror_on in (True, False):
+        errors, _ = validate(curves, mirror_on=mirror_on)
+        assert not any("crosses a LENS" in e for e in errors)
 
 
 def test_nested_inlays_are_a_step_and_overlapping_ones_an_error():
@@ -285,16 +376,95 @@ def test_nested_inlays_are_a_step_and_overlapping_ones_an_error():
     assert any("INLAY 1 and INLAY 2 overlap without nesting" in e for e in errors)
 
 
-def test_an_inlay_inside_the_hinge_curve_is_a_step_and_across_it_an_error():
+def test_an_inlay_inside_a_component_curve_is_a_step_and_across_it_an_error():
     arm = closed_diamond(60, 0, 50, layer=Layer.OUTLINE)
-    hinge = closed_diamond(95, 0, 8, layer=Layer.HINGE)
+    hinge = closed_diamond(95, 0, 8, layer=Layer.COMPONENT)
     errors, _ = validate([arm, hinge, seat(95, 0, 3)], False, "temple_r")
     assert errors == []
     errors, _ = validate([arm, hinge, seat(89, 0, 4)], False, "temple_r")
-    assert any("INLAY 1 crosses a HINGE curve" in e for e in errors)
+    assert any("INLAY 1 crosses a COMPONENT curve" in e for e in errors)
 
 
 def test_an_open_inlay_is_not_closed():
     open_seat = line([(0, -34), (4, -30), (0, -26)], layer=Layer.INLAY)
     errors, _ = validate(front_with(open_seat), mirror_on=False)
     assert any("INLAY contour is not closed" in e for e in errors)
+
+
+# ── The 2.0 polish round: the Ghost rules made exact, and fast ─────────────
+
+def test_a_decorative_openings_twin_is_not_stood_for_by_the_profile():
+    # The canvas ghosts an opening beside the axis, and the fill punches both;
+    # GuildModel cuts the one drawn. The profile around the twin covered it,
+    # and passed it (the 2.0 polish round).
+    opening = closed_diamond(10, -25, 4, layer=Layer.OUTLINE)
+    curves = [outline(), opening, circle(-15, 0, 10), circle(15, 0, 10)]
+    assert validate(curves, mirror_on=False)[0] == []
+    errors, _ = validate(curves, mirror_on=True)
+    assert errors == ["1 decorative opening has a twin that is the Ghost's only, "
+                      "and GuildModel reads only the curves drawn: Mirror (bake) "
+                      "it, or turn the Ghost off."]
+    twin = closed_diamond(-10, -25, 4, layer=Layer.OUTLINE)
+    assert validate(curves + [twin], mirror_on=True)[0] == []
+    # A small pocket's twin is not stood for by a big pocket around it.
+    pocket = closed_diamond(25, -20, 2, layer=Layer.COMPONENT)
+    big = closed_diamond(-25, -20, 9, layer=Layer.COMPONENT)
+    errors, _ = validate([outline(), circle(-15, 0, 10), circle(15, 0, 10),
+                          pocket, big], mirror_on=True)
+    assert any("COMPONENT curve" in e for e in errors)
+
+
+def test_a_curve_reaching_the_axis_is_not_its_own_twin():
+    line_to_axis = line([(-20, -30), (0, -30)], layer=Layer.SCULPT)
+    curves = [outline(), circle(-15, 0, 10), circle(15, 0, 10), line_to_axis]
+    errors, _ = validate(curves, mirror_on=True)
+    assert any("SCULPT curve has a twin" in e for e in errors)
+    symmetric = line([(-20, -30), (20, -30)], layer=Layer.SCULPT)
+    curves[-1] = symmetric
+    assert validate(curves, mirror_on=True)[0] == []
+
+
+def test_a_lens_overlapping_a_decorative_opening_is_not_held():
+    slip = circle(15, 0, 10, layer=Layer.OUTLINE)       # an OUTLINE copy of a lens
+    curves = [outline(), circle(-15, 0, 10), circle(15, 0, 10), slip]
+    errors, _ = validate(curves, mirror_on=False)
+    assert any("LENS 2 overlaps a decorative opening" in e for e in errors)
+
+
+def test_a_contour_inside_a_stray_is_a_stray():
+    stray = closed_diamond(120, 0, 10, layer=Layer.OUTLINE)
+    inner = closed_diamond(120, 0, 3, layer=Layer.OUTLINE)
+    curves = [outline(), stray, inner, circle(-15, 0, 10), circle(15, 0, 10)]
+    _errors, warnings = validate(curves, mirror_on=False)
+    assert any("2 OUTLINE curve(s) fall outside" in w for w in warnings)
+    assert not any("opening" in w for w in warnings)
+
+
+def test_a_tiny_seat_is_too_small_for_guildmodel():
+    tiny = closed_diamond(0, -25, 0.4, layer=Layer.INLAY)   # 0.32 mm²
+    errors, _ = validate([outline(), circle(-15, 0, 10), circle(15, 0, 10), tiny],
+                         mirror_on=False)
+    assert any("INLAY curve encloses no area" in e for e in errors)
+
+
+def test_temple_sculpt_lines_and_the_component_tab():
+    arm = closed_diamond(60, 0, 50, layer=Layer.OUTLINE)
+    sculpt = line([(40, 5), (60, 8)], layer=Layer.SCULPT)   # GuildModel ignores it
+    assert validate([arm, sculpt], True, "temple_r")[0] == []
+    half = line([(0, -3), (5, -3), (5, 3), (0, 3)], layer=Layer.COMPONENT)
+    half.closed = True
+    errors, _ = validate([half], True, "component")
+    assert any("COMPONENT curve has a twin" in e for e in errors)
+    assert validate([half], False, "component")[0] == []
+
+
+def test_the_ghost_checks_stay_fast_on_a_dense_drawing():
+    import time
+    curves = [outline(), circle(-15, 0, 10), circle(15, 0, 10)]
+    for i in range(150):
+        y = -38 + 0.5 * i
+        curves.append(line([(-30, y), (-10, y + 1)], layer=Layer.SCULPT))
+        curves.append(line([(10, y + 1), (30, y)], layer=Layer.SCULPT))
+    start = time.perf_counter()
+    validate(curves, mirror_on=True)
+    assert time.perf_counter() - start < 2.0      # 160 s before the rework

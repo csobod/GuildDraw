@@ -275,14 +275,24 @@ def paint_template_page(painter: QPainter, px_per_mm: float,
                              int(Qt.AlignmentFlag.AlignLeft
                                  | Qt.AlignmentFlag.AlignBottom), name)
 
-    # ── ruler strip along the bottom: note + footer on the first line, the
-    # ruler with its numerals beneath (so the footer never lands on "100 mm")
-    strip_top = page_h_mm - MARGIN_MM - RULER_STRIP_MM
+    paint_ruler_strip(painter, px_per_mm, page_h_mm, avail_w, footer)
+
+
+def paint_ruler_strip(painter: QPainter, px_per_mm: float, page_h_mm: float,
+                      avail_w: float, footer: str = "",
+                      origin_mm: float = MARGIN_MM) -> None:
+    """The scale check along a page's bottom: the note, and the footer, on
+    the first line; the ruler with its numerals beneath, so the footer never
+    lands on "100 mm". Shared by the templates and the 1:1 print, whose own
+    50 mm ruler and caption said it differently. *origin_mm* is where the
+    printable area starts on the page the painter draws in."""
+    ink = QColor(_INK)
+    strip_top = page_h_mm - origin_mm - RULER_STRIP_MM
     length = 100.0 if avail_w >= 110.0 else 50.0
     font = _small_font(px_per_mm, 2.8)
     painter.setPen(QPen(ink))
     painter.setFont(font)
-    line = QRectF(MARGIN_MM * px_per_mm, strip_top * px_per_mm,
+    line = QRectF(origin_mm * px_per_mm, strip_top * px_per_mm,
                   avail_w * px_per_mm, 4.0 * px_per_mm)
     note_w = line.width()
     if footer:
@@ -298,7 +308,7 @@ def paint_template_page(painter: QPainter, px_per_mm: float,
     painter.drawText(QRectF(line.left(), line.top(), note_w, line.height()),
                      int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
                      note)
-    _draw_ruler(painter, px_per_mm, MARGIN_MM, strip_top + 8.5, length)
+    _draw_ruler(painter, px_per_mm, origin_mm, strip_top + 8.5, length)
 
 
 # ---------------------------------------------------------------------------

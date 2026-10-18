@@ -1,7 +1,7 @@
 # GuildDraw
 
 A focused, open-source 2D drafting application for acetate / horn eyewear
-design. Draw a frame front, temples, and hinge pockets; verify them against a
+design. Draw a frame front, temples, and component pockets; verify them against a
 calibrated face photo; export clean DXF for CNC machining (GuildModel) — and
 nothing else.
 
@@ -33,13 +33,13 @@ files (see *New in 1.0*).
 
 ## Highlights
 
-- **Four workspaces** — Frame Front, Temple R, Temple L, Hinge Pocket — in one
+- **Four workspaces** — Frame Front, Temple R, Temple L, Component — in one
   `.gdraw` project file, each with its own layers, guides, and undo history.
 - **Drawing tools**: line, spline (centripetal Catmull-Rom), circle, arc, with
   node/handle editing, trim, split, offset, join/explode, and a Transform
   dialog (scale/rotate about selection center or origin).
-- **Mirror system**: live ghost preview across the bridge axis, one-click bake,
-  mirror-close, and Mirror Copy between temple workspaces.
+- **Mirror system**: live Ghost preview across the bridge axis, one-click bake
+  (Mirror), Mirror Close, and Temple Copy between temple workspaces.
 - **Snapping**: nodes, handles, midpoints, quadrants, on-curve nearest point,
   mirror axis, and origin.
 - **Face-photo calibration**: load a reference photo, calibrate px-per-mm with
@@ -51,8 +51,8 @@ files (see *New in 1.0*).
   outline splines only at DXF export time.
 - **Visualization**: frame fill overlay (outline minus lenses, over the photo),
   lens tint overlay with a two-color vertical gradient and a BPI tint color
-  reference, print/PDF at exact 1:1 scale with a 50 mm verification ruler for
-  paper test-fits.
+  reference, print/PDF at exact 1:1 scale with a 100 mm verification ruler
+  for paper test-fits.
 - **Cutting templates**: *Print Front + Temples* lays the frame front and both
   temples out at true size on US Letter, Legal, Tabloid, A3, A4, A5 or Half
   Letter, as vectors with a tick-marked ruler on every page — print, glue to
@@ -582,11 +582,14 @@ against the host's system libraries.
 - Strict layers: `OUTLINE` ≥1 (the largest contour is the profile; closed
   contours inside it are decorative openings, and one beside it holding a
   lens is a combination frame's separated rim), `LENS` ≥1 (at least one lens
-  is required; a classic pair is two, but aviators and other shapes may carry
-  more), `BRIDGE`/`HINGE` optional, `DRILL` (mirrors with the lens), `REF`
-  ignored, `SCULPT` (back-surface), `ENGRAVING` (temples), `INLAY` (2.0: a
-  closed seat on the part, nested for steps, open where it runs off an
-  edge; never mirrored).
+  is required: two for a pair, one for a monocle; GuildModel refuses a
+  third), `COMPONENT` optional (`HINGE` before 2.0, still read), `DRILL`
+  (drill-mount holes), `REF` ignored, `SCULPT` (back-surface), `ENGRAVING`
+  (temples), `INLAY` (2.0: a closed seat on the part, nested for steps, open
+  where it runs off an edge).
+- The DXF carries the curves drawn, and only those: the Ghost is a drawing
+  aid, and since 2.0 nothing exports it. Bake a twin with Mirror to make it
+  real.
 - Scene is Y-down; DXF is Y-up — Y is negated on export.
 
 ## License

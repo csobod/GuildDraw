@@ -16,7 +16,7 @@ _SECTIONS = {
     "Drawing", "Layers", "Measurements · front", "Measurements · temple",
     "Construction (Forming)", "Boxing System", "Stock Blank", "Pad Block",
     "Frame Fill", "Inlay Fill", "Lens Fill", "Reference Images", "Calibration",
-    "Place hole",
+    "Place Hole",
 }
 
 

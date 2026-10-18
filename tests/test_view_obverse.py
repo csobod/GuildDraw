@@ -7,7 +7,7 @@ import zipfile
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import QMouseEvent, QWheelEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 import framedraft.prefs as prefs_mod
 from framedraft.document import Layer, TextObject
@@ -96,8 +96,10 @@ def test_zoom_and_fit_keep_the_turn_and_read_a_positive_zoom(win):
     view.fit_view(QRectF(-50, -50, 100, 100))
     assert view.is_obverse() and view.zoom() > 0
     win._update_info_label()
-    pct = int(win._info_label.text().split("|")[1].strip().rstrip("%"))
-    assert pct == round(view.zoom() * 100) > 0
+    shown = win._info_label.text().split("Zoom:")[1].strip()
+    assert shown.endswith(" px/mm")
+    assert float(shown.split()[0]) == pytest.approx(view.zoom(), abs=0.05)
+    assert float(shown.split()[0]) > 0
 
 
 def test_the_wheel_zooms_about_the_cursor_in_the_turned_view(win):
@@ -168,7 +170,7 @@ def test_a_line_drawn_in_the_turned_view_lands_under_the_clicks(win):
     assert xs == [-30, 30]                         # the document is not mirrored
 
 
-# ── Per tab, the badge, the hinge ──────────────────────────────────────────
+# ── Per tab, the badge, the component tab ──────────────────────────────────
 
 def test_each_tab_keeps_its_own_turn_and_badge(win):
     _front(win)
@@ -199,14 +201,48 @@ def test_the_badge_never_turns_and_never_takes_a_click(win):
     assert badge.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
     win._act_obverse.trigger()
     vp = win.view.viewport().geometry()
-    assert (badge.x(), badge.y()) == (vp.left() + 8, vp.top() + 8)
+    assert vp.left() < badge.x() < vp.left() + 12   # in the top-left corner
+    assert vp.top() < badge.y() < vp.top() + 12
 
 
-def test_the_hinge_pocket_has_no_obverse(win):
+def test_the_badge_is_one_word_with_no_title_and_no_glyph(win):
+    # The maker, 2026-10-17: the glyph and "Obverse" were a bit distracting.
+    _front(win)
+    win._act_obverse.trigger()
+    badge = win.view.obverse_badge
+    labels = badge.findChildren(QLabel)
+    assert [lb.text() for lb in labels] == ["posterior"]
+    assert not any(lb.pixmap() is not None and not lb.pixmap().isNull()
+                   for lb in labels)
+    assert "Obverse" not in " ".join(lb.text() for lb in labels)
+
+
+def test_the_word_changes_in_place(win):
+    # The quiet label's word and the chip's start within a pixel of each
+    # other and are the same size, so the toggle swaps the word and adds the
+    # box, and nothing jumps.
+    _front(win)
+    view = win.view
+    quiet = view.face_label
+    quiet_at = quiet.mapTo(view, QPoint(0, 0))
+    quiet_size = (quiet.font().pixelSize(), quiet.sizeHint().height())
+    win._act_obverse.trigger()
+    QApplication.processEvents()
+    word = view.obverse_badge.face_label()
+    word_at = word.mapTo(view, QPoint(0, 0))
+    assert abs(word_at.x() - quiet_at.x()) <= 1
+    assert abs(word_at.y() - quiet_at.y()) <= 1
+    assert (word.font().pixelSize(), word.sizeHint().height()) == quiet_size
+    win._act_obverse.trigger()
+    QApplication.processEvents()
+    assert quiet.mapTo(view, QPoint(0, 0)) == quiet_at
+
+
+def test_the_component_tab_has_no_obverse(win):
     assert win._act_obverse.isVisible()
     hinge = _tab(win, 3)
     assert not win._act_obverse.isVisible()
-    win._hotkey_targets["obverse"]()                # V on the hinge tab
+    win._hotkey_targets["obverse"]()                # V on the component tab
     assert not hinge.view.is_obverse() and not hinge.obverse
     assert not win._act_obverse.isChecked()
     _tab(win, 2)

@@ -2,7 +2,7 @@
 Batch DXF export (M9) — write every populated workspace's DXF in one go.
 
 One frame = four files (`<name>_front.dxf`, `<name>_temple_r.dxf`,
-`<name>_temple_l.dxf`, `<name>_hinge.dxf`); exporting them one tab at a
+`<name>_temple_l.dxf`, `<name>_component.dxf`); exporting them one tab at a
 time invites mistakes. `check_batch` validates every populated workspace and
 returns the findings; `write_batch` writes every populated workspace. The
 caller decides what to do with the findings — since 1.0 the validator
@@ -23,7 +23,7 @@ WORKSPACE_SUFFIXES = {
     "front":    "front",
     "temple_r": "temple_r",
     "temple_l": "temple_l",
-    "hinge":    "hinge",
+    "component": "component",
 }
 
 
@@ -31,8 +31,7 @@ WORKSPACE_SUFFIXES = {
 class BatchWorkspace:
     workspace_type: str          # key of WORKSPACE_SUFFIXES
     curves:         list         # Curve objects in mm (text already converted)
-    mirror_on:      bool = False
-    axis_x:         float = 0.0  # mirror axis x in mm
+    mirror_on:      bool = False # the Ghost, for the validator's twin check
     stock_mm:       tuple | None = None   # stock guide (width, height) in mm,
                                           # for the validator's fit warning
 
@@ -67,7 +66,7 @@ def batch_paths(base: str, items: list) -> dict:
 
 def check_batch(items: list) -> BatchReport:
     """Run each populated workspace's validator; empty workspaces are skipped
-    (an empty hinge tab is normal, not an export error)."""
+    (an empty component tab is normal, not an export error)."""
     report = BatchReport()
     for item in items:
         if not item.curves:
@@ -92,12 +91,6 @@ def write_batch(items: list, base: str) -> list:
         path = paths.get(item.workspace_type)
         if path is None:
             continue
-        export_dxf(
-            curves     = item.curves,
-            path       = path,
-            mirror_on  = item.mirror_on,
-            axis_x     = item.axis_x,
-            horizontal = item.workspace_type in ("temple_r", "temple_l"),
-        )
+        export_dxf(curves=item.curves, path=path)
         written.append(path)
     return written

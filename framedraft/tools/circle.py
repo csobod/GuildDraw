@@ -9,7 +9,9 @@ Circle interaction:
 Arc interaction:
   click 1 = place center
   click 2 = set start point (also sets radius)
-  click 3 = set end point (sweep from start to end, CW on screen)
+  click 3 = set end point (sweep from start to end, CW on screen, in View
+            Obverse too: the same three clicks made a 270° arc there and a
+            90° one in the default view)
   → curve_added emitted; tool returns to idle
 
 Angle convention (stored in Curve.start_angle / end_angle):
@@ -26,6 +28,7 @@ from PySide6.QtWidgets import QLabel
 
 from ..document import Curve, Layer, SplineNode
 from ..geometry import arc_start_end_center
+from ..typed import typed_char
 
 
 class _RadiusHud(QLabel):
@@ -122,8 +125,10 @@ class CircleTool(QObject):
         self._scene = scene
         self._view  = view
         self._snap  = snap
-        if snap is not None:
-            snap.set_doc_curves(all_curves or [])
+        # `is not None`: `all_curves or []` swapped an empty live list for a
+        # new one, and the snap engine lost every curve drawn after.
+        if snap is not None and all_curves is not None:
+            snap.set_doc_curves(all_curves)
         if view is not None:
             self._hud = _RadiusHud(view)
         if kind == "circle":
@@ -222,11 +227,12 @@ class CircleTool(QObject):
         if self._state == 2:
             cx, cy    = self._center
             end_angle = math.degrees(math.atan2(pos.y() - cy, pos.x() - cx))
-            sweep     = (end_angle - self._start_angle) % 360
+            sa, ea    = self._arc_angles(end_angle)
+            sweep     = (ea - sa) % 360
             if sweep < 1.0:
                 self.status_message.emit("Arc too small — try clicking further away")
                 return True
-            self._emit_arc(self._radius, self._start_angle, end_angle)
+            self._emit_arc(self._radius, sa, ea)
             return True
 
         return False
@@ -260,10 +266,11 @@ class CircleTool(QObject):
         # its state 1 is "start picked" and the radius branch would wipe
         # the chord preview and swallow Enter.
         if self._state == 1 and self._kind != "arc_sec":
-            if text and (text.isdigit() or text == '.'):
-                if text == '.' and '.' in self._radius_input:
+            ch = typed_char(text)
+            if ch and (ch.isdigit() or ch == '.'):
+                if ch == '.' and '.' in self._radius_input:
                     return True
-                self._radius_input += text
+                self._radius_input += ch
                 self._update_locked_radius()
                 self._repaint(self._last_cursor)
                 return True
@@ -329,6 +336,16 @@ class CircleTool(QObject):
             self.canceled.emit()
             return True
         return False
+
+    def _arc_angles(self, end_angle: float) -> tuple:
+        """(start, end) scene angles of the arc from the start click to an end
+        at *end_angle*, running clockwise on screen. View Obverse mirrors the
+        screen, so there the scene's positive sweep runs the other way round:
+        the arc is stored from the end back to the start."""
+        view = self._view
+        if view is not None and getattr(view, "is_obverse", lambda: False)():
+            return end_angle, self._start_angle
+        return self._start_angle, end_angle
 
     # ------------------------------------------------------------------
     # Radius numeric input
@@ -527,10 +544,17 @@ class CircleTool(QObject):
                 self._measure_bar.update_radius(r if r >= self._MIN_RADIUS else live_r)
             if self._hud and self._view:
                 locked = self._radius_input != ""
-                hud_text = (self._radius_input + "_") if locked else f"{live_r:.2f}"
-                hud_text += " mm"
-                vp = self._view.mapFromScene(cursor)
-                self._hud.update_at(hud_text, locked=locked, vp_x=vp.x(), vp_y=vp.y())
+                if locked or not (self._measure_bar
+                                  and self._measure_bar.isVisible()):
+                    hud_text = (self._radius_input + "_") if locked else f"{live_r:.2f}"
+                    hud_text += " mm"
+                    vp = self._view.mapFromScene(cursor)
+                    self._hud.update_at(hud_text, locked=locked,
+                                        vp_x=vp.x(), vp_y=vp.y())
+                else:
+                    # The radius chip by the center reads it already: the two
+                    # readouts said the same number, one over the other.
+                    self._hud.hide()
             if r < self._MIN_RADIUS:
                 return
             path = QPainterPath()
@@ -543,7 +567,8 @@ class CircleTool(QObject):
             # Fixed radius; preview the arc to the current mouse position
             r         = self._radius
             end_angle = math.degrees(math.atan2(cursor.y() - cy, cursor.x() - cx))
-            sweep     = (end_angle - self._start_angle) % 360
+            arc_sa, arc_ea = self._arc_angles(end_angle)
+            sweep     = (arc_ea - arc_sa) % 360
             if sweep < 0.001:
                 sweep = 360
 
@@ -557,15 +582,16 @@ class CircleTool(QObject):
             self._preview.append(full_item)
 
             # Arc preview
-            sa_rad = math.radians(self._start_angle)
+            arc_rad = math.radians(arc_sa)
             arc_path = QPainterPath()
-            arc_path.moveTo(cx + r * math.cos(sa_rad), cy + r * math.sin(sa_rad))
-            arc_path.arcTo(cx - r, cy - r, 2 * r, 2 * r, -self._start_angle, -sweep)
+            arc_path.moveTo(cx + r * math.cos(arc_rad), cy + r * math.sin(arc_rad))
+            arc_path.arcTo(cx - r, cy - r, 2 * r, 2 * r, -arc_sa, -sweep)
             arc_item = self._scene.addPath(arc_path, ghost_pen)
             arc_item.setZValue(100)
             self._preview.append(arc_item)
 
             # Start-point dot
+            sa_rad  = math.radians(self._start_angle)
             sx, sy  = cx + r * math.cos(sa_rad), cy + r * math.sin(sa_rad)
             sp_dot  = self._scene.addEllipse(-R, -R, 2 * R, 2 * R, dot_pen, dot_brush)
             sp_dot.setPos(sx, sy)

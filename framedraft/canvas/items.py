@@ -205,6 +205,18 @@ class CurveItem(QGraphicsPathItem):
 
 # ---------- NodeDot ----------
 
+# Screen pixels a press must travel before a node or handle starts to drag,
+# as curves, the gizmo and dimensions wait: a click to pick a node (for
+# Delete, Split or E) with a pixel of jitter moved it, pushed an undo step
+# and starred the design.
+_DRAG_START_PX = 4
+
+
+def _past_drag_start(event, press) -> bool:
+    return (press is None
+            or (event.screenPos() - press).manhattanLength() > _DRAG_START_PX)
+
+
 def _node_selected() -> QColor:
     return QColor(theme.color("geometry.node_selected"))
 
@@ -298,6 +310,7 @@ class NodeDot(QGraphicsEllipseItem):
         gp = event.scenePos()
         self._grab_dx = self.pos().x() - gp.x()
         self._grab_dy = self.pos().y() - gp.y()
+        self._press_screen = event.screenPos()
         self._drag_active = True
         self._drag_started = False
         event.accept()   # become the mouse grabber (no ItemIsMovable to do it)
@@ -305,6 +318,10 @@ class NodeDot(QGraphicsEllipseItem):
     def mouseMoveEvent(self, event):
         if not self._drag_active:
             event.ignore()
+            return
+        if not self._drag_started and not _past_drag_start(
+                event, getattr(self, "_press_screen", None)):
+            event.accept()                  # still a click (_DRAG_START_PX)
             return
         gp = event.scenePos()
         tx, ty = gp.x() + self._grab_dx, gp.y() + self._grab_dy
@@ -348,10 +365,9 @@ class NodeDot(QGraphicsEllipseItem):
             self._on_moved(self._curve)
         return super().itemChange(change, value)
 
-    def paint(self, painter, option, widget=None):
-        plain = QStyleOptionGraphicsItem(option)
-        plain.state &= ~plain.state.State_Selected
-        super().paint(painter, plain, widget)
+    # No paint override: a dot is never selectable, so there is no selection
+    # state to strip, and a Python paint call per dot per frame cost about
+    # 16 ms a tick on a 1500-node curve (the 2.0 bug hunt).
 
 
 # ---------- HandleDot ----------
@@ -360,8 +376,11 @@ class NodeDot(QGraphicsEllipseItem):
 class HandleDot(QGraphicsEllipseItem):
     """Movable Bézier control-point handle shown when a spline is selected.
 
-    smooth=True (default): moving this handle also moves the sibling handle
-    symmetrically through the node — Fusion 360 "tangent lock" behavior.
+    smooth=True (default): moving this handle turns the sibling handle to
+    stay opposite it through the node, keeping its own length, so the curve
+    stays tangent there and changes only on this side. With Shift held the
+    sibling takes this handle's length too (symmetric). It took the length
+    always, and nudging a short handle's long sibling reshaped the far side.
     Uses ItemIgnoresTransformations so it stays a constant screen size;
     drawn one px smaller than node dots so the two read differently.
     """
@@ -377,7 +396,8 @@ class HandleDot(QGraphicsEllipseItem):
         self._on_drag_start = on_drag_start
         self._updating      = False        # re-entrant guard for set_pos_silent
         self._sibling: "HandleDot | None" = None
-        self._smooth        = True         # symmetric mode by default
+        self._smooth        = True         # tangent lock by default
+        self._symmetric     = False        # Shift during the drag: equal lengths
         # Explicit scene-coordinate drag state (mirrors NodeDot — no
         # ItemIsMovable, so a mid-drag zoom/pan can't send the handle flying).
         self._drag_active = False
@@ -429,6 +449,7 @@ class HandleDot(QGraphicsEllipseItem):
         gp = event.scenePos()
         self._grab_dx = self.pos().x() - gp.x()
         self._grab_dy = self.pos().y() - gp.y()
+        self._press_screen = event.screenPos()
         self._drag_active = True
         self._drag_started = False
         event.accept()
@@ -437,6 +458,11 @@ class HandleDot(QGraphicsEllipseItem):
         if not self._drag_active:
             event.ignore()
             return
+        if not self._drag_started and not _past_drag_start(
+                event, getattr(self, "_press_screen", None)):
+            event.accept()                  # still a click (_DRAG_START_PX)
+            return
+        self._symmetric = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
         gp = event.scenePos()
         tx, ty = gp.x() + self._grab_dx, gp.y() + self._grab_dy
         if not self._drag_started:
@@ -461,11 +487,18 @@ class HandleDot(QGraphicsEllipseItem):
             setattr(node, self._which, ControlPoint(pos.x(), pos.y()))
 
             if self._smooth and self._sibling is not None:
-                opp_x     = 2.0 * node.x - pos.x()
-                opp_y     = 2.0 * node.y - pos.y()
                 opp_which = "cp_in" if self._which == "cp_out" else "cp_out"
-                setattr(node, opp_which, ControlPoint(opp_x, opp_y))
-                self._sibling.set_pos_silent(opp_x, opp_y)
+                vx, vy = pos.x() - node.x, pos.y() - node.y
+                length = math.hypot(vx, vy)
+                opp = getattr(node, opp_which)
+                if length > 1e-9:
+                    # The sibling keeps its own length (see the class note).
+                    opp_len = (length if self._symmetric or opp is None
+                               else math.hypot(opp.x - node.x, opp.y - node.y))
+                    opp_x = node.x - vx / length * opp_len
+                    opp_y = node.y - vy / length * opp_len
+                    setattr(node, opp_which, ControlPoint(opp_x, opp_y))
+                    self._sibling.set_pos_silent(opp_x, opp_y)
 
             self._on_moved(self._curve)
         return super().itemChange(change, value)

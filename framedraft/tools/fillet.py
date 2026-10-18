@@ -24,6 +24,7 @@ from ..document import Curve, SplineNode
 from ..geometry import fillet_lines
 from .circle import _RadiusHud
 from .trim import curve_item_at
+from ..typed import typed_char
 
 
 _HOVER_COLOR = "#ffd580"
@@ -161,10 +162,11 @@ class FilletTool(QObject):
             return True
 
         if self._line1 is not None and self._line2 is not None:
-            if text and (text.isdigit() or text == '.'):
-                if text == '.' and '.' in self._radius_input:
+            ch = typed_char(text)
+            if ch and (ch.isdigit() or ch == '.'):
+                if ch == '.' and '.' in self._radius_input:
                     return True
-                self._radius_input += text
+                self._radius_input += ch
                 self._repaint_preview()
                 return True
             if key == Qt.Key.Key_Backspace:

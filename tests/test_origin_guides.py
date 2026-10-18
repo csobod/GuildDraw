@@ -49,9 +49,9 @@ def win(tmp_path, monkeypatch):
 
 
 def test_temples_carry_the_core_line_and_the_front_does_not(win):
-    front, temple_r, temple_l, hinge = win._workspaces
+    front, temple_r, temple_l, component = win._workspaces
     assert front.stock_guide.core_line is False
-    assert hinge.stock_guide.core_line is False
+    assert component.stock_guide.core_line is False
     for t in (temple_r, temple_l):
         assert t.stock_guide.core_line is True
         # GuildModel's default temple blank (TempleParams: 170 × 30 mm)

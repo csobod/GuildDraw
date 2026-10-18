@@ -5,9 +5,10 @@ from PySide6.QtWidgets import QLabel
 
 from ..document import Curve, Layer, MIRRORED_LAYERS, SplineNode
 from ..canvas.items import build_path
-from ..geometry import mirror_curve, compute_catmull_handles
+from ..geometry import mirror_curve, compute_catmull_handles, drop_end_handles
+from ..typed import typed_char
 
-# Layers that show a live mirror ghost while drawing — the exported set plus
+# Layers that show a live mirror ghost while drawing — the scene's set plus
 # OUTLINE (an open half being drawn against the axis ghosts its other half).
 _MIRROR_GHOST_LAYERS = MIRRORED_LAYERS | {Layer.OUTLINE}
 
@@ -96,8 +97,10 @@ class DrawTool(QObject):
         self._locked_angle = None
         self._angle_input  = ""
         self._active_field = "length"
-        if snap is not None:
-            snap.set_doc_curves(all_curves or [])
+        # `is not None`: `all_curves or []` swapped an empty live list for a
+        # new one, and the snap engine lost every curve drawn after.
+        if snap is not None and all_curves is not None:
+            snap.set_doc_curves(all_curves)
         if view is not None:
             self._hud = _LengthHud(view)
         self.status_message.emit(
@@ -137,8 +140,12 @@ class DrawTool(QObject):
             pos = self._constrain_cardinal(pos, self._nodes[-1])
         if self._nodes and (self._locked_len is not None or self._locked_angle is not None):
             pos = self._apply_polar_constraints(pos, self._nodes[-1])
-        if len(self._nodes) >= 2 and self._near_first(pos):
+        if len(self._nodes) >= 3 and self._near_first(pos):
             self._finish(closed=True)
+        elif len(self._nodes) == 2 and self._near_first(pos):
+            # Two nodes enclose nothing: the closed result had no area.
+            self.status_message.emit(
+                "A closed curve needs three nodes or more: place another first")
         else:
             self._nodes.append(SplineNode(x=pos.x(), y=pos.y()))
             self._clear_constraints()
@@ -190,17 +197,23 @@ class DrawTool(QObject):
             self._repaint(self._last_cursor)
             return True
 
-        # Digit / decimal → active input field
-        if self._nodes and text and (text.isdigit() or text == '.'):
+        # Digit / decimal → active input field. A comma is the decimal point
+        # too, and an angle may start with a minus: "-30" was taken as 30
+        # and the line went the mirrored way.
+        ch = typed_char(text)
+        if self._nodes and ch and (
+                ch.isdigit() or ch == '.'
+                or (ch == '-' and self._active_field == "angle"
+                    and not self._angle_input)):
             if self._active_field == "length":
-                if text == '.' and '.' in self._len_input:
+                if ch == '.' and '.' in self._len_input:
                     return True
-                self._len_input += text
+                self._len_input += ch
                 self._update_locked_len()
             else:
-                if text == '.' and '.' in self._angle_input:
+                if ch == '.' and '.' in self._angle_input:
                     return True
-                self._angle_input += text
+                self._angle_input += ch
                 self._update_locked_angle()
             self._repaint(self._last_cursor)
             return True
@@ -294,25 +307,38 @@ class DrawTool(QObject):
         except ValueError:
             self._locked_angle = None
 
+    def _screen_x(self) -> float:
+        """−1 in View Obverse, whose screen is the scene mirrored left to
+        right, else 1: the angle shown and typed is the one on screen."""
+        view = self._view
+        return -1.0 if view is not None and getattr(
+            view, "is_obverse", lambda: False)() else 1.0
+
+    def _screen_angle(self, dx: float, dy: float) -> float:
+        """The direction (dx, dy) in scene mm as the HUD shows it: degrees
+        counter-clockwise from screen right, as Transform and Text take
+        theirs. It read clockwise from the y-down scene: up-right was −32°."""
+        return math.degrees(math.atan2(-dy, self._screen_x() * dx))
+
     def _apply_polar_constraints(self, pos: QPointF, from_node: SplineNode) -> QPointF:
         """Constrain pos to the active length and/or angle locks relative to from_node."""
         dx = pos.x() - from_node.x
         dy = pos.y() - from_node.y
         dist  = math.hypot(dx, dy)
-        angle = math.atan2(dy, dx)
+        ux, uy = (dx / dist, dy / dist) if dist > 1e-9 else (1.0, 0.0)
 
         if self._locked_angle is not None:
-            angle = math.radians(self._locked_angle)
-            ray_dx, ray_dy = math.cos(angle), math.sin(angle)
+            # The typed angle is on screen (see _screen_angle) → scene ray.
+            a = math.radians(self._locked_angle)
+            ux, uy = self._screen_x() * math.cos(a), -math.sin(a)
             # Project cursor onto the angle ray; clamp to prevent negative distances
-            dist = max(0.001, dx * ray_dx + dy * ray_dy)
+            dist = max(0.001, dx * ux + dy * uy)
 
         if self._locked_len is not None:
             dist = self._locked_len
 
         dist = max(0.001, dist)
-        return QPointF(from_node.x + dist * math.cos(angle),
-                       from_node.y + dist * math.sin(angle))
+        return QPointF(from_node.x + dist * ux, from_node.y + dist * uy)
 
     def _constrain_cardinal(self, pos: QPointF, from_node: SplineNode) -> QPointF:
         """Snap pos to the nearest 45° increment from from_node."""
@@ -350,6 +376,7 @@ class DrawTool(QObject):
         )
         if self._kind == "spline":
             compute_catmull_handles(curve.nodes, closed=closed)
+            drop_end_handles(curve)    # an open spline's ends point nowhere
         self._clear_preview()
         self._nodes.clear()
         self._scene = None
@@ -414,7 +441,7 @@ class DrawTool(QObject):
         item.setZValue(100)
         self._preview.append(item)
 
-        # Mirror ghost (LENS / HINGE / OUTLINE layers, open curves only)
+        # Mirror ghost (LENS / COMPONENT / OUTLINE layers, open curves only)
         mirror = getattr(self._scene, "mirror", None)
         if mirror and mirror.enabled and self._layer in _MIRROR_GHOST_LAYERS:
             tmp_src = Curve(kind=self._kind, layer=self._layer,
@@ -439,7 +466,7 @@ class DrawTool(QObject):
         dx = cursor.x() - last.x
         dy = cursor.y() - last.y
         dist      = math.hypot(dx, dy)
-        angle_deg = math.degrees(math.atan2(dy, dx))
+        angle_deg = self._screen_angle(dx, dy)
         any_locked = self._locked_len is not None or self._locked_angle is not None
 
         # Length field: input buffer with cursor when active; brackets when locked from other field

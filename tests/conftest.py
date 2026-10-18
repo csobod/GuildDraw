@@ -81,6 +81,39 @@ def scratch_prefs(tmp_path_factory):
     mp.undo()
 
 
+@pytest.fixture(autouse=True, scope="session")
+def scratch_image_links(tmp_path_factory):
+    """Every test reads and writes a scratch table of where unstored
+    reference images are (image_links), never the developer's own: adding an
+    image writes it. Tests that want a table of their own patch _FILE on
+    top."""
+    import framedraft.image_links as links
+    d = tmp_path_factory.mktemp("image_links")
+    mp = pytest.MonkeyPatch()
+    mp.setattr(links, "_DIR", d)
+    mp.setattr(links, "_FILE", d / "image_links.json")
+    yield d
+    mp.undo()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def scratch_library(tmp_path_factory):
+    """Every test reads and writes a scratch library, never the developer's
+    ~/.guilddraw/library: each window builds the component library as it
+    starts, and since 2.0 that migrates a library of hinges in place. Tests
+    that want a library of their own still monkeypatch the paths on top."""
+    import framedraft.library as lib
+    d = tmp_path_factory.mktemp("library")
+    mp = pytest.MonkeyPatch()
+    mp.setattr(lib, "_LIBRARY_DIR", d)
+    mp.setattr(lib, "_COMPONENTS_DIR", d / "components")
+    mp.setattr(lib, "_HINGES_DIR", d / "hinges")
+    mp.setattr(lib, "_DRILLS_DIR", d / "drills")
+    mp.setattr(lib, "_SEED_MANIFEST", d / "seeded.json")
+    yield d
+    mp.undo()
+
+
 @pytest.fixture(autouse=True)
 def no_unanswered_modals(monkeypatch):
     """Turn an unstubbed modal into a named failure instead of a hang.

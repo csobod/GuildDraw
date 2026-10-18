@@ -32,7 +32,9 @@ _ARROW_W_PX   = 3.5   # screen-pixel arrowhead half-width
 _LABEL_PX     = 11    # label font size (screen pixels)
 _LABEL_GAP_PX = 3     # screen pixels between the dim line and the label
 _ANCHOR_R_PX  = 2.5   # screen-pixel radius of anchor dots
-_HIT_TOL_MM   = 3.0   # mm: click-tolerance for contains()
+# Click tolerance, in screen pixels as a curve's is: a fixed 3 mm band was 40 px
+# at 13 px/mm, and a curve 2 mm from a dimension could not be clicked.
+_HIT_TOL_PX   = 6.0
 
 
 def _seg_dist(pt: QPointF, p0: QPointF, p1: QPointF) -> float:
@@ -156,21 +158,31 @@ class DimItem(QGraphicsItem):
         deco_px = max(2.0 * _ARROW_PX,
                       self._label_w_px / 2.0 + 8.0,
                       _LABEL_GAP_PX + _LABEL_PX + 8.0)
-        pad = max(6.0, _HIT_TOL_MM + 1.0,
+        pad = max(6.0, self._hit_tol_mm() + 1.0,
                   deco_px / max(self._br_scale, 1e-6))
         return QRectF(min(xs) - pad, min(ys) - pad,
                       max(xs) - min(xs) + 2 * pad,
                       max(ys) - min(ys) + 2 * pad)
 
+    def _px_per_mm(self) -> float:
+        sc = self.scene()
+        views = sc.views() if sc is not None else []
+        return abs(views[0].transform().m11()) if views else self._br_scale
+
+    def _hit_tol_mm(self) -> float:
+        return _HIT_TOL_PX / max(self._px_per_mm(), 1e-6)
+
+    def hit_distance(self, point: QPointF) -> float:
+        """Distance (mm) from *point* to the nearest stroke the dim draws."""
+        P0, P1, A, B = self._key_points()
+        d = _seg_dist(point, A, B)
+        if abs(self.dim.offset) > 0.5:
+            d = min(d, _seg_dist(point, P0, A), _seg_dist(point, P1, B))
+        return d
+
     def contains(self, point: QPointF) -> bool:
         """Distance-based hit-test — bypasses QPainterPath.contains() unreliability."""
-        P0, P1, A, B = self._key_points()
-        if _seg_dist(point, A, B) <= _HIT_TOL_MM:
-            return True
-        if abs(self.dim.offset) > 0.5:
-            return (_seg_dist(point, P0, A) <= _HIT_TOL_MM or
-                    _seg_dist(point, P1, B) <= _HIT_TOL_MM)
-        return False
+        return self.hit_distance(point) <= self._hit_tol_mm()
 
     def shape(self):
         """Stroked hit area around the dim line and extension lines.
@@ -185,7 +197,7 @@ class DimItem(QGraphicsItem):
             path.moveTo(P1)
             path.lineTo(B)
         stroker = QPainterPathStroker()
-        stroker.setWidth(_HIT_TOL_MM * 2)
+        stroker.setWidth(self._hit_tol_mm() * 2)
         stroker.setCapStyle(Qt.PenCapStyle.FlatCap)
         stroker.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         hit = stroker.createStroke(path)

@@ -19,7 +19,7 @@ from framedraft.document import Layer, TextObject
 from helpers import arc, circle, closed_diamond, line
 
 _SVG_NS = "http://www.w3.org/2000/svg"
-TABS = ("front", "temple_r", "temple_l", "hinge")
+TABS = ("front", "temple_r", "temple_l", "component")
 
 # What GuildModel's reader takes, by name. "texts" is written only when a
 # workspace has text, and read with an empty default, so it is pinned on the
@@ -139,7 +139,10 @@ def test_every_workspace_carries_its_guide_sizes(win, written):
         states = {tab: _state(zf, f"{tab}.svg") for tab in TABS}
     for tab, ws in zip(TABS, win._workspaces, strict=True):
         guides = states[tab]["guides"]
-        assert set(guides) == ({"stock", "pad"} if tab == "front" else {"stock"}), tab
+        # The front also carries the measurements it is drawn to (2.0, second
+        # round): GuildModel's reader takes stock and pad, and passes the rest.
+        assert set(guides) == ({"stock", "pad", "construction", "boxing"}
+                               if tab == "front" else {"stock"}), tab
         assert set(guides["stock"]) == GUIDE_KEYS
         assert (guides["stock"]["width_mm"], guides["stock"]["height_mm"]) == \
             (ws.stock_w, ws.stock_h)

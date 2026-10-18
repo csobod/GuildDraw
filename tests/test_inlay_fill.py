@@ -100,7 +100,7 @@ def test_hiding_the_layer_hides_the_fill_and_showing_it_brings_it_back():
     assert len(scene._inlay_fill_items) == 1
 
 
-def test_an_edit_that_leaves_nothing_closed_turns_the_fill_off():
+def test_an_edit_that_leaves_nothing_closed_pauses_the_fill():
     seat = _seat(0, -30)
     scene = _front(seat)
     seen = []
@@ -110,7 +110,10 @@ def test_an_edit_that_leaves_nothing_closed_turns_the_fill_off():
     scene.add_curve(line([(-5, -30), (0, -35), (5, -30)], layer=Layer.INLAY))
     scene._rebuild_overlays()                       # what the timer runs
     assert seen == ["leak"]
-    assert not scene._inlay_fill_visible and scene._inlay_fill_items == []
+    assert scene._inlay_fill_visible and scene._inlay_fill_items == []
+    scene.add_curve(_seat(0, -30))                  # closed again: back
+    scene._rebuild_overlays()
+    assert len(scene._inlay_fill_items) == 1
 
 
 def test_the_inlay_is_never_mirrored_into_a_ghost_body():

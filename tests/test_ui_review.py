@@ -512,9 +512,14 @@ def test_checkboxes_are_drawn_by_the_stylesheet_in_both_modes():
         finally:
             theme.set_dark(False)
         assert "QCheckBox::indicator" in qss
-        [tick] = re.findall(r'image: url\("([^"]+)"\)', qss)
+        images = re.findall(r'image: url\("([^"]+)"\)', qss)
+        [tick] = [img for img in images if "/check-" in img]
         assert Path(tick).is_file() and tick.endswith(
             "check-dark.svg" if dark else "check-light.svg")
+        # The spin and combo arrows (2.0): a file per direction and mode.
+        arrows = [img for img in images if "/chevron-" in img]
+        assert arrows and all(Path(a).is_file() for a in arrows)
+        assert all(("-dark" in a) == dark for a in arrows)
 
 
 
@@ -668,7 +673,8 @@ def test_the_layer_label_follows_new(win):
     win._active_ws.active_layer = Layer.REF
     win._update_info_label()
     win._new()
-    assert win._info_label.text().startswith(win._active_ws.active_layer.value)
+    assert win._info_label.text().startswith(
+        f"Layer: {win._active_ws.active_layer.value}")
 
 
 def test_undoing_mirror_bake_brings_the_ghost_back(win):

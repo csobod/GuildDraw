@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication
 from ..canvas.items import CurveItem, NodeDot, HandleDot, make_handle_line_pen
 from ..canvas.snapping import px_dist
 from ..document import Curve, SplineNode, ControlPoint
+from ..geometry import open_ends
 
 
 class EditTool(QObject):
@@ -255,20 +256,19 @@ class EditTool(QObject):
             best_x, best_y = None, None
             best_d = float("inf")
 
-            # Snap to open-curve endpoints (skip hidden layers)
+            # Snap to open-curve endpoints (skip hidden layers); an arc's are
+            # on its rim, not at its center node (geometry.open_ends).
             is_visible = getattr(self._scene, "is_layer_visible", None)
             if self._ep_curves is not None:
                 for c in self._ep_curves:
-                    if not c.nodes or c.closed:
-                        continue
                     if is_visible is not None and not is_visible(c.layer):
                         continue
-                    for ep in (c.nodes[0], c.nodes[-1]):
+                    for ex, ey, ep in open_ends(c):
                         if ep is dragged_node:
                             continue
-                        d = px_dist(self._ep_view, pos, QPointF(ep.x, ep.y))
+                        d = px_dist(self._ep_view, pos, QPointF(ex, ey))
                         if d < self._EP_SNAP_PX and d < best_d:
-                            best_d, best_x, best_y = d, ep.x, ep.y
+                            best_d, best_x, best_y = d, ex, ey
 
             # Snap to mirror axis — re-snapping a moved ENDPOINT back to the
             # axis. Scoped to open-curve end nodes: an interior node (or any
@@ -348,7 +348,7 @@ class EditTool(QObject):
         curve = curve_item.curve
 
         # Grouped curves move as a rigid unit — no node/handle editing.
-        # (This is what stops imported hinge groups from being distorted by
+        # (This is what stops imported component groups from being distorted by
         # accidental node drags + endpoint snap onto frame geometry.)
         if curve.group_id:
             return

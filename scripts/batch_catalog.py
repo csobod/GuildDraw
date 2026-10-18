@@ -53,7 +53,7 @@ import sys
 from pathlib import Path
 
 GUILDDRAW_ROOT = Path(__file__).resolve().parent.parent
-TAB_NAMES = ("front", "temple_r", "temple_l", "hinge")
+TAB_NAMES = ("front", "temple_r", "temple_l", "component")
 
 
 def parse_args(argv=None):

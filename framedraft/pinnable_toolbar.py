@@ -239,6 +239,10 @@ class PinnableToolBar(QToolBar):
         from .icons import make_icon
         ink = theme.color("chrome.ink")
         self._ext_btn.setIcon(make_icon("ellipsis", ink, ink))
+        # Without a tip nothing said that a click keeps the tools out.
+        self._ext_btn.setToolTip(
+            "More tools: click to keep them open beside the bar; click again "
+            "to fold them away.")
 
     def _on_ext_clicked(self, *args):
         # We never use Qt's native transient expansion: collapse whatever the

@@ -256,3 +256,28 @@ def test_full_file_round_trip_within_005mm():
     b = reparsed2.traces["R"].radii_mm
     worst = max(abs(x - y) for x, y in zip(a, b, strict=True))
     assert worst < 0.05, f"max radius deviation {worst:.4f} mm"
+
+
+def test_a_tight_cornered_trace_comes_back_within_two_hundredths():
+    """A fixed 32 nodes put a rectangle with 2 mm corners 0.2 mm off."""
+    import shapely
+    from shapely.geometry import LineString
+    from framedraft.geometry import sample_curve
+    n, a, b, rc = 1000, 25.0, 16.0, 2.0
+    radii = []
+    for i in range(n):
+        t = 2 * math.pi * i / n
+        dx, dy = math.cos(t), math.sin(t)
+        lo, hi = 0.0, 40.0                        # the rounded rectangle's edge
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            x, y = abs(mid * dx), abs(mid * dy)
+            qx, qy = max(x - (a - rc), 0.0), max(y - (b - rc), 0.0)
+            inside = (x <= a and y <= b and math.hypot(qx, qy) <= rc)
+            lo, hi = (mid, hi) if inside else (lo, mid)
+        radii.append(lo)
+    c = trace_to_curve(radii)
+    pts = [(r * math.cos(2 * math.pi * i / n), -r * math.sin(2 * math.pi * i / n))
+           for i, r in enumerate(radii)]
+    line = LineString([(x, y) for x, y, _t in sample_curve(c, 24)])
+    assert float(shapely.distance(shapely.points(pts), line).max()) <= 0.02

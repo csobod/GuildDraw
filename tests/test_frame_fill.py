@@ -111,9 +111,11 @@ def test_empty_status_when_no_outline():
     assert scene.set_fill_visible(True) == "empty"
 
 
-def test_breaking_perimeter_auto_disables_fill():
-    # Fill is on over a closed frame; reopening the OUTLINE while it's visible
-    # must turn the fill off and report the break via fill_auto_disabled.
+def test_breaking_perimeter_pauses_the_fill_until_it_closes():
+    # Fill is on over a closed frame; reopening the OUTLINE hides the fill and
+    # reports the break once (fill_auto_disabled). The fill stays on: closing
+    # the outline again (an Undo, the end dragged back) brings it back. It was
+    # switched off for good (the 2.0 bug hunt).
     outline = closed_diamond(0, 0, 40, layer=Layer.OUTLINE)
     scene = FrameScene()
     scene.add_curve(outline)
@@ -125,7 +127,28 @@ def test_breaking_perimeter_auto_disables_fill():
     outline.closed = False                 # break the perimeter
     scene.refresh_curve(outline)
     scene.rebuild_fill()                   # the debounced tick
+    scene.rebuild_fill()                   # and the next one: told once
 
     assert fired == ["leak"]
-    assert not scene._fill_visible
+    assert scene.fill_state()["visible"] is True
     assert not scene._fill_item.isVisible()
+    assert scene.set_fill_visible(True) == "ok"     # a tab round trip: still on
+
+    outline.closed = True
+    scene.refresh_curve(outline)
+    scene.rebuild_fill()
+    assert scene._fill_item.isVisible()
+
+    outline.closed = False                 # a second break is told again
+    scene.refresh_curve(outline)
+    scene.rebuild_fill()
+    assert fired == ["leak", "leak"]
+
+
+def test_a_fill_turned_on_over_an_open_outline_is_refused():
+    outline = closed_diamond(0, 0, 40, layer=Layer.OUTLINE)
+    outline.closed = False
+    scene = FrameScene()
+    scene.add_curve(outline)
+    assert scene.set_fill_visible(True) == "leak"
+    assert scene.fill_state()["visible"] is False

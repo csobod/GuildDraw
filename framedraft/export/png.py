@@ -11,7 +11,7 @@ _MAX_SIDE_PX = 8192
 def render_png(scene, path: str, dpi: float = 300.0,
                rect: QRectF | None = None,
                background: str = "#faf6ee",
-               mirrored: bool = False) -> None:
+               mirrored: bool = False) -> float:
     """
     Render *rect* (scene coords; defaults to the full sceneRect) to a PNG.
 
@@ -24,6 +24,10 @@ def render_png(scene, path: str, dpi: float = 300.0,
     ghosts, face photos) are included — callers pass a tight content rect
     and hide anything they don't want first. ``mirrored`` renders it left to
     right reversed, as View Obverse shows the canvas.
+
+    Returns the resolution written (dpi), which the size cap may have lowered;
+    the file records it, so a viewer prints it at true size (every PNG said
+    96 dpi, and printed 6.25 times too large at 600).
     """
     if rect is None or rect.isEmpty():
         rect = scene.sceneRect()
@@ -37,6 +41,9 @@ def render_png(scene, path: str, dpi: float = 300.0,
 
     img = QImage(px_w, px_h, QImage.Format.Format_ARGB32)
     img.fill(QColor(background))
+    dots_per_m = round(scale * 1000.0)            # px/mm → px/m
+    img.setDotsPerMeterX(dots_per_m)
+    img.setDotsPerMeterY(dots_per_m)
 
     painter = QPainter(img)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -53,3 +60,4 @@ def render_png(scene, path: str, dpi: float = 300.0,
     # write nothing at all — the export reported success and left no file.
     if not img.save(path, "PNG"):
         raise OSError(f"could not write the PNG to {path}")
+    return scale * 25.4

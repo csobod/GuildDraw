@@ -21,7 +21,7 @@ import pytest
 
 _CORPUS_ENV = "GUILDDRAW_FRAME_CORPUS"
 _LOCAL_CORPUS = Path(__file__).parent / "corpus"
-_TABS = ("front", "temple_r", "temple_l", "hinge")
+_TABS = ("front", "temple_r", "temple_l", "component")
 
 
 def _drawings():
@@ -84,8 +84,8 @@ def test_batch_export_writes_one_dxf_per_populated_workspace(loaded, tmp_path):
     for p, d in loaded:
         items = []
         for tab in _TABS:
-            on, x = _mirror(d[tab])
-            items.append(BatchWorkspace(tab, d[tab].get("curves") or [], on, x))
+            on, _x = _mirror(d[tab])
+            items.append(BatchWorkspace(tab, d[tab].get("curves") or [], on))
         report = check_batch(items)
         assert report.ok, f"{p.name}: {report.errors}"
         written = write_batch(items, str(tmp_path / p.stem))

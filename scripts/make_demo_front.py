@@ -1,9 +1,10 @@
 """Generate a demo frame-front DXF exactly as GuildDraw exports it.
 
-Produces a wayfarer-ish front: two superellipse lenses (LENS, mirror-doubled
-at export like the app does) and an outline derived by offsetting the lens
-pair 4.5 mm and bridging the nose (OUTLINE). Used to feed GuildModel's
-DXF → mesh pipeline with representative GuildDraw output.
+Produces a wayfarer-ish front: two superellipse lenses (LENS, the right one
+drawn and the left one its mirror, baked as Mirror does: since 2.0 the DXF
+carries the curves drawn, never the Ghost) and an outline derived by
+offsetting the lens pair 4.5 mm and bridging the nose (OUTLINE). Used to feed
+GuildModel's DXF → mesh pipeline with representative GuildDraw output.
 
 Run:  .venv\\Scripts\\python scripts\\make_demo_front.py [out.dxf]
 """
@@ -17,7 +18,7 @@ from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
 from framedraft.document import Curve, SplineNode, Layer
-from framedraft.geometry import compute_catmull_handles, sample_curve
+from framedraft.geometry import compute_catmull_handles, mirror_curve, sample_curve
 from framedraft.export.dxf import export_dxf
 
 # Boxing dimensions (mm) — GuildDraw defaults: A=50, DBL=18; B chosen for a
@@ -66,20 +67,20 @@ def outline_points(lens_curve):
                     ( 2 * LENS_CX, -B / 2 - OUTLINE_OFFSET - BROW_LIFT),
                     ( 2 * LENS_CX, -B / 2 + 4), (-2 * LENS_CX, -B / 2 + 4)])
     body = unary_union([body, brow.intersection(body.buffer(BROW_LIFT))])
-    ext = body.exterior.simplify(0.15)
-    coords = list(ext.coords)[:-1]
-    # Decimate to a drafting-plausible node count, keeping shape fidelity.
-    step = max(1, len(coords) // 72)
-    return coords[::step]
+    return list(body.exterior.coords)[:-1]
 
 
 def main(out_path):
+    from framedraft.fitting import fit_curve
     lens = closed_spline(lens_points(LENS_CX), Layer.LENS)
-    outline = closed_spline(outline_points(lens), Layer.OUTLINE)
-    # mirror_on=True doubles LENS across x=0 at export — same as the app
-    # with the Ghost toggle on.
-    export_dxf(curves=[outline, lens], path=str(out_path),
-               mirror_on=True, axis_x=0.0, horizontal=False)
+    # Fitted within 0.05 mm, as Rebuild fits: a Catmull-Rom spline through
+    # every 72nd point overshot at the bridge and crossed itself.
+    outline = fit_curve(outline_points(lens), tol_mm=0.05, closed=True,
+                        layer=Layer.OUTLINE).curve
+    # The left lens baked across x = 0, as Mirror does: the export writes the
+    # curves drawn only (it took mirror_on/axis_x/horizontal before 2.0, and
+    # this script raised a TypeError).
+    export_dxf(curves=[outline, lens, mirror_curve(lens, 0.0)], path=str(out_path))
     print(f"wrote {out_path}")
 
 

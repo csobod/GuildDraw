@@ -1,8 +1,8 @@
 """Drill holes — DRILL layer wiring, DXF export/mirror, drill-pattern library."""
 import ezdxf
 
-from framedraft.document import Layer, MACHINED_LAYERS, WORKSPACE_LAYERS
-from framedraft.export.dxf import export_dxf, _MIRROR_LAYERS
+from framedraft.document import Layer, MACHINED_LAYERS, MIRRORED_LAYERS, WORKSPACE_LAYERS
+from framedraft.export.dxf import export_dxf
 from helpers import circle
 
 
@@ -11,13 +11,13 @@ def test_drill_layer_wiring():
     assert Layer.DRILL in WORKSPACE_LAYERS["front"]
     assert Layer.DRILL not in WORKSPACE_LAYERS["temple_r"]
     assert Layer.DRILL in MACHINED_LAYERS
-    assert Layer.DRILL in _MIRROR_LAYERS   # holes mirror with their lens
+    assert Layer.DRILL in MIRRORED_LAYERS   # holes ghost with their lens
 
 
 def test_drill_circle_exports_as_circle_on_drill_layer(tmp_path):
     hole = circle(-20, 5, 0.7, layer=Layer.DRILL)   # Ø1.4 mm
     path = tmp_path / "d.dxf"
-    export_dxf([hole], str(path), mirror_on=False)
+    export_dxf([hole], str(path))
     msp = ezdxf.readfile(str(path)).modelspace()
     circles = [e for e in msp if e.dxftype() == "CIRCLE"]
     assert len(circles) == 1
@@ -25,14 +25,15 @@ def test_drill_circle_exports_as_circle_on_drill_layer(tmp_path):
     assert circles[0].dxf.center.y == -5    # Y negated on export
 
 
-def test_drill_holes_mirror_with_lens(tmp_path):
+def test_drill_holes_are_written_as_drawn(tmp_path):
+    # The DXF carries the curves drawn (2.0): a pair of holes is two holes
+    # drawn, or one baked with Mirror.
     hole = circle(-20, 5, 0.7, layer=Layer.DRILL)
     path = tmp_path / "d.dxf"
-    export_dxf([hole], str(path), mirror_on=True, axis_x=0.0)
+    export_dxf([hole], str(path))
     msp = ezdxf.readfile(str(path)).modelspace()
     circles = [e for e in msp if e.dxftype() == "CIRCLE"]
-    assert len(circles) == 2
-    assert sorted(round(c.dxf.center.x, 2) for c in circles) == [-20, 20]
+    assert len(circles) == 1
 
 
 def test_drill_library_roundtrip(tmp_path, monkeypatch):

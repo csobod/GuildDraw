@@ -5,7 +5,7 @@ import zipfile
 
 import ezdxf
 import pytest
-from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsSceneMouseEvent, QGraphicsView
 
 from framedraft.document import (DimLine, Layer, MIRRORED_LAYERS,
@@ -145,12 +145,14 @@ def _press(x, y):
     ev = QGraphicsSceneMouseEvent(QEvent.Type.GraphicsSceneMousePress)
     ev.setButton(Qt.MouseButton.LeftButton)
     ev.setScenePos(QPointF(x, y))
+    ev.setScreenPos(QPoint(round(x * 10), round(y * 10)))   # real events have one
     return ev
 
 
 def _move(x, y):
     ev = QGraphicsSceneMouseEvent(QEvent.Type.GraphicsSceneMouseMove)
     ev.setScenePos(QPointF(x, y))
+    ev.setScreenPos(QPoint(round(x * 10), round(y * 10)))
     return ev
 
 
@@ -169,12 +171,11 @@ def test_node_click_without_motion_takes_no_undo_snapshot():
     assert starts == [1]
 
 
-def test_drill_holes_ghost_like_they_export():
+def test_drill_holes_ghost_on_screen_and_in_the_draw_preview():
     from framedraft.canvas.scene import FrameScene, _GHOST_LAYERS
-    from framedraft.export.dxf import _MIRROR_LAYERS
     from framedraft.tools.draw import _MIRROR_GHOST_LAYERS
     assert Layer.DRILL in _GHOST_LAYERS and Layer.DRILL in _MIRROR_GHOST_LAYERS
-    assert _MIRROR_LAYERS == MIRRORED_LAYERS
+    assert Layer.DRILL in MIRRORED_LAYERS
     sc = FrameScene()
     sc.init_mirror()
     hole = circle(20, 0, 1.5, layer=Layer.DRILL)
@@ -320,7 +321,7 @@ def test_block_references_are_expanded(tmp_path):
         blk.add_line((0, 0), (10, 0))
         blk.add_circle((5, 5), 2)
         msp.add_blockref("HINGE", (100, 50), dxfattribs={"xscale": 2, "yscale": 2})
-    curves, notes = import_dxf(_dxf(tmp_path, build), Layer.HINGE)
+    curves, notes = import_dxf(_dxf(tmp_path, build), Layer.COMPONENT)
     kinds = sorted(c.kind for c in curves)
     assert kinds == ["circle", "line"]
     circ = next(c for c in curves if c.kind == "circle")
@@ -369,10 +370,11 @@ def test_gdraw_never_persists_a_member_name_without_bytes(tmp_path):
     from framedraft.document import FaceImage
     from framedraft.export.gdraw import _embed_face_images, _embed_fill_image
     with zipfile.ZipFile(tmp_path / "t.gdraw", "w") as zf:
-        [fi] = _embed_face_images(zf, "front", [FaceImage(path="images/front_0_p.png")])
+        [fi] = _embed_face_images(zf, "front", [FaceImage(stored=True, path="images/front_0_p.png")])
         fill = _embed_fill_image(zf, "front", {"image": "images/front_fill_s.jpg"})
         assert zf.namelist() == []
-    assert fi.path == "front_0_p.png" and fill["image"] == "front_fill_s.jpg"
+    # The photo's own name, its member prefix stripped (the 2.0 bug hunt).
+    assert fi.path == "p.png" and fill["image"] == "front_fill_s.jpg"
 
 
 def test_oma_request_record_without_data_is_tolerated():
@@ -447,7 +449,7 @@ def test_dxf_contract_spline_is_the_exact_bezier(tmp_path):
     from framedraft.export.dxf import export_dxf
     d = closed_diamond(0, 0, 20)
     out = tmp_path / "c.dxf"
-    export_dxf(curves=[d], path=str(out), mirror_on=False)
+    export_dxf(curves=[d], path=str(out))
     doc = ezdxf.readfile(str(out))
     assert doc.header["$INSUNITS"] == 4
     [sp] = list(doc.modelspace())
@@ -554,8 +556,8 @@ def test_temple_copy_keeps_groups_and_dim_side(win, monkeypatch):
         staticmethod(lambda *a, **k: app_mod.QMessageBox.StandardButton.Yes))
     win._ws_tab_widget.setCurrentIndex(1)
     ws = win._active_ws
-    a = line([(0, 0), (10, 0)], layer=Layer.HINGE)
-    b = line([(0, 5), (10, 5)], layer=Layer.HINGE)
+    a = line([(0, 0), (10, 0)], layer=Layer.COMPONENT)
+    b = line([(0, 5), (10, 5)], layer=Layer.COMPONENT)
     a.group_id = b.group_id = "grp1"
     ws.add_curve(a); ws.add_curve(b)
     ws.add_dim(DimLine(0, 0, 10, 0, offset=3.0))

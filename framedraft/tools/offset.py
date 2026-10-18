@@ -23,6 +23,7 @@ from PySide6.QtWidgets import QLabel
 
 from ..canvas.items import CurveItem
 from .trim import curve_item_at
+from ..typed import typed_char
 
 
 _PREVIEW_COLOR = "#ffd580"   # amber — same as hover/lock color used elsewhere
@@ -175,13 +176,14 @@ class OffsetTool(QObject):
             self._update_preview()
             return True
 
-        if text and text in "0123456789.-":
+        ch = typed_char(text)
+        if ch and ch in "0123456789.-":
             # Guard against multiple dots or misplaced minus
-            if text == "." and "." in self._input_str:
+            if ch == "." and "." in self._input_str:
                 return True
-            if text == "-" and self._input_str:
+            if ch == "-" and self._input_str:
                 return True
-            self._input_str += text
+            self._input_str += ch
             self._update_hud()
             self._update_preview()
             return True

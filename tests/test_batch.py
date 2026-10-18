@@ -11,12 +11,14 @@ from helpers import line, circle, closed_diamond
 
 
 def front_item(mirror_on=True):
-    """A valid Frame Front: OUTLINE ×1 + LENS ×1 doubled by the mirror."""
+    """A valid Frame Front: OUTLINE ×1 + LENS ×2, both drawn (the Ghost is
+    never exported)."""
     return BatchWorkspace(
         workspace_type="front",
         curves=[closed_diamond(0, 0, 40, layer=Layer.OUTLINE),
-                circle(-15, 0, 10, layer=Layer.LENS)],
-        mirror_on=mirror_on, axis_x=0.0)
+                circle(-15, 0, 10, layer=Layer.LENS),
+                circle(15, 0, 10, layer=Layer.LENS)],
+        mirror_on=mirror_on)
 
 
 def temple_item(ws_type="temple_r"):
@@ -26,10 +28,10 @@ def temple_item(ws_type="temple_r"):
         mirror_on=False)
 
 
-def hinge_item():
+def component_item():
     return BatchWorkspace(
-        workspace_type="hinge",
-        curves=[circle(0, 0, 3, layer=Layer.HINGE)],
+        workspace_type="component",
+        curves=[circle(0, 0, 3, layer=Layer.COMPONENT)],
         mirror_on=False)
 
 
@@ -41,7 +43,7 @@ def test_base_from_path_strips_dxf_any_case():
 
 def test_batch_paths_only_populated_workspaces():
     items = [front_item(), temple_item(),
-             BatchWorkspace(workspace_type="hinge", curves=[])]
+             BatchWorkspace(workspace_type="component", curves=[])]
     paths = batch_paths("base", items)
     assert paths == {"front": "base_front.dxf",
                      "temple_r": "base_temple_r.dxf"}
@@ -49,10 +51,10 @@ def test_batch_paths_only_populated_workspaces():
 
 def test_check_batch_skips_empty_and_passes_valid():
     items = [front_item(), temple_item(), temple_item("temple_l"),
-             BatchWorkspace(workspace_type="hinge", curves=[])]
+             BatchWorkspace(workspace_type="component", curves=[])]
     report = check_batch(items)
     assert report.ok
-    assert report.skipped == ["hinge"]
+    assert report.skipped == ["component"]
     assert not report.warnings
 
 
@@ -64,10 +66,10 @@ def test_check_batch_collects_errors_per_workspace():
         workspace_type="temple_r",
         curves=[closed_diamond(layer=Layer.OUTLINE),
                 circle(0, 0, 5, layer=Layer.LENS)], mirror_on=False)
-    report = check_batch([bad_front, bad_temple, hinge_item()])
+    report = check_batch([bad_front, bad_temple, component_item()])
     assert not report.ok
     assert set(report.errors) == {"front", "temple_r"}
-    assert "hinge" not in report.errors
+    assert "component" not in report.errors
 
 
 def test_check_batch_reports_warnings():
@@ -76,7 +78,9 @@ def test_check_batch_reports_warnings():
     open_lens.closed = False           # endpoints coincide → auto-close warning
     items = [BatchWorkspace(
         workspace_type="front",
-        curves=[closed_diamond(0, 0, 40, layer=Layer.OUTLINE), open_lens],
+        curves=[closed_diamond(0, 0, 40, layer=Layer.OUTLINE), open_lens,
+                line([(25, 0), (15, 5), (5, 0.05), (25, 0.0)], closed=True,
+                     layer=Layer.LENS)],
         mirror_on=True)]
     report = check_batch(items)
     assert report.ok
@@ -85,7 +89,7 @@ def test_check_batch_reports_warnings():
 
 def test_write_batch_writes_one_file_per_populated_workspace(tmp_path):
     items = [front_item(), temple_item(), temple_item("temple_l"),
-             BatchWorkspace(workspace_type="hinge", curves=[])]
+             BatchWorkspace(workspace_type="component", curves=[])]
     base = str(tmp_path / "myframe")
     written = write_batch(items, base)
     # Compare basenames — separators differ per OS (\ on Windows, / on mac).
@@ -98,17 +102,18 @@ def test_write_batch_writes_one_file_per_populated_workspace(tmp_path):
     assert len([e for e in msp if e.dxf.layer == "OUTLINE"]) == 1
 
 
-def test_write_batch_temples_mirror_horizontally(tmp_path):
+def test_write_batch_writes_a_temple_as_drawn(tmp_path):
+    # The Ghost is never written (2.0), on a temple as on the front.
     item = BatchWorkspace(
         workspace_type="temple_r",
         curves=[closed_diamond(40, 0, 30, layer=Layer.OUTLINE),
-                circle(15, 10, 4, layer=Layer.HINGE)],
-        mirror_on=True, axis_x=0.0)
+                circle(15, 10, 4, layer=Layer.COMPONENT)],
+        mirror_on=True)
     written = write_batch([item], str(tmp_path / "f"))
     msp = ezdxf.readfile(written[0]).modelspace()
     centers = sorted((c.dxf.center.x, c.dxf.center.y)
                      for c in msp if c.dxftype() == "CIRCLE")
-    assert centers == [(15, -10), (15, 10)]
+    assert centers == [(15, -10)]
 
 
 def test_check_batch_passes_the_stock_guide_to_the_validator():

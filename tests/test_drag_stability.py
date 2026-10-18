@@ -5,7 +5,7 @@ ItemIsMovable path, which re-derived the step through the CURRENT view
 transform and sent the dot flying on a mid-drag zoom/pan). These tests pin the
 transform-independent invariant and the scoped mirror-axis magnet (H2).
 """
-from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsSceneMouseEvent, QGraphicsView
 
 from framedraft.canvas.items import NodeDot, HandleDot
@@ -19,12 +19,14 @@ def _press(x, y):
     ev = QGraphicsSceneMouseEvent(QEvent.Type.GraphicsSceneMousePress)
     ev.setButton(Qt.MouseButton.LeftButton)
     ev.setScenePos(QPointF(x, y))
+    ev.setScreenPos(QPoint(round(x * 10), round(y * 10)))   # real events have one
     return ev
 
 
 def _move(x, y):
     ev = QGraphicsSceneMouseEvent(QEvent.Type.GraphicsSceneMouseMove)
     ev.setScenePos(QPointF(x, y))
+    ev.setScreenPos(QPoint(round(x * 10), round(y * 10)))
     return ev
 
 
@@ -128,8 +130,44 @@ def test_handle_drag_tracks_and_reflects_sibling_when_smooth():
     h_out.mousePressEvent(_press(13, 10))
     h_out.mouseMoveEvent(_move(13, 14))
     assert abs(n.cp_out.x - 13) < 1e-9 and abs(n.cp_out.y - 14) < 1e-9
-    # smooth (default): the opposite handle mirrors through the node
-    assert abs(n.cp_in.x - 7) < 1e-9 and abs(n.cp_in.y - 6) < 1e-9
+    # smooth (default): the opposite handle turns to stay opposite through
+    # the node, keeping its own 3 mm (it took the dragged handle's 5 mm).
+    assert abs(n.cp_in.x - (10 - 3 * 3 / 5)) < 1e-9
+    assert abs(n.cp_in.y - (10 - 3 * 4 / 5)) < 1e-9
+
+
+def test_shift_gives_the_sibling_handle_the_same_length():
+    scene = QGraphicsScene()
+    n = SplineNode(x=10, y=10,
+                   cp_in=ControlPoint(7, 10), cp_out=ControlPoint(13, 10))
+    c = Curve(kind="spline", layer=Layer.LENS, nodes=[SplineNode(x=0, y=0), n,
+              SplineNode(x=20, y=0)], closed=False)
+    h_out = HandleDot(c, 1, "cp_out", lambda _c: None)
+    h_in  = HandleDot(c, 1, "cp_in",  lambda _c: None)
+    h_out.set_sibling(h_in)
+    h_in.set_sibling(h_out)
+    scene.addItem(h_out)
+    scene.addItem(h_in)
+    h_out.mousePressEvent(_press(13, 10))
+    ev = _move(13, 14)
+    ev.setModifiers(Qt.KeyboardModifier.ShiftModifier)
+    h_out.mouseMoveEvent(ev)
+    assert abs(n.cp_in.x - 7) < 1e-9 and abs(n.cp_in.y - 6) < 1e-9   # mirrored
+
+
+def test_a_jittery_click_does_not_move_a_node():
+    """A pixel of jitter while clicking a node moved it, pushed an undo step
+    and starred the design (the 2.0 bug hunt)."""
+    scene = QGraphicsScene()
+    c = spline([(0, 0), (10, 5), (20, 0)])
+    starts = []
+    dot = NodeDot(c, 1, lambda _c: None, on_drag_start=lambda: starts.append(1))
+    scene.addItem(dot)
+    dot.mousePressEvent(_press(10, 5))
+    dot.mouseMoveEvent(_move(10.1, 5.1))          # 2 px on screen
+    assert (c.nodes[1].x, c.nodes[1].y) == (10, 5) and starts == []
+    dot.mouseMoveEvent(_move(11, 5))              # 10 px: a drag
+    assert c.nodes[1].x == 11 and starts == [1]
 
 
 def test_handle_drag_survives_middrag_view_scale():

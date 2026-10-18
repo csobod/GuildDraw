@@ -2,83 +2,128 @@
 item 8).
 
 While a workspace's view is mirrored to show the drawing's other face, this
-chip sits in the canvas's top-left corner: the View Obverse glyph, the word
-*Obverse*, and under it the face now toward the viewer (a front's posterior,
-a temple's anterior). It is a child of the view, outside the scene and its
-transform, so it never mirrors with the drawing, and it lets every click
-through to the canvas. In the default view a quiet label in the same corner
-names the face the drawing is seen from.
+chip sits in the canvas's top-left corner with the one word for the face now
+toward the viewer (a front's posterior, a temple's anterior), in the HUD's
+box and border. In the default view a quiet label in the same corner names
+the face the drawing is seen from. The two words share their place and their
+size, so toggling the view swaps the word and adds or removes the box, and
+nothing moves (the maker, 2026-10-17: the earlier glyph and "Obverse" title
+were a bit distracting). Both are children of the view, outside the scene and
+its transform, so they never mirror with the drawing, and they let every
+click through to the canvas.
 """
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 from .. import theme
-from ..icons import make_pixmap
 
 _MARGIN_PX = 8          # from the viewport's top-left corner
-_ICON_PX   = 18
+# The face word's top-left in the viewport, the quiet label's and the chip's
+# alike.
+_TEXT_X = _MARGIN_PX + 2
+_TEXT_Y = _MARGIN_PX - 2
+_PAD_X, _PAD_Y = 6, 2   # the chip's room around its word
+_FACE_PX = 10           # the word's size, in both
 
 
 class ObverseBadge(QWidget):
-    """``Obverse`` over the face toward the viewer, in a HUD chip."""
+    """The face toward the viewer, one word in a HUD chip."""
 
     def __init__(self, view):
         super().__init__(view)
         self.setObjectName("ObverseBadge")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.setFont(QFont("Segoe UI", 10))
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(8, 4, 10, 4)
-        row.setSpacing(6)
-        self._glyph = QLabel()
-        self._glyph.setFixedSize(QSize(_ICON_PX, _ICON_PX))
-        row.addWidget(self._glyph, 0, Qt.AlignmentFlag.AlignVCenter)
-        col = QVBoxLayout()
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(0)
-        self._title = QLabel("Obverse")
+        row.setContentsMargins(_PAD_X, _PAD_Y, _PAD_X, _PAD_Y)
+        row.setSpacing(0)
         self._face = QLabel("")
-        self._face.setProperty("hudRole", "hint")
-        col.addWidget(self._title)
-        col.addWidget(self._face)
-        row.addLayout(col)
+        row.addWidget(self._face)
 
         self.refresh_theme()
         self.hide()
 
     def refresh_theme(self):
         """The HUD chip's own tokens (theme.build_hud_qss), as the measure
-        chip uses them; the glyph and the face in the HUD accent."""
-        # The face is what the chip is for: in the accent, not the muted
-        # hint gray, though smaller than the word above it.
+        chip uses them; the word in the HUD accent, at the quiet label's
+        size. The box and its border are the emphasis, not the word."""
         self.setStyleSheet(
             theme.build_hud_qss("#ObverseBadge")
-            + '#ObverseBadge QLabel[hudRole="hint"] { font-size: 9px; '
+            + f"#ObverseBadge QLabel {{ font-size: {_FACE_PX}px; "
             f'color: {theme.color("hud.accent")}; }}')
-        self._glyph.setPixmap(make_pixmap("view-obverse",
-                                          theme.color("hud.accent"), _ICON_PX))
+        self.adjustSize()
 
     def face(self) -> str:
         return self._face.text()
 
+    def face_label(self) -> QLabel:
+        """The word itself, for the view's alignment and for tests."""
+        return self._face
+
     def set_face(self, face: str):
         """The face toward the viewer while the view is mirrored."""
         self._face.setText(face)
-        self._face.setVisible(bool(face))
         self.adjustSize()
 
     def reposition(self):
-        """Pin the chip to the viewport's top-left corner; the view calls this
-        on every resize."""
+        """Pin the chip so its word lands where the quiet label's does; the
+        view calls this on every resize."""
         view = self.parent()
         if view is None:
             return
         self.adjustSize()
         vp = view.viewport().geometry()
-        self.move(vp.left() + _MARGIN_PX, vp.top() + _MARGIN_PX)
+        self.move(vp.left() + _TEXT_X - _PAD_X, vp.top() + _TEXT_Y - _PAD_Y)
+        self.raise_()
+
+
+def canvas_muted() -> str:
+    """A muted ink for words on the canvas: half way from the canvas color to
+    the drawing's ink, readable on any viewport preset. The chrome's muted ink
+    was brown on Blueprint's navy, and faint on White in dark mode."""
+    bg = QColor(theme.color("canvas.bg"))
+    ink = QColor(theme.color("geometry.ink"))
+    return QColor(*(round(0.45 * b + 0.55 * i) for b, i in
+                    ((bg.red(), ink.red()), (bg.green(), ink.green()),
+                     (bg.blue(), ink.blue())))).name()
+
+
+class CanvasHint(QLabel):
+    """What to do first, centered on an empty canvas: a fresh window said
+    nothing, where GuildModel says "Open a DXF file to begin". Transparent to
+    the mouse; hidden once there is anything on the tab."""
+
+    def __init__(self, view):
+        super().__init__(view)
+        self.setObjectName("CanvasHint")
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.refresh_theme()
+        self.hide()
+
+    def refresh_theme(self):
+        # On a chip of the canvas color, so the guides drawn at the center
+        # never run through the words.
+        bg = QColor(theme.color("canvas.bg"))
+        self.setStyleSheet(
+            f"#CanvasHint {{ background: rgba({bg.red()}, {bg.green()}, "
+            f"{bg.blue()}, 225); border-radius: 6px; padding: 8px 12px; "
+            f"font-size: 13px; color: {canvas_muted()}; }}")
+
+    def reposition(self):
+        view = self.parent()
+        if view is None:
+            return
+        vp = view.viewport().geometry()
+        w = min(440, max(160, vp.width() - 40))
+        self.setFixedWidth(w)
+        self.adjustSize()
+        # Above the middle, where the guides and the drawing start.
+        self.move(vp.left() + (vp.width() - w) // 2,
+                  vp.top() + max(8, round(vp.height() * 0.12)))
         self.raise_()
 
 
@@ -96,8 +141,8 @@ class QuietFaceLabel(QLabel):
 
     def refresh_theme(self):
         self.setStyleSheet(
-            "#QuietFaceLabel { background: transparent; font-size: 10px; "
-            f"color: {theme.color('chrome.muted')}; }}")
+            f"#QuietFaceLabel {{ background: transparent; font-size: {_FACE_PX}px; "
+            f"color: {canvas_muted()}; }}")
         self.adjustSize()
 
     def reposition(self):
@@ -106,5 +151,5 @@ class QuietFaceLabel(QLabel):
             return
         self.adjustSize()
         vp = view.viewport().geometry()
-        self.move(vp.left() + _MARGIN_PX + 2, vp.top() + _MARGIN_PX - 2)
+        self.move(vp.left() + _TEXT_X, vp.top() + _TEXT_Y)
         self.raise_()

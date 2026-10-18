@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import theme
+from ..typed import parse_typed
 
 _ARROW_LEN  = 30   # px, shaft from gap-start to tip
 _ARROW_GAP  = 8    # px, gap from center to shaft start
@@ -206,11 +207,12 @@ class _MoveHud(QWidget):
             super().keyPressEvent(event)
 
     def _commit(self):
-        try:
-            dist = float(self._edit.text().strip())
-        except (ValueError, TypeError):
+        dist = parse_typed(self._edit.text())     # "2,5" too
+        if dist is None:
             return
-        if self._on_commit:
+        # A 0 mm move moves nothing: it pushed an empty undo step and starred
+        # the design.
+        if self._on_commit and dist != 0.0:
             self._on_commit(dist * self._dx_dir, dist * self._dy_dir)
         self.hide()
         self._view.setFocus()
@@ -283,6 +285,14 @@ class MoveGizmo:
         )
 
     def _hud_commit(self, dx_mm: float, dy_mm: float):
+        # The arrows ignore the view's transform, so each points the way it
+        # does on screen; View Obverse mirrors x, and a typed distance went
+        # against the arrow typed into (the 2.0 bug hunt). Scene terms here.
+        t = self._view.transform()
+        if t.m11() < 0.0:
+            dx_mm = -dx_mm
+        if t.m22() < 0.0:
+            dy_mm = -dy_mm
         self._on_pre_move()
         self._on_move(dx_mm, dy_mm)
         if self._on_move_end:

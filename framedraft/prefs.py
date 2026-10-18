@@ -6,7 +6,10 @@ future versions that add new keys always have a valid value.
 """
 
 import copy
+import datetime
 import json
+import math
+import os
 import pathlib
 
 _DIR  = pathlib.Path.home() / ".guilddraw"
@@ -17,6 +20,14 @@ DEFAULTS: dict = {
     "dark_mode":            False,
     # Recently opened files (most recent first)
     "recent_files":         [],
+    # The folders the file dialogs last used: for designs and exports, and
+    # for reference images ("": beside the open design, else home).
+    "last_dir":             "",
+    "last_image_dir":       "",
+    # Explain what storing a reference image in the design does before the
+    # paperclip stores one (the box's "Don't ask again" clears it;
+    # Preferences ▸ General ▸ Prompts sets it back).
+    "prompt_store_image":   True,
     # Drawing
     "default_line_weight":  1.5,
     # Toolbar overflow ("⋯") pop-out pinned open across operations
@@ -127,7 +138,9 @@ DEFAULTS: dict = {
         "pad":          True,
         "obverse":      True,   # View Obverse (the drawing's other face)
         "mirror":       True,   # Mirror (bake operation)
-        "mirror_close": False,  # hidden by default
+        # Shown since 2.0: a whole outline is drawn as a half and closed
+        # across the axis, and the messages point to it.
+        "mirror_close": True,
         "copy_temple":  True,   # Mirror Copy (temple R ↔ L)
         "join":         True,
         "snap_node":    True,
@@ -208,35 +221,136 @@ DEFAULTS: dict = {
 }
 
 
+# Set by load() when the file could not be read: what to tell the maker, once.
+LOAD_NOTE: str | None = None
+
+
+def _fits(default, value):
+    """*value* as the kind *default* is, or the _MISSING marker when it is
+    not one: a bool for a bool, a finite number (not a bool) for a number, a
+    string for a string, a list for a list. One wrong-typed value ("170" for
+    a guide width, "false" for a switch) stopped GuildDraw from starting,
+    on every launch, until the file was deleted by hand."""
+    if isinstance(default, bool):
+        return value if isinstance(value, bool) else _MISSING
+    if isinstance(default, (int, float)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return _MISSING
+        if not math.isfinite(value):
+            return _MISSING
+        if isinstance(default, int):
+            return int(value) if float(value).is_integer() else _MISSING
+        return float(value)
+    if isinstance(default, str):
+        return value if isinstance(value, str) else _MISSING
+    if isinstance(default, list):
+        if not isinstance(value, list):
+            return _MISSING
+        kinds = {type(x) for x in default}
+        if len(kinds) == 1:                   # a list of strings stays one
+            (kind,) = kinds
+            return [x for x in value if type(x) is kind]
+        return value
+    if isinstance(default, dict):
+        return _merged(default, value) if isinstance(value, dict) else _MISSING
+    return value
+
+
+_MISSING = object()
+
+
+def _merged(defaults: dict, data: dict) -> dict:
+    """*defaults* with each value of *data* that fits its kind (_fits); a key
+    the defaults do not have (a later GuildDraw's) is kept as it is."""
+    out = copy.deepcopy(defaults)
+    for key, value in data.items():
+        if key in defaults:
+            got = _fits(defaults[key], value)
+            if got is not _MISSING:
+                out[key] = got
+        else:
+            out[key] = value
+    return out
+
+
+def _keep_damaged() -> str | None:
+    """Move a prefs file that does not read aside, so the defaults written
+    over it at the next save do not destroy it. Returns its new name."""
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    aside = _FILE.with_name(f"{_FILE.name}.damaged-{stamp}")
+    try:
+        os.replace(_FILE, aside)
+        return aside.name
+    except OSError:
+        return None
+
+
 def load() -> dict:
     """Return prefs dict, merged with DEFAULTS so all keys are present."""
     # Always hand out a deep copy: the live prefs get mutated in place (lists
     # of recent files, nested export dicts), and a shallow copy would alias
     # those nested objects to DEFAULTS itself — a fresh install then rewrites
     # the shipped defaults for the rest of the process.
+    global LOAD_NOTE
+    LOAD_NOTE = None
+    if not _FILE.exists():
+        return copy.deepcopy(DEFAULTS)
     try:
-        if _FILE.exists():
-            data = json.loads(_FILE.read_text(encoding="utf-8"))
-            merged = {**copy.deepcopy(DEFAULTS), **data}
-            # Deep-merge nested dicts so new default keys survive old prefs
-            # files. EVERY nested dict pref must be listed here — a missing
-            # entry means old files silently clobber new defaults.
-            for key in ("toolbar", "hotkeys", "theme", "viewport",
-                        "snap_types", "catalog_pdf", "template_print"):
-                if isinstance(data.get(key), dict):
-                    merged[key] = {**copy.deepcopy(DEFAULTS[key]), **data[key]}
-                else:
-                    merged[key] = copy.deepcopy(DEFAULTS[key])
-            return merged
-    except Exception:
-        pass
-    return copy.deepcopy(DEFAULTS)
+        # utf-8-sig: an editor's byte-order mark made the file unreadable.
+        data = json.loads(_FILE.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, dict):
+            raise ValueError("not a JSON object")
+    except (OSError, ValueError):
+        # A file cut short (a full disk, a power cut mid-write) or damaged:
+        # the defaults for now, the file kept aside rather than overwritten
+        # at the next save, as every setting was.
+        aside = _keep_damaged()
+        LOAD_NOTE = ("Your preferences could not be read, so GuildDraw started "
+                     "from its defaults."
+                     + (f" The damaged file is kept beside it as {aside}." if aside
+                        else ""))
+        return copy.deepcopy(DEFAULTS)
+    merged = _merged(DEFAULTS, data)
+    _rename_layers(merged)
+    return merged
+
+
+def _rename_layers(prefs: dict) -> None:
+    """Layer names saved before 2.0, read under the names since, in place:
+    HINGE became COMPONENT (document.LAYER_ALIASES). A layer color the maker
+    set, and the catalog's layer choices, carry over; the next save writes
+    the new names."""
+    from .document import LAYER_ALIASES
+    for mode in ("light", "dark"):
+        tokens = prefs.get("theme", {}).get(mode)
+        if not isinstance(tokens, dict):
+            continue
+        for old, new in LAYER_ALIASES.items():
+            if f"layer.{old}" in tokens:
+                tokens.setdefault(f"layer.{new}", tokens[f"layer.{old}"])
+                del tokens[f"layer.{old}"]
+    cat = prefs.get("catalog_pdf", {})
+    for key in ("front_layers", "temple_layers"):
+        if isinstance(cat.get(key), list):
+            cat[key] = list(dict.fromkeys(LAYER_ALIASES.get(n, n) for n in cat[key]))
 
 
 def save(prefs: dict) -> None:
-    """Write prefs dict to disk.  Silently ignores write errors."""
+    """Write prefs dict to disk.  Silently ignores write errors.
+
+    Through a temporary file and one replace: written in place, a save that
+    failed after the truncate (a full disk, a power cut) left an empty file,
+    and the next start lost every setting."""
+    tmp = _FILE.with_name(_FILE.name + ".tmp")
     try:
         _DIR.mkdir(parents=True, exist_ok=True)
-        _FILE.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(prefs, indent=2))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, _FILE)
     except Exception:
-        pass
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass

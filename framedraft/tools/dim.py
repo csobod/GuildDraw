@@ -41,8 +41,10 @@ class DimTool(QObject):
         self._scene  = scene
         self._view   = view
         self._snap   = snap
-        if snap is not None:
-            snap.set_doc_curves(all_curves or [])
+        # `is not None`: `all_curves or []` swapped an empty live list for a
+        # new one, and the snap engine lost every curve drawn after.
+        if snap is not None and all_curves is not None:
+            snap.set_doc_curves(all_curves)
         self.status_message.emit(
             "Dim: click first point  |  Esc to cancel"
         )

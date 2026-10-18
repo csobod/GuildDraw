@@ -33,10 +33,12 @@ is public, so every claim below can be verified directly.
 ## What GuildDraw writes to disk
 
 - `~/.guilddraw/` (in the user's profile): preferences, autosave/crash
-  recovery, the hinge/drill pattern libraries, recent-files list, and an
-  `imagecache/` folder holding the face photos and Frame Fill material
-  swatches extracted from opened `.gdraw` files (a temp folder stands in
-  when that cache is unwritable).
+  recovery, the hinge/drill pattern libraries, recent-files list,
+  `image_links.json` (where on this computer the reference photos a design
+  does not store are), and an `imagecache/` folder holding the stored face
+  photos and Frame Fill material swatches extracted from opened `.gdraw`
+  files (a temp folder stands in when that cache is unwritable; Preferences
+  ▸ General ▸ Clear Image Cache… empties it).
 - The documents and exports the user explicitly saves.
 - Short-lived temporary files during save/export (standard user temp).
 
@@ -45,10 +47,15 @@ That is the complete list.
 ## Privacy
 
 - Nothing ever leaves the machine (see "no network" above).
-- Saved `.gdraw` files **embed** reference face photos rather than
-  recording where they came from, so a shared design file does not reveal
-  the author's user name or folder structure. (Files saved by pre-1.0
-  release candidates recorded the photo's original path; resaving with a
+- Since 2.0 a reference face photo stays out of the design file unless the
+  user stores it (the paperclip on the Canvas tab). The file then records
+  only the photo's place on the canvas and a random id, which the user's
+  own `image_links.json` matches to the photo; a design sent elsewhere holds
+  no part of the photo, its name or its location. A stored photo is
+  **embedded** in the `.gdraw` rather than recorded by where it came from,
+  so a shared design file does not reveal the author's user name or folder
+  structure. (Files before 2.0 embedded every photo; files saved by pre-1.0
+  release candidates recorded the photo's original path, and resaving with a
   current version removes it.)
 
 ## Why antivirus / EDR tools sometimes flag it

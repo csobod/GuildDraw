@@ -1,10 +1,11 @@
 import math
+import os
 
 from PySide6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem, QGraphicsPathItem,
                                QStyleOptionGraphicsItem)
 from PySide6.QtCore import QRectF, Qt, QPointF, QTimer
-from PySide6.QtGui import (QBrush, QColor, QLinearGradient, QPen, QPixmap,
-                          QPainterPath, QTransform)
+from PySide6.QtGui import (QBrush, QColor, QImageReader, QLinearGradient, QPen,
+                          QPixmap, QPainterPath, QTransform)
 
 from ..document import Curve, Layer, MIRRORED_LAYERS
 from . import items as _items
@@ -85,14 +86,20 @@ class TextItem(QGraphicsPathItem):
         plain.state &= ~plain.state.State_Selected
         super().paint(painter, plain, widget)
 
-# Layers whose curves cast a live mirror ghost: everything the DXF export
-# mirrors, plus an OPEN outline half (see _ghost_eligible).
+# Layers whose curves cast a live mirror ghost: MIRRORED_LAYERS, plus an OPEN
+# outline half or a rim beside the axis (see _ghost_eligible).
 _GHOST_LAYERS = MIRRORED_LAYERS | {Layer.OUTLINE}
 
 # Default display size for an uncalibrated face image (mm).
 # The image is scaled to fit inside this box while preserving aspect ratio.
 _DEFAULT_IMG_WIDTH_MM  = 200.0
 _DEFAULT_IMG_HEIGHT_MM = 150.0
+# The most pixels a reference photo may hold (a 12,000 × 10,000 scan): decoded,
+# a pixel costs four bytes, and one large image named many times took 2 GB.
+_MAX_FACE_PIXELS = 120_000_000
+_FACE_PATH_KEY = 0x6764             # QGraphicsItem.data key: the photo's file
+_FACE_STORED_KEY = 0x6765           # …whether the design stores it
+_FACE_LINK_KEY = 0x6766             # …its id in image_links
 
 
 def _cross_color() -> QColor:
@@ -245,7 +252,7 @@ def _polygonize_lines(coord_lists: list) -> tuple[list, bool]:
     on an unjoined half whose endpoints are snapped to the mirror line — the
     real half and its ghost share endpoints and polygonize into one face."""
     from shapely.geometry import LineString
-    from shapely.ops import polygonize_full, unary_union, snap
+    from shapely.ops import polygonize_full, unary_union
 
     # Round to 1e-6 mm before building rings: a sampled circle's closing point
     # lands ~1e-15 off its start, which leaves the ring technically un-closed
@@ -255,13 +262,68 @@ def _polygonize_lines(coord_lists: list) -> tuple[list, bool]:
              for c in coord_lists if len(c) >= 2]
     if not lines:
         return [], False
+    # Close snapped gaps at the free ends only: snapping the whole linework to
+    # itself was quadratic in its points, and a ring has no ends to snap.
+    lines = _snap_free_ends(lines, _FILL_STITCH_TOL_MM)
     merged = unary_union(lines)                       # node true crossings
-    merged = unary_union(snap(merged, merged,         # then close snapped gaps
-                              _FILL_STITCH_TOL_MM))
     polys, dangles, cuts, _invalid = polygonize_full(merged)
     faces = list(polys.geoms) if not polys.is_empty else []
     has_leak = (not dangles.is_empty) or (not cuts.is_empty)
     return faces, has_leak
+
+
+def _snap_free_ends(lines: list, tol: float) -> list:
+    """*lines* (shapely LineStrings) with each free end of an open one moved
+    within *tol* onto another free end, else onto the nearest point of any
+    line, else left; rings untouched. An index keeps it near-linear."""
+    from shapely import STRtree
+    from shapely.geometry import LineString, Point
+    coords = [list(ln.coords) for ln in lines]
+    ends = [(i, k) for i, ln in enumerate(lines) if not ln.is_ring
+            for k in (0, len(coords[i]) - 1)]
+    if not ends:
+        return lines
+    # End to end: each end joins the first end placed before it within tol
+    # (the half and its Ghost twin meet on the axis this way).
+    placed: list = []
+    end_tree = STRtree([Point(coords[i][k]) for i, k in ends])
+    for n, (i, k) in enumerate(ends):
+        x, y = coords[i][k]
+        target = None
+        for m in sorted(end_tree.query(Point(x, y).buffer(tol))):
+            if m >= n:
+                break
+            px, py = placed[m]
+            if math.hypot(px - x, py - y) <= tol and (ends[m] != (i, k)):
+                target = (px, py)
+                break
+        placed.append(target if target is not None else (x, y))
+    moved = [placed[n] != tuple(coords[i][k]) for n, (i, k) in enumerate(ends)]
+    for n, (i, k) in enumerate(ends):
+        coords[i][k] = placed[n]
+    # End to line: an end no other end met, within tol of a line's run (a
+    # connector stopped a hair short of the curve it meets).
+    met = {}
+    for n, (i, k) in enumerate(ends):
+        met[(i, k)] = moved[n] or any(
+            placed[m] == placed[n] for m in range(len(ends)) if m != n)
+    line_tree = STRtree(lines)
+    for i, k in ends:
+        if met[(i, k)]:
+            continue
+        p = Point(coords[i][k])
+        best, best_d = None, tol
+        for j in line_tree.query(p.buffer(tol)):
+            other = lines[j]
+            if j == i:
+                continue                      # its own run: never onto itself
+            d = other.distance(p)
+            if d <= best_d:
+                best, best_d = other, d
+        if best is not None and best_d > 0.0:
+            q = best.interpolate(best.project(p))
+            coords[i][k] = (q.x, q.y)
+    return [LineString(c) for c in coords]
 
 
 def _shapely_to_qpath(geom) -> QPainterPath:
@@ -302,6 +364,7 @@ class FrameScene(QGraphicsScene):
         self._face_items:        list[QGraphicsPixmapItem] = []
         self._face_drag_offsets: list[QPointF]            = []
         self._canvas_locked:     list[bool]               = []
+        self._face_own_px:       list                     = []   # px/mm or None
         # Last calibration applied; a photo added afterwards is shown at this
         # scale straight away (it used to get the default fit until reload).
         self._face_px_per_mm: float | None = None
@@ -331,8 +394,9 @@ class FrameScene(QGraphicsScene):
         self._fill_image_path: str = ""
         self._fill_image_pixmap: QPixmap | None = None
         self._fill_blank_w: float = DEFAULT_FILL_BLANK_W_MM
-        # (status) -> None; fired when a geometry edit breaks the perimeter so
-        # the fill can no longer close, so the app can untick the box + notify.
+        # (status) -> None; fired once when a geometry edit opens the perimeter
+        # so the fill can no longer close: the fill pauses (hidden, still on)
+        # and the app says why. It returns when the perimeter closes again.
         self.fill_auto_disabled = None
         # Lens fill overlay (display-only; never exported). One top→bottom
         # gradient definition, painted into every LENS aperture separately so a
@@ -365,7 +429,13 @@ class FrameScene(QGraphicsScene):
         self._fill_timer = QTimer(self)
         self._fill_timer.setSingleShot(True)
         self._fill_timer.setInterval(0)
-        self._fill_timer.timeout.connect(self._rebuild_overlays)
+        self._fill_timer.timeout.connect(self._rebuild_dirty_overlays)
+        # The layers whose curves changed since the last pass, or None for
+        # every fill: a drag tick rebuilt all three (the 2.0 bug hunt).
+        self._fill_dirty: set | None = set()
+        # The fills switched on whose region no longer closes: hidden, still
+        # on, back as soon as it closes ("frame", "lens", "inlay").
+        self._fills_paused: set[str] = set()
         # Store the cross extents so set_dark_mode can redraw them correctly
         self._cross_hw: float = 150.0
         self._cross_hh: float = 100.0
@@ -381,12 +451,24 @@ class FrameScene(QGraphicsScene):
 
     def add_face(self, path: str) -> int | None:
         """Load an image as a background reference layer. Returns its index, or None on failure."""
-        pixmap = QPixmap(path)
+        if not os.path.isabs(path):
+            return None                  # see set_fill_image
+        # One decode per file: a photo shown twice shares its pixmap, as a
+        # crafted file naming one large member eight times took 2 GB.
+        pixmap = next((it.pixmap() for it in self._face_items
+                       if it.data(_FACE_PATH_KEY) == path), None)
+        if pixmap is None:
+            reader = QImageReader(path)
+            size = reader.size()
+            if size.isValid() and size.width() * size.height() > _MAX_FACE_PIXELS:
+                return None              # a pixel bomb, or a scan no one traces
+            pixmap = QPixmap(path)
         if pixmap.isNull():
             return None
 
         idx  = len(self._face_items)
         item = QGraphicsPixmapItem(pixmap)
+        item.setData(_FACE_PATH_KEY, path)
         item.setZValue(-1000 + idx)   # later additions sit on top
         item.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable, False)
         item.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable,    False)
@@ -396,6 +478,7 @@ class FrameScene(QGraphicsScene):
         self._face_items.append(item)
         self._face_drag_offsets.append(QPointF(0.0, 0.0))
         self._canvas_locked.append(True)
+        self._face_own_px.append(self._face_px_per_mm)   # the last one set
 
         w, h = float(pixmap.width()), float(pixmap.height())
         if self._face_px_per_mm:
@@ -414,6 +497,7 @@ class FrameScene(QGraphicsScene):
         self._face_items.clear()
         self._face_drag_offsets.clear()
         self._canvas_locked.clear()
+        self._face_own_px.clear()
         self._face_px_per_mm = None
         self._update_scene_rect_for_face()   # back to the default extents
 
@@ -424,6 +508,7 @@ class FrameScene(QGraphicsScene):
         del self._face_items[index]
         del self._face_drag_offsets[index]
         del self._canvas_locked[index]
+        del self._face_own_px[index]
         for i, it in enumerate(self._face_items):
             it.setZValue(-1000 + i)
         self._update_scene_rect_for_face()
@@ -441,8 +526,12 @@ class FrameScene(QGraphicsScene):
 
     # --- calibration (applies uniformly to all images) ---
 
-    def set_face_calibration(self, px_per_mm: float):
-        """Rescale all reference images to the given calibration."""
+    def set_face_calibration(self, px_per_mm: float, index: int | None = None):
+        """Calibrate the reference photo *index* (image px per mm), or every
+        photo when *index* is None, as a file that kept one calibration for
+        the whole design has it. Each photo keeps its own: two photos taken
+        at different distances were given one scale, measured in the first
+        photo's pixels, and both read wrong (the 2.0 bug hunt)."""
         if px_per_mm <= 0:
             return
         # Kept even with no photo yet: the next photo added takes this scale
@@ -450,8 +539,13 @@ class FrameScene(QGraphicsScene):
         self._face_px_per_mm = px_per_mm
         if not self._face_items:
             return
+        if index is not None and not 0 <= index < len(self._face_items):
+            return
         mm_per_px = 1.0 / px_per_mm
         for idx, item in enumerate(self._face_items):
+            if index is not None and idx != index:
+                continue
+            self._face_own_px[idx] = px_per_mm
             p = item.pixmap()
             w, h = float(p.width()), float(p.height())
             cur = item.pos()
@@ -460,6 +554,20 @@ class FrameScene(QGraphicsScene):
                                                     cur.y() - (-h / 2))
             self._apply_one_face_scale(idx, mm_per_px)
         self._update_scene_rect_for_face()
+
+    def face_calibration(self, index: int) -> float | None:
+        """The photo's own calibration (image px per mm), None if it has none."""
+        if 0 <= index < len(self._face_own_px):
+            return self._face_own_px[index]
+        return None
+
+    def face_index_at(self, point: QPointF) -> int | None:
+        """The topmost shown reference photo under *point*, or None."""
+        for idx in range(len(self._face_items) - 1, -1, -1):
+            item = self._face_items[idx]
+            if item.isVisible() and item.sceneBoundingRect().contains(point):
+                return idx
+        return None
 
     def _apply_one_face_scale(self, index: int, mm_per_px: float):
         """Scale one image, keeping its drag offset relative to scene origin."""
@@ -543,6 +651,46 @@ class FrameScene(QGraphicsScene):
         p = item.pos()
         return (p.x(), p.y())
 
+    def set_face_visible(self, index: int, visible: bool):
+        """Show or hide a photo. Hidden, it is in no export or print and no
+        click finds it (face_index_at); it keeps its place."""
+        item = self.get_face_item(index)
+        if item is not None:
+            item.setVisible(visible)
+
+    def face_visible(self, index: int) -> bool:
+        item = self.get_face_item(index)
+        return item.isVisible() if item is not None else True
+
+    def face_path(self, index: int) -> str:
+        item = self.get_face_item(index)
+        return (item.data(_FACE_PATH_KEY) or "") if item is not None else ""
+
+    def set_face_path(self, index: int, path: str):
+        """Point a photo at another copy of the same image (the one saved
+        when it stopped being stored); the pixels on show stay."""
+        item = self.get_face_item(index)
+        if item is not None:
+            item.setData(_FACE_PATH_KEY, path)
+
+    def face_stored(self, index: int) -> bool:
+        item = self.get_face_item(index)
+        return bool(item.data(_FACE_STORED_KEY)) if item is not None else False
+
+    def set_face_stored(self, index: int, stored: bool):
+        item = self.get_face_item(index)
+        if item is not None:
+            item.setData(_FACE_STORED_KEY, bool(stored))
+
+    def face_link(self, index: int) -> str:
+        item = self.get_face_item(index)
+        return (item.data(_FACE_LINK_KEY) or "") if item is not None else ""
+
+    def set_face_link(self, index: int, link_id: str):
+        item = self.get_face_item(index)
+        if item is not None:
+            item.setData(_FACE_LINK_KEY, link_id)
+
     # ------------------------------------------------------------------
     # Dark mode
     # ------------------------------------------------------------------
@@ -623,6 +771,7 @@ class FrameScene(QGraphicsScene):
         return to explain why it stayed off; hiding always returns ``"ok"``."""
         if not on:
             self._fill_visible = False
+            self._fills_paused.discard("frame")
             if self._fill_item is not None:
                 self._fill_item.setVisible(False)
             return "ok"
@@ -641,11 +790,14 @@ class FrameScene(QGraphicsScene):
                 self._fill_item.setVisible(False)
             return "ok"
         if status != "ok":
-            self._fill_visible = False
             if self._fill_item is not None:
                 self._fill_item.setVisible(False)
-            return status
+            if self._fill_visible:
+                self._fills_paused.add("frame")   # on already: it waits
+                return "ok"
+            return status                         # turned on now: refused
         self._fill_visible = True
+        self._fills_paused.discard("frame")
         self._apply_fill_path(path)
         return "ok"
 
@@ -686,6 +838,10 @@ class FrameScene(QGraphicsScene):
         if not path:
             self.clear_fill_image()
             return True
+        if not os.path.isabs(path):
+            # A bare name from a file, not found beside it: looked up from
+            # the working folder it would be whatever file had that name there.
+            return False
         if (not reload and path == self._fill_image_path
                 and self._fill_image_pixmap is not None):
             # Already loaded — a tab switch re-applied it and decoded the
@@ -776,37 +932,62 @@ class FrameScene(QGraphicsScene):
         return [(p, QBrush(self._lens_gradient(p.boundingRect())))
                 for p in paths if not p.isEmpty()]
 
-    def _schedule_fill_rebuild(self):
-        """Deferred overlay rebuild for the hot paths (curve add/remove/refresh)."""
+    def _schedule_fill_rebuild(self, *layers):
+        """Deferred overlay rebuild for the hot paths (curve add/remove/refresh).
+        *layers* are the layers whose curves changed; none means every fill."""
         if (self._fill_visible or self._lens_fill_visible
                 or self._inlay_fill_visible):
+            if not layers:
+                self._fill_dirty = None
+            elif self._fill_dirty is not None:
+                self._fill_dirty.update(layers)
             self._fill_timer.start()
 
     def _rebuild_overlays(self):
-        """Timer target: repaint whichever display-only fills are showing."""
+        """Repaint whichever display-only fills are showing."""
+        self._fill_dirty = set()
         self.rebuild_fill()
         self.rebuild_lens_fill()
         self.rebuild_inlay_fill()
 
-    def _fill_layer_lines(self, layer: Layer) -> list:
+    def _rebuild_dirty_overlays(self):
+        """Timer target: repaint the fills the changed layers feed. The frame
+        fill reads OUTLINE and LENS; the lens fill LENS; the inlay fill INLAY."""
+        dirty, self._fill_dirty = self._fill_dirty, set()
+        if dirty is None or dirty & {Layer.OUTLINE, Layer.LENS}:
+            self.rebuild_fill()
+        if dirty is None or Layer.LENS in dirty:
+            self.rebuild_lens_fill()
+        if dirty is None or Layer.INLAY in dirty:
+            self.rebuild_inlay_fill()
+
+    def _fill_layer_lines(self, layer: Layer, visible_only: bool = True) -> list:
         """Flattened polylines for one layer's contribution to the fill: each
         visible real curve plus, for every ghost-eligible one, its live mirror
         image (so a half drawn against the mirror line contributes both sides).
-        Returns [] when the layer is hidden."""
-        from ..geometry import sample_curve, mirror_curve
+        Returns [] when the layer is hidden, unless *visible_only* is False."""
+        from ..geometry import flatten_curve
 
-        if not self.is_layer_visible(layer):
+        if visible_only and not self.is_layer_visible(layer):
             return []
         horiz = getattr(self.mirror, "_horizontal", False) if self.mirror else False
-        lines: list = []
-        for item in self._curve_items.values():
-            c = item.curve
-            if c.layer != layer:
-                continue
-            lines.append([(x, y) for x, y, _t in sample_curve(c)])
-            if self._ghost_eligible(c):
-                gc = mirror_curve(c, self.mirror.x, horizontal=horiz)
-                lines.append([(x, y) for x, y, _t in sample_curve(gc)])
+
+        def trace(c: Curve) -> list:
+            # Within 0.01 mm, with as few points as that takes (flatten_curve):
+            # sampling each segment 16 times fed the stitch 16 times the points.
+            return flatten_curve(c)
+
+        drawn = [item.curve for item in self._curve_items.values()
+                 if item.curve.layer == layer]
+        lines = [trace(c) for c in drawn]
+        eligible = [c for c in drawn if self._ghost_eligible(c)]
+        if eligible:
+            # Only the twins the Ghost adds: a pair drawn or baked cast a twin
+            # of each lens over the other, and the lens tint split into six
+            # faces with the frame fill punched by both (the 2.0 bug hunt).
+            from ..export.validate import ghost_twins
+            lines += [trace(t) for t in ghost_twins(drawn, eligible, self.mirror.x,
+                                                    horizontal=horiz)]
         return lines
 
     def _compute_fill(self):
@@ -833,7 +1014,10 @@ class FrameScene(QGraphicsScene):
         if leak or not faces:
             return None, "leak"
 
-        lens_faces, _ = _polygonize_lines(self._fill_layer_lines(Layer.LENS))
+        # The lens openings are punched whether LENS is shown or not: hidden,
+        # the fill painted over them as if the frame had no lenses.
+        lens_faces, _ = _polygonize_lines(
+            self._fill_layer_lines(Layer.LENS, visible_only=False))
         shells = [Polygon(f.exterior) for f in faces]
         tops = [f for f, sh in zip(faces, shells, strict=True)
                 if not any(o is not sh and o.contains(f.representative_point())
@@ -893,10 +1077,11 @@ class FrameScene(QGraphicsScene):
 
     def rebuild_fill(self):
         """Recompute and repaint the fill while it's visible. If a geometry
-        edit has broken the OUTLINE perimeter so it no longer encloses a
-        region, the fill can't be shown honestly — turn it off and let the app
-        know (fill_auto_disabled) rather than paint something broken. No-op
-        while hidden so the stitch never runs during normal editing."""
+        edit has opened the OUTLINE perimeter so it no longer encloses a
+        region, the fill can't be shown honestly: it pauses, hidden but still
+        on, and the app is told once (fill_auto_disabled) rather than shown
+        something broken. No-op while hidden so the stitch never runs during
+        normal editing."""
         if not self._fill_visible:
             if self._fill_item is not None:
                 self._fill_item.setVisible(False)
@@ -909,12 +1094,18 @@ class FrameScene(QGraphicsScene):
                 self._fill_item.setVisible(False)
             return
         if status != "ok":
-            self._fill_visible = False
+            # Paused, not off: the maker asked for the fill, and a region that
+            # stops closing mid-edit (an end dragged off, the Ghost switched
+            # off under a half) closes again, and the fill with it. It was
+            # switched off for good, and Undo did not bring it back.
             if self._fill_item is not None:
                 self._fill_item.setVisible(False)
-            if self.fill_auto_disabled is not None:
-                self.fill_auto_disabled(status)
+            if "frame" not in self._fills_paused:
+                self._fills_paused.add("frame")
+                if self.fill_auto_disabled is not None:
+                    self.fill_auto_disabled(status)
             return
+        self._fills_paused.discard("frame")
         self._apply_fill_path(path)
 
     # ------------------------------------------------------------------
@@ -928,6 +1119,7 @@ class FrameScene(QGraphicsScene):
         geometry yet). Hiding always returns ``"ok"``."""
         if not on:
             self._lens_fill_visible = False
+            self._fills_paused.discard("lens")
             self._clear_lens_fill_items()
             return "ok"
         if self._lens_fill_visible and self._lens_fill_items:
@@ -938,10 +1130,13 @@ class FrameScene(QGraphicsScene):
             self._clear_lens_fill_items()
             return "ok"
         if status != "ok":
-            self._lens_fill_visible = False
             self._clear_lens_fill_items()
+            if self._lens_fill_visible:
+                self._fills_paused.add("lens")    # on already: it waits
+                return "ok"
             return status
         self._lens_fill_visible = True
+        self._fills_paused.discard("lens")
         self._apply_lens_fill_paths(paths)
         return "ok"
 
@@ -1033,9 +1228,10 @@ class FrameScene(QGraphicsScene):
 
     def rebuild_lens_fill(self):
         """Recompute and repaint the lens fill while it's visible. If an edit
-        has opened every aperture there is nothing honest to paint — turn the
-        fill off and tell the app (lens_fill_auto_disabled). No-op while
-        hidden so the stitch never runs during normal editing."""
+        has opened every aperture there is nothing honest to paint: the fill
+        pauses until one closes, and the app is told once
+        (lens_fill_auto_disabled). No-op while hidden so the stitch never runs
+        during normal editing."""
         if not self._lens_fill_visible:
             self._clear_lens_fill_items()
             return
@@ -1044,11 +1240,13 @@ class FrameScene(QGraphicsScene):
             self._clear_lens_fill_items()      # hidden with its layer, not off
             return
         if status != "ok":
-            self._lens_fill_visible = False
-            self._clear_lens_fill_items()
-            if self.lens_fill_auto_disabled is not None:
-                self.lens_fill_auto_disabled(status)
+            self._clear_lens_fill_items()         # paused (see rebuild_fill)
+            if "lens" not in self._fills_paused:
+                self._fills_paused.add("lens")
+                if self.lens_fill_auto_disabled is not None:
+                    self.lens_fill_auto_disabled(status)
             return
+        self._fills_paused.discard("lens")
         self._apply_lens_fill_paths(paths)
 
     # ------------------------------------------------------------------
@@ -1062,6 +1260,7 @@ class FrameScene(QGraphicsScene):
         always returns ``"ok"``."""
         if not on:
             self._inlay_fill_visible = False
+            self._fills_paused.discard("inlay")
             self._clear_inlay_fill_items()
             return "ok"
         if self._inlay_fill_visible and self._inlay_fill_items:
@@ -1072,10 +1271,13 @@ class FrameScene(QGraphicsScene):
             self._clear_inlay_fill_items()
             return "ok"
         if status != "ok":
-            self._inlay_fill_visible = False
             self._clear_inlay_fill_items()
+            if self._inlay_fill_visible:
+                self._fills_paused.add("inlay")   # on already: it waits
+                return "ok"
             return status
         self._inlay_fill_visible = True
+        self._fills_paused.discard("inlay")
         self._apply_inlay_fill(bodies)
         return "ok"
 
@@ -1105,6 +1307,8 @@ class FrameScene(QGraphicsScene):
         if not path:
             self.clear_inlay_fill_image()
             return True
+        if not os.path.isabs(path):
+            return False                 # see set_fill_image
         if (not reload and path == self._inlay_fill_image_path
                 and self._inlay_fill_image_pixmap is not None):
             return True
@@ -1238,8 +1442,9 @@ class FrameScene(QGraphicsScene):
 
     def rebuild_inlay_fill(self):
         """Recompute and repaint the inlay fill while it's visible. If an edit
-        has opened every body there is nothing honest to paint: turn the fill
-        off and tell the app (inlay_fill_auto_disabled). No-op while hidden."""
+        has opened every body there is nothing honest to paint: the fill
+        pauses until one closes, and the app is told once
+        (inlay_fill_auto_disabled). No-op while hidden."""
         if not self._inlay_fill_visible:
             self._clear_inlay_fill_items()
             return
@@ -1248,11 +1453,13 @@ class FrameScene(QGraphicsScene):
             self._clear_inlay_fill_items()     # hidden with its layer, not off
             return
         if status != "ok":
-            self._inlay_fill_visible = False
-            self._clear_inlay_fill_items()
-            if self.inlay_fill_auto_disabled is not None:
-                self.inlay_fill_auto_disabled(status)
+            self._clear_inlay_fill_items()        # paused (see rebuild_fill)
+            if "inlay" not in self._fills_paused:
+                self._fills_paused.add("inlay")
+                if self.inlay_fill_auto_disabled is not None:
+                    self.inlay_fill_auto_disabled(status)
             return
+        self._fills_paused.discard("inlay")
         self._apply_inlay_fill(bodies)
 
     # ------------------------------------------------------------------
@@ -1264,19 +1471,24 @@ class FrameScene(QGraphicsScene):
         item = CurveItem(curve)
         self.addItem(item)
         self._curve_items[id(curve)] = item
+        item.fill_layer = curve.layer          # the layer its fill last saw
         self.revision += 1
         self._apply_layer_state_to_item(item)
         self._update_ghost_for(curve)
-        self._schedule_fill_rebuild()
+        self._schedule_fill_rebuild(curve.layer)
         return item
 
     def refresh_curve(self, curve: Curve):
         self.revision += 1
         item = self._curve_items.get(id(curve))
-        if item:
-            item.refresh()
+        if item is None:
+            return      # not drawn here (any more): it casts no Ghost
+        item.refresh()
         self._update_ghost_for(curve)
-        self._schedule_fill_rebuild()
+        # A layer move comes through here: the fill it left changes too.
+        was = getattr(item, "fill_layer", None)
+        item.fill_layer = curve.layer
+        self._schedule_fill_rebuild(*{was, curve.layer} - {None})
         # Live-follow hook: fires on node/handle edits and drag-moves (both route
         # through refresh_curve) so observers like the snapped boxing guide can
         # track geometry without a full document-change notification.
@@ -1291,7 +1503,7 @@ class FrameScene(QGraphicsScene):
         ghost = self._ghost_items.pop(id(curve), None)
         if ghost:
             self.removeItem(ghost)
-        self._schedule_fill_rebuild()
+        self._schedule_fill_rebuild(curve.layer)
 
     # ------------------------------------------------------------------
     # Mirror ghost display
@@ -1301,6 +1513,15 @@ class FrameScene(QGraphicsScene):
         self._mirror_display = on
         self._update_ghosts()
         self._rebuild_overlays()
+
+    def mirror_display(self) -> bool:
+        """Whether the Ghost is shown (set_mirror_display)."""
+        return self._mirror_display
+
+    def ghost_eligible(self, curve: Curve) -> bool:
+        """Whether the canvas casts a Ghost for *curve*: the rule the prints
+        and the OMA trace follow, so they show what the canvas shows."""
+        return self._ghost_eligible(curve)
 
     def _ghost_eligible(self, curve: Curve) -> bool:
         if not self._mirror_display or self.mirror is None:
