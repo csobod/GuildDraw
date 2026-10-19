@@ -2378,6 +2378,14 @@ Windows and macOS builds from GitHub Actions; the installer unchanged.
     one on a Mac or Linux did not show there (`_as_member`). All four legs
     green at `57587a2`; the draft release v2.0.0 carries their seven files.
     Publishing creates the tag, beside GuildModel 2.0.
+    ✅ **The Mac floor held at 13, 2026-10-19.** Those Mac files needed
+    macOS 14: pip on the runners took numpy's Accelerate wheel
+    (`macosx_14_0`), which shapely and ezdxf bring in. The macOS workflow
+    now installs numpy's older wheel first and fails the build if any
+    installed wheel needs macOS 14 or later; `framedraft.spec` declares
+    `LSMinimumSystemVersion` 13.0, Qt 6.11's floor, in place of 11.0.
+    GuildModel made the same change in its `cb5631f`. All seven files are
+    rebuilt from the commit that made this change, and the draft targets it.
 
 11. **The 2.0 bug hunt's GuildDraw findings** (`Programs/HANDOFF-GuildDraw-2026-10-16.md`,
     from a GuildModel session's review of both apps). ✅ **Landed 2026-10-17,

@@ -34,12 +34,36 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The release notes promise macOS 13, Qt 6.11's floor. numpy (which
+      # shapely and ezdxf bring in) publishes a macOS 14 build on Accelerate
+      # beside one for older macOS on OpenBLAS, and pip on a runner at 14 or
+      # later takes the newer; the 2.0 bundles first came out needing macOS 14
+      # that way. The older wheel goes in first, so the requirements find
+      # numpy satisfied.
       - name: Install dependencies
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
+          .venv/bin/pip download --only-binary=:all: --no-deps --platform macosx_13_0_${{ matrix.arch }} numpy -d wheels-macos13
+          .venv/bin/pip install wheels-macos13/*.whl
           .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
           .venv/bin/pip install pytest-timeout   # CI-only: per-test hang guard
+
+      # A wheel whose every macOS tag is newer than 13 cannot be in the bundle.
+      - name: Every wheel installs on macOS 13
+        run: |
+          .venv/bin/python - <<'EOF'
+          import importlib.metadata as md, re, sys
+          late = []
+          for dist in md.distributions():
+              tags = [ln.split(":", 1)[1].strip() for ln in (dist.read_text("WHEEL") or "").splitlines()
+                      if ln.startswith("Tag:")]
+              macs = [int(m.group(1)) for t in tags if (m := re.search(r"macosx_(\d+)_", t))]
+              if macs and min(macs) > 13:
+                  late.append(f"{dist.metadata['Name']} {dist.version}: {', '.join(tags)}")
+          print("\n".join(late) or "every wheel installs on macOS 13")
+          sys.exit(1 if late else 0)
+          EOF
 
       # Full suite as the gate. The thread-based timeout is deliberate: the
       # one macOS hang found so far was a modal QMessageBox inside a native

@@ -67,7 +67,7 @@ if sys.platform == "darwin":
         info_plist={
             "NSHighResolutionCapable": True,
             "NSPrincipalClass": "NSApplication",
-            "LSMinimumSystemVersion": "11.0",
+            "LSMinimumSystemVersion": "13.0",
             "CFBundleDocumentTypes": [{
                 "CFBundleTypeName": "GuildDraw Project",
                 "CFBundleTypeExtensions": ["gdraw"],
