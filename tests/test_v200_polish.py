@@ -49,7 +49,7 @@ def test_the_menus_have_mnemonics_and_an_about_box(win, monkeypatch):
     shown = []
     monkeypatch.setattr(QMessageBox, "about", lambda *a: shown.append(a))
     win._act_about.trigger()
-    assert shown and "GuildDraw" in shown[0][1] and "2.0.0" in shown[0][2]
+    assert shown and "GuildDraw" in shown[0][1] and "2.3.0" in shown[0][2]
 
 
 def test_a_hidden_button_stays_in_the_menus(win):

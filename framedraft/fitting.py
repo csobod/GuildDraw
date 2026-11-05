@@ -136,10 +136,14 @@ def _two_point_cubic(p0: Pt, p1: Pt, t1: Pt, t2: Pt) -> List[Pt]:
     return [p0, _add(p0, _scale(t1, d)), _add(p1, _scale(t2, d)), p1]
 
 
-def _generate_bezier(pts: List[Pt], u: List[float], t1: Pt, t2: Pt) -> List[Pt]:
+def _generate_bezier(pts: List[Pt], u: List[float], t1: Pt, t2: Pt,
+                     crossed_ok: bool = False) -> List[Pt]:
     """Least-squares fit of one cubic to *pts* at parameters *u*, with the
     endpoints pinned to pts[0]/pts[-1] and the handle directions fixed to the
-    unit tangents t1 (from the start) and t2 (into the end)."""
+    unit tangents t1 (from the start) and t2 (into the end). *crossed_ok*
+    keeps handles that cross (see below): budget mode cannot split the span,
+    and there a crossed pair is often the best one cubic can do (four
+    library rebuilds within 0.5 mm came out 0.5 to 1.2 mm worse without it)."""
     p0, p3 = pts[0], pts[-1]
     c00 = c01 = c11 = x0 = x1 = 0.0
     for i, ui in enumerate(u):
@@ -168,9 +172,25 @@ def _generate_bezier(pts: List[Pt], u: List[float], t1: Pt, t2: Pt) -> List[Pt]:
         alpha_r = (c00 * x1 - c01 * x0) / det
 
     eps = 1e-6 * (seg_len if seg_len > 0 else 1.0)
+    cx, cy = p3[0] - p0[0], p3[1] - p0[1]
     if alpha_l < eps or alpha_r < eps:
         # Degenerate least-squares solution — fall back to the chord/3 heuristic.
         alpha_l = alpha_r = seg_len / 3.0
+    elif not crossed_ok:
+        # A cubic that runs backward along its chord folds over itself, and
+        # the deviation does not see it, measuring from the points to the
+        # curve only: a practice's lens traces fitted 14 mm handles on a
+        # 0.7 mm chord, and the OMA export refused the lens. The velocity
+        # along the chord is a quadratic, q0, q1, q2 in Bernstein form; it
+        # dips below zero where q1 < -sqrt(q0·q2). Paper.js falls back on
+        # q1 < 0 alone (handles that cross), which also caught sound spans:
+        # 16 library offsets came out up to 0.013 mm less parallel. The
+        # tolerance fit then splits the span if it must.
+        q0 = alpha_l * (t1[0] * cx + t1[1] * cy)
+        q2 = -alpha_r * (t2[0] * cx + t2[1] * cy)
+        q1 = seg_len * seg_len - q0 - q2
+        if q0 > 0.0 and q2 > 0.0 and q1 < 0.0 and q1 * q1 > q0 * q2:
+            alpha_l = alpha_r = seg_len / 3.0
     return [p0, _add(p0, _scale(t1, alpha_l)),
             _add(p3, _scale(t2, alpha_r)), p3]
 
@@ -253,10 +273,10 @@ def _fit_single_cubic(span: List[Pt], t1: Pt, t2: Pt) -> List[Pt]:
     if len(span) <= 2:
         return _two_point_cubic(span[0], span[-1], t1, t2)
     u = _chord_param(span)
-    bez = _generate_bezier(span, u, t1, t2)
+    bez = _generate_bezier(span, u, t1, t2, crossed_ok=True)
     for _ in range(_REPARAM_ITERS):
         u = _reparameterize(bez, span, u)
-        bez = _generate_bezier(span, u, t1, t2)
+        bez = _generate_bezier(span, u, t1, t2, crossed_ok=True)
     return bez
 
 
@@ -348,26 +368,24 @@ def _sample_fitted(curve: Curve) -> List[Pt]:
     return poly
 
 
-def _dist_to_polyline(p: Pt, poly: List[Pt]) -> float:
-    best = float("inf")
-    for a, b in zip(poly, poly[1:], strict=False):
-        dx, dy = b[0] - a[0], b[1] - a[1]
-        L2 = dx * dx + dy * dy
-        if L2 < 1e-18:
-            d2 = (p[0] - a[0]) ** 2 + (p[1] - a[1]) ** 2
-        else:
-            t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2))
-            d2 = (p[0] - a[0] - dx * t) ** 2 + (p[1] - a[1] - dy * t) ** 2
-        if d2 < best:
-            best = d2
-    return math.sqrt(best)
-
-
 def _max_deviation(curve: Curve, points: List[Pt]) -> float:
+    """The farthest of *points* from the fitted curve, sampled as a polyline;
+    by shapely (2.0.1), since point by point in Python a fit of an offset far
+    past its bends spent three seconds here. Each point asks an STRtree of
+    the polyline's segments for its nearest: GEOS measures a point against a
+    whole line by brute force, and a fit of 16 000 points spent 16 s so."""
+    import numpy as np
+    import shapely
+
     poly = _sample_fitted(curve)
-    if len(poly) < 2:
+    if len(poly) < 2 or not points:
         return 0.0
-    return max(_dist_to_polyline(p, poly) for p in points)
+    a = np.asarray(poly, dtype=float)
+    segs = shapely.linestrings(np.stack([a[:-1], a[1:]], axis=1))
+    _idx, dist = shapely.STRtree(segs).query_nearest(
+        shapely.points(np.asarray(points, dtype=float)),
+        return_distance=True, all_matches=False)
+    return float(dist.max())
 
 
 # ---------------------------------------------------------------------------

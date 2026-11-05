@@ -85,7 +85,7 @@ def _import_synthetic(win, tmp_path, monkeypatch, depth):
     monkeypatch.setattr(app_mod.QFileDialog, "getOpenFileName",
                         staticmethod(lambda *a, **k: (str(oma), "")))
     monkeypatch.setattr(type(win), "_ask_oma_import_bevel",
-                        lambda self, default: depth)
+                        lambda self, default, **_k: depth)
     win._import_oma()
     QApplication.processEvents()
     return [c for c in win._workspaces[0].doc_curves
@@ -163,7 +163,7 @@ def test_gui_export_import_round_trip(win, tmp_path, monkeypatch):
                         staticmethod(
                             lambda *a, **k: (str(tmp_path / "export.oma"), "")))
     monkeypatch.setattr(type(win), "_ask_oma_import_bevel",
-                        lambda self, default: _DEPTH)
+                        lambda self, default, **_k: _DEPTH)
     win._import_oma()
     QApplication.processEvents()
     lenses = [c for c in front.doc_curves

@@ -1,4 +1,4 @@
-# GuildDraw User Guide (v2.0.0)
+# GuildDraw User Guide (v2.3.0)
 
 GuildDraw drafts eyewear in true millimeters. Everything you draw is at 1:1
 scale; the DXF you export is what the CNC cuts.
@@ -25,7 +25,8 @@ back) mirrored, so you draw one temple and stamp the other. Engraving text
 comes along on the mirrored footprint but stays readable: its rotation is
 transformed so the side of the lettering that faces the brow edge follows the
 temple (a right-temple engraving at 180° becomes 0° on the left). Double-click
-the copy to change the words; placement and style are already identical.
+the copy to change the words; placement and style are already identical. The
+temple's tip bend (Guides tab, Forming) goes with it, so the pair bends alike.
 
 **Which face you see.** A front is drawn facing the anterior, the side the
 world sees, as its reference photo is. A temple is drawn from the posterior,
@@ -44,6 +45,23 @@ edit and snap as usual, the file and every export keep the drawing as drawn,
 and GuildModel still makes its single flip when it reads the file. Each tab
 keeps its own setting, and a design you open or start begins on its default
 faces.
+
+**The front after the press, and the temple bent.** A front is cut flat and
+then formed on the press, which narrows the lens as seen from the front; a
+temple's tip is bent down behind the ear. **View Formed** (toolbar and
+*View* menu, hotkey `W`, or the checkbox at the top of the Forming group;
+front and temples) shows the active tab as it will
+be after that: on the front, every curve head-on after forming, drawn over
+the flat drawing, which shows faintly beneath; on a temple, the temple with
+its tip bend, engraving text included. A *formed* chip joins the face word in
+the canvas corner. The forming and the bend come from each tab's
+**Forming** group (section 3); a flat front with no forming
+set looks as drawn, and the status bar says so. It is a view only: you draw,
+edit and snap on the flat drawing as usual, and the file and every export
+keep the drawing as drawn, but for two: the PNG, which is the canvas as seen
+(as with View Obverse), and the OMA trace, which describes the formed lens
+(section 4). Each tab keeps its own setting; a design you open or start
+begins flat.
 
 ## 2. Drawing
 
@@ -71,15 +89,16 @@ selected.
 | Circle | `C` | Click center, click/type radius |
 | Arc | `A` | Click the center, the start (it sets the radius), then the end: the arc runs clockwise on screen from the start |
 | Arc (start–end–center) | — (assign in Preferences ▸ Hotkeys) | Click the two ends, then a point that sets the bulge |
-| Fillet | `F` | Click two lines, type a radius; rounds the corner |
+| Fillet | `F` | Click two open lines, type a radius; rounds the corner |
 | Dimension | `D` | Linear dimension between two snapped points; arrowed ends, drag the label to offset it |
 | Trim | `T` | Click the segment to remove between intersections |
 | Split | `X` | Split a curve at a clicked point |
-| Offset | `O` | Type a distance, amber preview, Enter confirms. On a closed shape, positive is always outward and negative is always inward, whichever way the curve was drawn |
-| Rebuild | `R` | Refit the selected spline/polyline: type a target node count (or press `Tab` and type a tolerance in mm); the HUD shows the achieved deviation live, Enter replaces the original (undoable). The way to turn a dense imported DXF outline into a clean, editable spline |
+| Offset | `O` | Type a distance, amber preview, Enter confirms. On a closed shape, positive is always outward and negative is always inward, whichever way the curve was drawn. Sharp corners stay sharp: an inside corner's two sides are trimmed where they meet, an outside corner is beveled. A distance too large for the curve reads *out of range* and Enter adds nothing: nothing of the shape would be left, or the offset folds over itself too often to untangle |
+| Rebuild | `R` | Refit the selected spline/polyline: type a target node count (or press `Tab` and type a tolerance in mm); the HUD shows the achieved deviation live, Enter replaces the original (undoable). The fit waits for a pause in the typing, and the count stops at four times the curve's own nodes (at least 64). The way to turn a dense imported DXF outline into a clean, editable spline |
 | Point Move | `G` | Grab a point (snapped), click destination or type exact X/Y (y up, as the status bar reads) |
 | Move gizmo | `M` | Drag selection with exact-distance HUD |
 | View Obverse | `V` | Turn the view to the drawing's other face (section 1); front and temples |
+| View Formed | `W` | Show the front after the press, or the temple with its tip bend (section 1); front and temples |
 | Text | `I` | ENGRAVING text (temples only); double-click to re-edit. The **Font** box filters as you type — see below. A text stays on ENGRAVING or REF: it is engraving, never a cut |
 | Snap node→endpoint | `E` | Snap the red node onto the nearest free end of another open curve (an arc's end on its rim), within the snap reach and on a shown layer |
 
@@ -89,8 +108,8 @@ All hotkeys are reassignable in **Preferences → Hotkeys**, and each tool's
 tooltip names its current key. A hotkey cannot take a fixed shortcut (section
 8) or a key the tools read while you type a value (digits, `.`, `,`, `-`, Enter
 and Tab). Toolbar buttons can be hidden per button in **Preferences →
-Toolbar**; Ghost, Guides and View Obverse stay in the View menu when their
-buttons are hidden.
+Toolbar**; Ghost, Guides, View Obverse and View Formed stay in the View menu
+when their buttons are hidden.
 
 **Tooltips** wrap to a readable width. The **?** button at the foot of the
 toolbar turns them off everywhere and back on; the choice is remembered, and
@@ -130,8 +149,8 @@ font its own computer has.
 - **Group / Ungroup** (`Ctrl+G` / `Ctrl+Shift+G`): grouped curves select and
   move as a rigid unit (components from the library arrive grouped for this
   reason). `Ctrl`+click takes a whole group into or out of the selection.
-  Trim, Split, Fillet, Rebuild and Insert Node leave a group's shape alone:
-  ungroup it first.
+  Trim, Split, Fillet, Rebuild, Explode and Insert Node leave a group's shape
+  alone: ungroup it first.
 - **Copy / Paste / Duplicate** (`Ctrl+C/V/D`): curves, dimensions and
   engraving text; works across workspaces; layers that don't exist in the
   target workspace land on REF. Each paste of the same copy lands 5 mm
@@ -291,12 +310,71 @@ your own.
 
 ## 3. Guides & face photos
 
-- **Construction guides**: frontal angle, apical radius, and the crest:
+- **Nose fit** (the construction guides; *Construction (Forming)* before
+  2.3): frontal angle, apical radius, and the crest:
   **Crest height** (the arc's top above the datum line, positive up as the
   optical convention measures it; negative below), **Crest width** (half the
   crest's width: from the axis to each arm's pivot) and **Angle height** (how
   far below the crest the arms pivot). With the boxing guide's A, B and DBL
   they are the customer's measurements, saved with the design.
+- **Forming** (Frame Front): how the front is pressed after cutting, saved
+  with the design. **Show forming preview** is the same switch as **View
+  Formed** on the toolbar (section 1), and the toolbar button lights while it
+  is on. A **preset** sets the base curve, the die's own radius (the SBT dies
+  are not 530 / D) and the face form together, as the press does; change
+  either value and the preset reads *Custom*. **Base curve** is the lens base
+  curve in diopters, in quarter steps, 0 flat; off a preset the tooling index
+  names the radius, and the radius in use is read below it. **Face form** is
+  in degrees per side: each lens plane's angle to the plane of the front,
+  measured from the center of the bridge, 0° flat. A press drawing may state
+  the included angle between the two lens planes instead, which is 180° less
+  twice this; **Formed Measurements** reads both. **Bridge projection** sets
+  the bridge forward; it mostly moves the bridge in depth. The same values
+  travel to GuildModel in the `.gdraw` as the default for its own forming.
+- **Flatten Lens Shape** (the Forming group's button): replaces the drawn
+  lenses with the flat shapes that form back to them under the Forming
+  settings, so a traced lens, a lab shape or a design value becomes the
+  finished size. After the press each lens measures in its own plane what it
+  measured flat before; head-on it reads a little narrower, by the lens's
+  tilt. The flat shape forms back to the drawn one within 0.015 mm all along
+  it: your nodes stay where they were on the lens, and a node is added at the
+  middle of a span that needs one, more of them for a deeper base curve. A
+  circle or a polygon lens becomes a spline, since its flat shape is neither.
+  A box says what it will do before it does it (*Don't ask again* on
+  the box; Preferences ▸ General ▸ Prompts brings it back). The selected
+  lenses, or both when none is selected; Ctrl+Z takes it back. It leaves a
+  locked or hidden LENS layer alone, and says so when the forming is too
+  deep for a flat shape to be found (past base 10 or so with a deep face
+  form).
+- **Forming setup** (Preferences ▸ General ▸ Forming): these describe your
+  press and sheet, so every design uses them, including designs saved
+  earlier; saving a design writes them into it for GuildModel. **Tooling
+  index** turns a base curve into a radius: (index − 1) × 1000 ÷ D, so the
+  default of 1.53, the historical standard, is 530 ÷ D; older European lens
+  clocks read 1.523. A preset keeps its die's own radius. **Sheet thickness**
+  is the sheet before pressing. **Neutral surface** says which layer of the
+  sheet keeps its length in the press: 0 is the front face, GuildModel's
+  assumption; 0.5 is mid-thickness, the textbook's. Nobody has measured it,
+  and on the groove line the two answers differ by about 0.75 mm at base 4,
+  more than ISO's tolerance; one pressed test front of a known size would
+  settle it.
+- **Forming** (Temple R / L): the temple's tip bend, its drop behind the ear,
+  saved with each temple tab. **Show temple tip bend** is the same switch as
+  **View Formed** on the toolbar. **Length to bend** runs from
+  the hinge end of the outline (ISO measures from the dowel point, the
+  screw's axis, which the drawing has not got) to the ear point, the middle
+  of the bend; *Auto* leaves 37 mm of drop, and the **Ear point** readout
+  says the length in use. **Downward angle** is the
+  tail's tilt from the line of the temple, 45 to 55° usually, 0 a straight
+  library temple; **bend radius** is the bend at the core, which keeps its
+  length through it, as the wire does. The readouts give the length to bend,
+  the drop, the overall length straightened (the marking's number, as in
+  52□18-140: the drawn temple's length) and the reach, the bent temple's
+  projected length with the tip's drop. A bend that does not fit the temple
+  reads *out of range* and the temple shows straight. Each temple bends
+  toward its own drop: Temple L is drawn as Temple R's mirror about the core
+  line (Temple Copy makes it so), so its tip bends toward the top of the
+  canvas, where its drop is drawn.
 - **Boxing guide**: A / B / DBL boxes per the boxing system — match these to
   the customer's measurements before drawing lenses. Three modes:
   - *Free* (default): A / B / DBL are inputs that size the floating box.
@@ -349,7 +427,10 @@ your own.
     geometry, but it does appear in a PNG render, and on the catalog PDF if
     you tick *Print frame, inlay and lens fills* in *Preferences ▸ Print &
     PDF*. Saved `.gdraw` files **embed** the swatch, so a shared project
-    shows the material on the recipient's machine.
+    shows the material on the recipient's machine. A plain `.svg` names the
+    swatch only: on a computer without it the fill shows its color, and the
+    design keeps its Image style when saved there. Hover the swatch button
+    for the file it wants; choose it again, or clear it to keep the color.
   - Needs a perimeter that closes. Turned on over a leaking OUTLINE, it says
     so instead of filling something half-formed. On, it pauses while an edit
     leaves the outline open (an end dragged off, the Ghost switched off under
@@ -458,9 +539,13 @@ your own.
   circle. Inside a block, each entity keeps its own layer (one on layer 0
   takes the insert's), and a mirrored block lands where CAD shows it. The
   file's drawing units are used when the drawing comes out a plausible size
-  in them; otherwise, and when it names none, it is read as millimeters, and
-  the status bar says which. Entities on layers that are off or frozen are
-  left out, as is anything whose numbers are not numbers.
+  in them (3 to 300 mm, an eyewear drawing's range); otherwise, and when it
+  names none, it is read as millimeters, and the status bar says which. A
+  drawing outside that range in millimeters too is imported as drawn, with a
+  note to check its units. Every copy of a block array (MINSERT) comes in. A
+  file of deeply nested blocks stops after 200,000 entities with a note.
+  Entities on layers that are off or frozen are left out, as is anything
+  whose numbers are not numbers.
 - **File → Import → SVG…** brings any SVG into the active workspace: a logo for
   a temple engraving, a shape from a colleague's drawing, an outline traced in
   another editor. Paths come in as the exact cubic splines the file holds, one
@@ -483,25 +568,48 @@ your own.
   curve as a stroke, and engraves text as stroke centerlines.
 - **File → Import → OMA Lens Trace…** reads a frame-tracer / lab DCS file
   (TRCFMT format 1). Traces land in Frame Front as editable LENS splines
-  within 0.02 mm of the traced points, boxing centers on y=0, nasal edges
-  separated by the file's DBL (or the boxing guide's). Any `DRILLE` drill
-  holes in the file land on the DRILL layer. Into a front that has lenses
+  within 0.02 mm of the traced points, in as few nodes as that allows (about
+  35 a lens for a 500-point tracer file), boxing centers on y=0, nasal edges
+  separated by the file's DBL (the boxing guide's when the file states none;
+  a rimless pattern file writes `DBL=0`). `DRILLE` drill holes land on the
+  DRILL layer as the lab standard places them (DCS 3.14, 5.5.2): each from
+  the box center of its own lens, an `R` or `L` record on that lens and a
+  `B` record on both, mirrored on the left. Holes measured from the lens
+  edge or box, and slots, are not read as such; the status bar counts them.
+  A trace GuildDraw wrote before 2.3 measured its holes from the midpoint
+  between the lenses; such a file is recognized and read the way it was
+  written, and the status bar says so. Into a front that has lenses
   already, it asks whether the traced lenses replace them or go beside them.
 - **File → Export → OMA Lens Trace…** (from any tab; it goes to the Frame
   Front) emits both lens contours plus HBOX/VBOX/DBL/FED computed from the
-  geometry, and `DRILLE` records for any DRILL holes (mirrored into symmetric
-  pairs), each measured from the midpoint of the two lenses' boxing centers,
-  for labs and edgers.
+  geometry, and one `DRILLE` record for each DRILL hole (the Ghost's twin of
+  a hole drawn on one lens included): its eye, `R` or `L`, and its place
+  from the box center of that lens's own trace, x to the right and y up, as
+  the lab standard defines it and an edger reads it. (Before 2.3 every hole
+  was written from the midpoint between the lenses and marked for both
+  eyes, which an edger would have drilled a lens-width off: export again
+  any trace with drill holes that went to a lab.) With forming set (the Forming group), the trace
+  describes the lens after the press: the radii, HBOX and VBOX in each
+  lens's own plane, where ISO measures and a 3D tracer leans, DBL head-on,
+  and the records a lab reads from a 3D tracer, `FCRV` (the frame curve:
+  the radius in use as diopters, which on a preset is the die's, not the
+  preset's tag), `ZTILT` (each lens plane's tilt) and `CIRC` (the 3D groove
+  length labs size by); each `DRILLE` hole is placed in its lens's plane,
+  from the trace's own box there. A flat front's trace is as it always was.
 - **Dropping a file on the window** opens a design (`.gdraw`, or a GuildDraw
   `.svg`), imports a DXF, an SVG from another program or an OMA trace into
   the active tab, or adds a reference image.
-- **The bevel question, both directions.** A frame trace follows the bevel
-  groove of the *finished* lens — the drawn lens opening grown outward by the
-  bevel depth. Import and export each ask what you want (depth pre-filled
-  from the boxing guide's bevel setting):
-  - *Import*: **Shrink to the Drawn Lens** shrinks the trace back to the
-    drawn lens (the finished edges still land the file's DBL apart), or
-    **Import As Traced** keeps the finished size.
+- **The bevel question, both directions.** A trace of an eyewire's bevel
+  groove is the *finished* lens: the drawn lens opening grown outward by the
+  bevel depth. A demo lens or a drill-mount shape is traced at its edge.
+  Whether to allow for the bevel depends on where the trace came from and
+  what the shape is for, which only you know, so import and export each ask
+  (depth pre-filled from the boxing guide's bevel setting):
+  - *Import*: the dialog names what the file declares, when it does: a
+    frame, pattern or demo lens trace (TRCFMT's F, P or D) and the frame
+    type (FTYP). GuildDraw draws no conclusion from it. **Shrink by the
+    Bevel Depth** shrinks the trace (the finished edges still land the
+    file's DBL apart), or **Import As Traced** keeps the traced size.
   - *Export*: **Export the Finished Lens** writes the finished size for labs
     and edgers, or **Export the Drawn Opening** writes the drawn lens
     opening.
@@ -525,13 +633,28 @@ For rimless / drill-mount lenses (flat, no bevel), use the **DRILL** layer:
 ## 5. Checking the design
 
 - **Measurements panel**: live frame width, lens A/B, DBL readouts.
+- **Formed Measurements** (Frame Front, with forming set): each lens's A
+  head-on, as the front is seen; in the lens plane, where ISO 8624 measures
+  and a drawing carries it; and flat, as cut; its B in the lens plane; the
+  DBL, the boxed-center distance and the frame width head-on; the
+  circumference in the lens plane and in 3D (labs size by the 3D groove
+  length); the edge sag; each lens plane's tilt (ZTILT); the frame curve;
+  and how far the endpieces sit behind the bridge. All are measured on the
+  finished lens at the groove line, 1.5 mm behind the front face, where
+  GuildModel cuts the groove. Under them: a red note when a lens's A in the
+  lens plane is more than ISO's ±0.5 mm off its flat A (draw it larger, or
+  use Flatten Lens Shape), when a lens reaches more than half a millimeter into
+  the bridge band (a pair drawn off the axis, or two lenses that overlap), or
+  when the sheet is thicker than the bend can carry.
 - **Dimensions**: place linear dims with `D`.
 - **Print at 1:1** (File menu) or **File → Export → PDF (1:1 Scale)…**: paper
   test-fit. Both render **what your viewport currently frames** at exact
   1:1 in print-friendly inks, and say so when the drawing shown runs off the
   page. Every print carries the templates' tick-marked **100 mm ruler** (50 mm
   on small sheets): measure it; if it isn't exact, your printer driver scaled
-  the page (disable "fit to page").
+  the page (disable "fit to page"). With View Obverse on, the drawing is
+  mirrored, as the canvas shows it, and the status bar names the face; the
+  ruler reads normally. The templates below always print the drawn face.
 - **File → Print Front + Temples (1:1 Templates)…** or **File → Export →
   PDF Front + Temples…**: cutting templates for the hand-made workflow. The
   frame front and both temples are laid out at exactly 1:1, stacked and
@@ -576,7 +699,9 @@ For rimless / drill-mount lenses (flat, no bevel), use the **DRILL** layer:
   (150–1200 dpi), cropped to the drawing, without the selection's highlight
   or handles. The file records its resolution, so it prints at true size;
   past 8192 px a side the resolution comes down, and the status bar says so.
-  With View Obverse on, the image is mirrored, as the canvas shows it.
+  With View Obverse on, the image is mirrored, as the canvas shows it; with
+  View Formed on, it is the formed drawing over the faded flat one, as the
+  canvas shows it, and the status bar says so.
 - **File → Export → SVG…** writes the tab for other programs: hairline
   strokes, and engraving text as its letters' outlines.
 - The export dialogs start beside the open design, or in the folder you last

@@ -15,19 +15,29 @@ from __future__ import annotations
 import shapely.geometry as _sg
 
 from .document import Curve
-from .geometry import point_at_t
+from .geometry import flatten_curve
 
-_SAMPLES = 256       # polygon sample points around the curve
+_TOL_MM = 0.01       # how near the polygon keeps to the curve
 _JOIN_ROUND = 1      # shapely round join — smooth offset, no miter spikes
 
 
-def lens_polygon(curve: Curve):
-    """Shapely polygon of the sampled curve (validity-repaired)."""
-    n = _SAMPLES
-    pts = [point_at_t(curve, i / n) for i in range(n + 1)]
+def lens_polygon(curve: Curve, tol_mm: float = _TOL_MM):
+    """Shapely polygon of the curve within *tol_mm* of it (validity-repaired).
+    Every corner of a polygon lens is a vertex: 256 points evenly spaced in t
+    cut the corners, so A/B read short (0.19 mm on a pentagon) and Resize
+    scaled by the wrong factor (2.0.1). A lens that crosses itself keeps every
+    lobe: buffer(0) dropped one, so a lens with a loop at a node read A 39.57
+    for 50.00, and Resize to 50 made it 63.18 (2.0.1)."""
+    pts = flatten_curve(curve, tol_mm)
+    if len(pts) < 3:
+        return _sg.Polygon()
     poly = _sg.Polygon(pts)
     if not poly.is_valid:
-        poly = poly.buffer(0)
+        import shapely
+        fixed = shapely.make_valid(poly)
+        parts = [g for g in getattr(fixed, "geoms", [fixed])
+                 if g.geom_type in ("Polygon", "MultiPolygon") and not g.is_empty]
+        poly = shapely.union_all(parts) if parts else _sg.Polygon()
     return poly
 
 
@@ -83,7 +93,7 @@ def bevel_outline_points(curve: Curve, depth_mm: float) -> list[tuple[float, flo
     return [(float(x), float(y)) for x, y in buf.exterior.coords]
 
 
-def finished_geometry(curve: Curve, depth_mm: float
+def finished_geometry(curve: Curve, depth_mm: float, tol_mm: float = _TOL_MM
                       ) -> tuple[tuple[float, float, float, float] | None,
                                  list[tuple[float, float]] | None]:
     """(finished bbox, bevel outline points) in ONE buffer pass.
@@ -91,9 +101,10 @@ def finished_geometry(curve: Curve, depth_mm: float
     Equivalent to ``(finished_box(c, d), bevel_outline_points(c, d))`` but
     builds the sampled polygon and its outward buffer once — the snapped
     boxing guide calls this per lens on every live geometry change.
-    The outline is None when depth <= 0 (no bevel to draw).
+    The outline is None when depth <= 0 (no bevel to draw). Its chords lie
+    up to *tol_mm* inside the curve: the OMA export asks for a finer one.
     """
-    poly = lens_polygon(curve)
+    poly = lens_polygon(curve, tol_mm)
     if poly.is_empty:
         return None, None
     if not depth_mm or depth_mm <= 0:

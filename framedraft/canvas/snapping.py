@@ -1,4 +1,6 @@
 import math
+
+import numpy as np
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QPen, QColor, QPainterPath
 
@@ -37,8 +39,11 @@ def _angle_in_arc(angle_deg: float, start_deg: float, end_deg: float) -> bool:
     """True if angle_deg is covered by the arc sweeping from start_deg to end_deg
     in the positive (CW-on-screen) direction."""
     sweep = (end_deg - start_deg) % 360
-    if sweep < 0.001:
-        sweep = 360.0     # equal angles draw a full circle (build_path agrees)
+    if sweep < 1e-9:
+        # Equal angles draw a full circle: geometry's rule (_arc_sweep_deg),
+        # which build_path keeps too. At 0.001 a fillet of nearly straight
+        # legs offered quadrants a dot-sized arc does not reach.
+        sweep = 360.0
     return ((angle_deg - start_deg) % 360) <= sweep
 
 
@@ -51,12 +56,11 @@ class SnapEngine:
     and off per user preference (set_enabled_types), the master toggle
     (set_enabled) and Ctrl-suspend still silence everything at once.
 
-    Point-target priority is purely nearest-wins among enabled types;
-    the mirror-axis projection, on-curve and grid are fallbacks when no
-    point target hits (a projection is a zero-distance hit and would
-    otherwise steal an endpoint sitting on the axis, leaving a gap the
-    perimeter can't close), and the origin overrides everything inside
-    its radius.
+    Point-target priority is purely nearest-wins among enabled types, the
+    origin included; the mirror-axis projection, on-curve and grid are
+    fallbacks when no point target hits (a projection is a zero-distance hit
+    and would otherwise steal an endpoint sitting on the axis, leaving a gap
+    the perimeter can't close).
     """
 
     def __init__(self, scene):
@@ -71,15 +75,27 @@ class SnapEngine:
         self._radius_px: float  = _SNAP_RADIUS_PX
         self._grid_spacing: float = 0.0   # mm; 0 disables grid snap
         self._enabled_types: set[str] = set(SNAP_TYPE_KEYS)
-        # Intersection cache: (id(a), id(b)) -> [(x, y), ...]; wholesale-
-        # invalidated whenever the scene's geometry revision moves (ids are
-        # stable between revisions because add/remove bumps the revision).
+        # Intersection cache: (id(a), id(b)) -> (a, b, a's version, b's
+        # version, [(x, y), ...]). A pair is recomputed only when one of its
+        # curves has changed (_version); the whole cache used to go on every
+        # revision, and the first move after any edit recomputed every nearby
+        # pair, up to 0.56 s among a few dense curves.
         self._isect_cache: dict = {}
         self._isect_rev: int = -1
         # Per-curve control extents, id(curve) -> (curve, extent), dropped on
-        # the same revision bump. Holding the curve keeps its id from being
+        # each revision bump. Holding the curve keeps its id from being
         # reused by a new curve while the entry lives.
         self._extent_cache: dict = {}
+        # Per-curve geometry versions, id(curve) -> (curve, geometry key,
+        # version, the revision it was checked at). A revision says that some
+        # curve changed, not which; comparing a curve's key with the one it
+        # had says, once per curve per revision.
+        self._versions: dict = {}
+        self._last_version: int = 0
+        # Per-curve samples for the On-curve and Perpendicular snaps,
+        # id(curve) -> (curve, version, arrays) (_samples). Each move sampled
+        # every curve near the cursor again: 50 ms a move at 2000 nodes.
+        self._sample_cache: dict = {}
 
     # ------------------------------------------------------------------
     # Configuration
@@ -221,6 +237,12 @@ class SnapEngine:
         for node in drawing_nodes:
             candidate(QPointF(node.x, node.y), "node")
 
+        # The origin is one more point target: the nearest wins. It used to
+        # override every hit, so an open end within a few pixels of (0, 0)
+        # could not be snapped to and the outline was left with a gap. The
+        # mirror projection it once had to beat is a fallback now (below).
+        candidate(QPointF(0.0, 0.0), "axis")
+
         if "intersection" in enabled:
             self._intersection_candidates(scene_pos, view, candidate, is_visible)
 
@@ -262,16 +284,6 @@ class SnapEngine:
             if _px_dist(view, scene_pos, gpt) < self._radius_px:
                 best, best_type = gpt, "grid"
 
-        # Origin snap — single point (0, 0).
-        # Checked after all other candidates so it can override them: the mirror
-        # snap projects the cursor onto x=0 with zero distance, which would always
-        # beat a point-snap via the normal < comparison.
-        if "axis" in enabled:
-            _d_orig = _px_dist(view, scene_pos, QPointF(0.0, 0.0))
-            if _d_orig < self._radius_px:
-                best      = QPointF(0.0, 0.0)
-                best_type = "axis"
-
         if best_type:
             self._show(best, best_type)
         else:
@@ -299,7 +311,13 @@ class SnapEngine:
             if not (xs[0] - pad <= px <= xs[1] + pad
                     and ys[0] - pad <= py <= ys[1] + pad):
                 continue
-            for x, y, _t in sample_curve(curve, 24):
+            sx, sy, _dxs, _dys = self._samples(curve)
+            # Only a sample whose square distance is within a hair of
+            # best_d's square can beat best_d; those few are measured as
+            # every sample was, in the same order, so the same one wins.
+            d2 = (sx - px) ** 2 + (sy - py) ** 2
+            for k in np.flatnonzero(d2 <= best_d * best_d * (1.0 + 1e-9)).tolist():
+                x, y = float(sx[k]), float(sy[k])
                 d = math.hypot(x - px, y - py)
                 if d < best_d:
                     best_d = d
@@ -328,13 +346,18 @@ class SnapEngine:
         if len(near) < 2:
             return
 
+        versions = [self._version(c) for c in near]
         for i, a in enumerate(near):
-            for b in near[i + 1:]:
+            for j in range(i + 1, len(near)):
+                b = near[j]
                 key = (id(a), id(b))
-                pts = self._isect_cache.get(key)
-                if pts is None:
+                hit = self._isect_cache.get(key)
+                if (hit is not None and hit[0] is a and hit[1] is b
+                        and hit[2] == versions[i] and hit[3] == versions[j]):
+                    pts = hit[4]
+                else:
                     pts = curve_intersections(a, b)
-                    self._isect_cache[key] = pts
+                    self._isect_cache[key] = (a, b, versions[i], versions[j], pts)
                 for x, y in pts:
                     candidate(QPointF(x, y), "intersection")
 
@@ -391,28 +414,82 @@ class SnapEngine:
                         candidate(QPointF(*foot), "perpendicular")
 
             elif want_perp:   # spline: feet where the tangent is ⟂ to anchor→S
-                samples = [(x, y) for x, y, _t in sample_curve(curve, 24)]
-                m = len(samples)
+                xs, ys, dxs, dys = self._samples(curve)
+                m = len(xs)
                 if m < 3:
                     continue
-                prev = _perp_dot(samples, 0, ax, ay)
-                for i in range(1, m):
-                    val = _perp_dot(samples, i, ax, ay)
-                    if prev == 0.0 or (prev < 0.0) != (val < 0.0):
-                        u = prev / (prev - val) if val != prev else 0.5
-                        x0, y0 = samples[i - 1]
-                        x1, y1 = samples[i]
-                        candidate(QPointF(x0 + (x1 - x0) * u,
-                                          y0 + (y1 - y0) * u), "perpendicular")
-                    prev = val
+                # (sample − anchor) · local tangent at every sample at once; a
+                # sign change between consecutive samples, or a zero, brackets
+                # a point where the curve is perpendicular to the anchor.
+                vals = (xs - ax) * dxs + (ys - ay) * dys
+                prev, nxt = vals[:-1], vals[1:]
+                feet = np.flatnonzero((prev == 0.0) | ((prev < 0.0) != (nxt < 0.0)))
+                for k in feet.tolist():
+                    p, v = float(vals[k]), float(vals[k + 1])
+                    u = p / (p - v) if v != p else 0.5
+                    x0, y0 = float(xs[k]), float(ys[k])
+                    x1, y1 = float(xs[k + 1]), float(ys[k + 1])
+                    candidate(QPointF(x0 + (x1 - x0) * u,
+                                      y0 + (y1 - y0) * u), "perpendicular")
 
     def _sync_revision(self) -> None:
-        """Drop the geometry caches when the scene's revision has moved."""
+        """When the scene's revision has moved, drop the extents and whatever
+        is held for a curve no longer in the drawing. Samples and crossings
+        stay, each checked against its curves' versions as it is used."""
         rev = getattr(self._scene, "revision", 0)
         if rev != self._isect_rev:
-            self._isect_cache.clear()
             self._extent_cache.clear()
             self._isect_rev = rev
+            live = {id(c): c for c in self._doc_curves}
+
+            def kept(c) -> bool:
+                return live.get(id(c)) is c
+            self._versions = {k: v for k, v in self._versions.items()
+                              if kept(v[0])}
+            self._sample_cache = {k: v for k, v in self._sample_cache.items()
+                                  if kept(v[0])}
+            self._isect_cache = {k: v for k, v in self._isect_cache.items()
+                                 if kept(v[0]) and kept(v[1])}
+
+    def _version(self, curve) -> int:
+        """A number that changes when *curve*'s geometry does. Its key is
+        compared once per revision, or on every call in a scene without
+        one, which cannot say when a curve moved."""
+        rev = getattr(self._scene, "revision", None)
+        hit = self._versions.get(id(curve))
+        if hit is not None and hit[0] is not curve:
+            hit = None
+        if hit is not None and rev is not None and hit[3] == rev:
+            return hit[2]
+        key = _geometry_key(curve)
+        if hit is not None and hit[1] == key:
+            version = hit[2]
+        else:
+            self._last_version += 1
+            version = self._last_version
+        self._versions[id(curve)] = (curve, key, version, rev)
+        return version
+
+    def _samples(self, curve) -> tuple:
+        """sample_curve(curve, 24) as arrays (xs, ys), with each sample's
+        neighbors' difference (dxs, dys: the next sample less the one
+        before, the ends clamped), the local tangent the Perpendicular snap
+        measures. Kept until the curve changes."""
+        version = self._version(curve)
+        hit = self._sample_cache.get(id(curve))
+        if hit is not None and hit[0] is curve and hit[1] == version:
+            return hit[2]
+        pts = sample_curve(curve, 24)
+        xs = np.array([p[0] for p in pts], dtype=float)
+        ys = np.array([p[1] for p in pts], dtype=float)
+        if len(pts):
+            dxs = np.concatenate((xs[1:], xs[-1:])) - np.concatenate((xs[:1], xs[:-1]))
+            dys = np.concatenate((ys[1:], ys[-1:])) - np.concatenate((ys[:1], ys[:-1]))
+        else:
+            dxs, dys = xs, ys
+        arrays = (xs, ys, dxs, dys)
+        self._sample_cache[id(curve)] = (curve, version, arrays)
+        return arrays
 
     def _extent(self, curve) -> tuple:
         """_control_extent, cached until the next revision bump. A scene
@@ -521,14 +598,15 @@ def _angle_on_arc(is_arc: bool, a_rad: float,
     return _angle_in_arc(math.degrees(a_rad) % 360, sa, ea)
 
 
-def _perp_dot(samples: list, i: int, ax: float, ay: float) -> float:
-    """(sample_i − anchor) · local tangent; a sign change between consecutive
-    samples brackets a point where the curve is perpendicular to the anchor."""
-    m = len(samples)
-    x, y = samples[i]
-    xp, yp = samples[max(0, i - 1)]
-    xn, yn = samples[min(m - 1, i + 1)]
-    return (x - ax) * (xn - xp) + (y - ay) * (yn - yp)
+def _geometry_key(curve) -> tuple:
+    """Everything sample_curve and curve_intersections read from *curve*, as
+    plain numbers: two equal keys draw the same curve."""
+    return (curve.kind, curve.closed, curve.radius,
+            curve.start_angle, curve.end_angle,
+            tuple((n.x, n.y,
+                   None if n.cp_in is None else (n.cp_in.x, n.cp_in.y),
+                   None if n.cp_out is None else (n.cp_out.x, n.cp_out.y))
+                  for n in curve.nodes))
 
 
 def _project_to_segment(px: float, py: float,

@@ -2627,7 +2627,851 @@ engraving with a face, and item 4 on its bridge decision and anterior bridge
 cut. The release, item 10, is last, with GuildModel's, whose own gates (a
 shipped-bed redesign and a video) come first.
 
+# 2.0.1 — the bug hunt after 2.0.0 (2026-10-28)
+
+> **Why.** Using 2.0.0 on stream, the maker found the Text dialog's font box
+> taking one character and no more. That fault came from the polish round's
+> own diff, a control the suite called but never typed into, so the round
+> after it is a bug hunt of the whole app, shipped as a small bump: 2.0.1,
+> fixes only, no file format change GuildModel would see.
+
+**The font box (fixed first, the same day).** The not-installed note under
+the font box refreshed on `currentTextChanged` by asking for the committed
+family, and committing turned the first letter typed into the first family
+it began. `FontFilterCombo.family_changed` now fires only when a family
+settles (a pick, leaving the box, `set_family`), and the note listens to it.
+
+**The hunt.** Five read-only reviews, each confirming its findings with an
+offscreen script: the main window in two halves, the files, the canvas and
+tools, the geometry and the validator. 47 findings, 44 once three found by
+two reviews are counted once; 40 are fixed, each pinned by a test in
+`tests/test_v201_bug_hunt.py` (50 tests, all failing on 2.0.0 but five that
+guard ordinary designs staying green). The four left are under *Done after
+the hunt*.
+
+- **Typing and the controls.** Boxing A, B and DBL typed before *Snap to
+  lens shape* were lost on un-snap and saved stale (the handlers moved the
+  guide and never stored the value). A click through the Scale field
+  replaced a 2-point calibration with its four-decimal rounding. Stock and
+  pad sizes changed in Preferences starred an empty design. Unlinking a lens
+  tint gave back another design's bottom color (`lens_fill_bottom_kept` is
+  per document now). Ctrl+G, Ctrl+Shift+G, Ctrl+Y and Ctrl+Shift+Z acted on
+  the drawing while a field had focus (through `_hotkey_dispatch` now; the
+  offscreen platform takes Windows' keys, where a field owns Ctrl+Y, so the
+  test fires the shortcut itself). The Line weight box kept the previous
+  tab's selection.
+- **The canvas.** A file dropped on the drawing was refused: the view took
+  the drag and nothing in the scene accepted it (drop-to-open, B29, worked
+  only on the toolbar and status bar). Zoomed out, every second click beside
+  a selected curve deselected it. A curve on a locked layer drawn later took
+  the click from the curve beside it (`_near_pick` prefers a selectable one).
+  The origin snap overrode a nearer open end, leaving a gap; it is an
+  ordinary point target now. A tool picked by hotkey mid-drag left node dots
+  on a deselected curve (`_teardown_tools` ends the drag first).
+- **The tools.** A double-click trimmed twice with Trim, and placed an arc's
+  center on its chord. Fillet opened a closed polyline and dropped a side
+  (open lines only). Rebuild picked in the tool, and Explode, broke a placed
+  component's group (refused, as Trim, Split and Fillet are); Mirror Close
+  keeps the group. A refused grouped Trim, Split or Fillet still reported
+  success (`tools.trim.GROUPED_REFUSAL`, checked by the tools before they
+  emit). The Line tool committed zero-length segments, from a typed length
+  of 0 and from a re-click snapped onto the last node. Deleting a node of a
+  closed triangle left a closed two-node line.
+- **The files.** A photo never calibrated took another photo's calibration on
+  reopen (the design-wide value now reaches every photo only in a file from
+  before 2.0, whose records carry none of their own). Save As took
+  stand-in images from the file it overwrote, not from the design's own
+  (a same-named photo from another design; a photo the open left in the file
+  dropped). An SVG exported from a temple or the component tab opened into
+  the Frame Front, and Ctrl+S wrote it back as a front: an exported SVG's
+  metadata names its tab (`workspace`, never in a `.gdraw` member), and it
+  opens there without a path. Photos and swatches beside a design at a drive
+  or share root were never found (`doc_dir + os.sep` doubled the separator).
+  Catalog PDFs for a Folder started with *Save the fill into the files*
+  ticked. An Inkscape file with a layer named "curves" read as a design and
+  failed to open. A batch run with a fractional opacity rewrote every file
+  every run. A forming apical radius of 0 (a file with no forming block,
+  which GuildModel reads as its own default) was saved as the field's 2.0 on
+  the active tab. A UTF-16 SVG declaring entities passed the DOCTYPE guard.
+  Upgraders from 1.3 kept Mirror Close's toolbar button hidden, though 1.3.1
+  wrote that False as its default (a toolbar without the 2.0 "obverse" key
+  is from before 2.0, and shows it once).
+- **The window, the rest.** PNG export of a tab holding only a photo said
+  "nothing to export" and exported. Ungroup left members on a hidden layer
+  grouped. An import onto a hidden layer added unseen curves with no word
+  (the paste's note, `_layer_note`, says so now). "&" in a recent file's name
+  read as a mnemonic. A rename by case alone was refused on a disk that
+  ignores case (macOS; fixed by reading, `samefile`, no test on Linux).
+- **The readiness check.** Two false greens with the Ghost off: a rim with no
+  lens beside one that has its lens, and two lenses on one eye of a one-piece
+  front. GuildModel builds neither as drawn (corrected below). A rim drawn
+  open with its ends within 0.1 mm skipped the Ghost check that a closed one
+  gets. And the validator asked to bake an opening's twin the canvas never
+  showed, when a handle reached past the axis (it uses the scene's own hull
+  test now). The Frame Library's 46 designs stay green as saved and with
+  the Ghost toggled, but for one design's known sculpt lines.
+- **Geometry.** Split at a node left a second node 4e-9 mm from the new end.
+  A polyline offset left the corner beside a repeated node where it was, so
+  that corner kept no clearance. The boxing measurement sampled polygon
+  lenses evenly in t and cut their corners: A and B read up to 0.19 mm short
+  and Resize scaled by the wrong factor (`lens_polygon` flattens to 0.01 mm).
+
+**Done after the hunt (2026-10-29).** The maker asked for the items left
+over in 2.0.1 rather than a round of their own.
+- **The offset that crossed itself at corners.** `geometry._untangle_offset`
+  runs after the offset is built (Tiller–Hanson or its refit): it flattens
+  the cubics, finds every crossing of two segments that are not neighbors
+  (shapely's STRtree), refines it by Newton on the two cubics, and cuts the
+  loop out, the two pieces trimmed into one sharp node. Which side of a
+  crossing goes: a loop with no other crossing on it that turns against the
+  offset side first (corner and bend loops all do; on a closed curve only an
+  inward offset can tell them by turn, since an outward offset's main loop
+  turns the same way), then the smaller side. An open curve cuts corner and
+  bend loops only. A hairpin counts as a crossing: within 0.02 mm (the
+  offset's accuracy) and ten times as far round the curve, it is a loop the
+  approximation lost (two library outlines at ±1 mm). The offset is left as
+  it was when it does not cross, when the source does, or when what is left
+  is not one loop turning as the source turns (an inward offset past the
+  shape's width). Measured on the Frame Library and the shipped hinges at
+  ±0.05, ±0.3, ±1 and −2 mm: every crossing offset is clean, but for shapes
+  with nothing left at −2 mm and one REF curve, open with its ends touching,
+  whose end pieces cross as an open curve's should. About 10 ms an offset.
+  Pinned by a cornered square, the near-collapse square from each start
+  node, an L-hexagon with the seam at each node, an open L, a curve that
+  crosses itself (left alone), every shipped hinge pocket, a hairpin, and a
+  corpus test (every outline at ±1 mm, local only).
+- **The offset was slow.** `_offset_matches` compared the refit with the
+  Tiller–Hanson result point by point in Python: nine tenths of the time,
+  3–8 s for a front outline in the tool's live preview. Vectorized with
+  shapely (identical on all 1075 checks the library makes); about ten times
+  faster.
+- **The offset that froze the window (the maker, 2026-10-29).** −10 mm on
+  an open half outline left GuildDraw "Not Responding". Far past its bends an
+  offset loops at every one: the loop search weighed each crossing against
+  all the others in Python, the square of thousands each pass, for up to 500
+  passes, and then handed back the tangled offset anyway; the refit measured
+  its fit point by point (`fitting._max_deviation`) and matched it against
+  an unprepared line (`_offset_matches`). Now the search counts the other
+  crossings on a loop by bisection over their sorted ends, the deviation is
+  shapely's and the match uses prepared lines: the same cuts and the same
+  curves on all 13 391 offsets of the library (±0.05 to ±5 mm, splines and
+  polylines), the corpus and the hinges. And `geometry.OffsetOutOfRange`
+  where nothing could come of it, each of which came back crossing itself or
+  turned inside out: a closed spline or polyline shrunk past its width
+  (shapely's buffer of the drawn shape, before any offset is built), a
+  search past its budget (`_LOOP_MAX_WORK`, 400 000 flattened points summed
+  over its passes; the library peaks at 145 000 at ±3 mm and 355 000 at
+  +5 mm), or out of passes. The Offset tool shows *out of range* in a red
+  HUD with the reason in the status bar, and Enter adds nothing; it previews
+  after a 150 ms pause in the typing, and Enter adds the offset the preview
+  showed (a copy) without working it out again. The worst case measured
+  is 2.8 s to a refusal, against 30 s and more. Pinned by a rectangle
+  shrunk past its width (spline and polyline), a lens, a zigzag 5 mm off,
+  both budgets, a bow left unjudged, and the tool's refusal and its wait.
+- **A fill image that did not travel was saved as Color.** The combo still
+  shows what the canvas shows; `WorkspaceState.fill_image_unfound` (and the
+  inlay's) keeps the Image style for the save (`fill_style_saved`), the batch
+  catalog's before/after compare reads it, and the image button and its
+  clear stay live with a tooltip to choose the file again or clear it.
+- **Reference images changed their stacking after such a save.** Each photo
+  keeps its place in the file (`FaceImage.order`, never written; the scene's
+  `face_order`), and `app._restack_faces` puts each unshown one back below
+  the first shown one that followed it; a photo shown since stays on top.
+  Locate… still puts a found photo on top, as before.
+- **1:1 Print and PDF with View Obverse (the maker's call: follow the
+  view).** `_render_1to1(mirrored=)` turns the drawing about the framed
+  view, the ruler unturned, and the status bar names the face as PNG's does
+  (`_obverse_note`). Template prints and catalog PDFs keep the drawn face.
+- **The macOS case-only rename** has a test, a disk that folds case standing
+  in for a Mac; it fails on 2.0.0 with the reported refusal. A run on a Mac
+  is still the proof.
+- **The empty rim, found running GuildModel's intake.** GuildModel did not
+  cut such a rim solid: by which rim was the larger it built a monocle, the
+  empty rim a stray, or failed to partition. And the 2.0.1 rule counted
+  bodies only, so two rims alike with the lens in the first read green (the
+  empty one a stray). Both apps now count any contour as large as half a
+  rim with a lens that holds none, body or stray; the message says GuildModel
+  builds the front without it, or not at all.
+- **GuildModel agrees (hand-off item 4, uncommitted in GuildModel).**
+  `regions.half_drawn_front` takes the other lenses, `regions.empty_rims`
+  counts as above, and `derive_workspace` sets `one_eye` and `empty_rims`,
+  which stop the castle with a log line and a reason; tests in
+  `test_bug_hunt_v200.py` and `test_separated_rims.py`, a CHANGELOG entry
+  under Unreleased. The Frame Library's 46 fronts trip neither rule in
+  either app.
+
+**Still open.** A run on a Mac for the case-only rename. Locate… puts a
+found photo on top of the others. An open offset whose far parts cross is
+handed back crossing, as the untangle intends; far past the bends (±5 mm
+and more on an open outline) a corner loop or a hook can be left too.
+Whether such an open offset should read out of range is the maker's call:
+the one library REF curve open with its ends touching crosses at +0.3 mm.
+
+**Release.** `framedraft/__init__.py`, the installer's defaults, the user
+guide's title and the About test say 2.0.1; `docs/RELEASE-v2.0.1.md` after
+1.3.1's pattern; the README's status paragraph and *Fixes in 2.0.1*. Held
+uncommitted for the maker's review. 2.0.0 was published on 2026-10-19;
+builds from GitHub Actions and the tag come when the maker publishes 2.0.1.
+
 ---
+
+# The offset's cousins: an investigation pass (2026-10-29, planning only)
+
+> **Why.** The Offset tool froze the window at −10 mm on an open outline (fixed
+> in 2.0.1, above): a computation that grew without bound, run on every
+> keystroke, that handed back junk when it finished. The maker asked for a pass
+> over the rest of GuildDraw for the same class of fault. Four read-only
+> reviews measured the interactive tools and typed fields, the work done after
+> every edit, the geometry kernel and fitting, and the files in and out, on a
+> scratch copy of the library plus synthetic imports. Most of it then went
+> into 2.0.1 the same day, at the maker's ask (*Done in 2.0.1*, below).
+
+**The library is light; imports are not.** The largest front has 24 curves and
+261 nodes, at most 64 to a curve. On it every stage stays fast: a document
+change 10 ms, a drag tick 7 ms, an undo 19 ms, an open 35 ms. All typed
+fields in the panel are range-bounded, and the fills, the validator and the
+measurements stay flat as node density grows (adaptive flattening). No loop
+anywhere lacks a cap. Every cliff below comes from an uncapped count, a
+pairwise product, or a curve re-sampled inside a loop over curves, and each
+is reached by one dense curve of the kind a DXF or SVG trace, an Explode, or a
+large Rebuild count produces. Times are from this Linux machine; a slower
+computer multiplies them.
+
+**Freezes (the offset's pattern).**
+0. **The offset itself, on a dense lens: 2.0.1's budget has a hole.** The
+   refit (`_reduce_offset_nodes` → `fit_curve`, with the quadratic deviation
+   of item 4) runs before the untangle and outside `_LOOP_MAX_WORK`. A
+   1000-point lens trace with 0.01 mm of tracer noise takes 3.7 s to refuse
+   −0.5 mm (2000 points 15 s, 5000 points 71 s), in the Offset tool's
+   preview and in the OMA import's bevel shrink. The noise also makes an
+   ordinary shrink refuse: its wiggles fold at any distance over about
+   0.06 mm. The OMA import then brings both lenses in at traced size, 2000
+   nodes each, after one warning. Direction: the refit under the same
+   budget; the indexed deviation; traces fitted with a smoothing tolerance
+   tied to the R records' 0.01 mm quantum and a node cap; the bevel shrink
+   done as a polygon buffer, then fitted. First in the next round.
+1. **The readiness check after an Explode or a large import.** `validate._closed_chains`
+   re-walks every open chain from every start, rescanning all ends at each
+   step, and runs seven times per check. Explode an outline and delete one
+   piece (or import a LINE-entity DXF with a gap), and every later edit,
+   undo, Ghost toggle, tab switch and stock-size keystroke reruns it on the
+   GUI thread: 0.2 s at 89 pieces, 1 s at 179, 4 s at 269, 297 s at 899;
+   12 s per edit on the largest front's outline exploded. `_copy_checks` and
+   `_ghost_checks` compare every pair on a layer (1000 SCULPT lines: 1.3 s
+   per edit), `_outline_bodies.inside_another` every pair of OUTLINE contours
+   (2000 small closed curves imported onto OUTLINE, the front's default
+   layer: a 23 s freeze after the import, 22 s on reopen, 22 s for each
+   later edit), and the stock width and height boxes run the whole check on
+   each keystroke (keyboard tracking on). Direction: join ends by a snapped
+   grid or an STRtree and walk each chain once (union-find); work out the
+   chains once per check; index the pairs; tracking off on the stock boxes;
+   debounce the check, or run it on a worker (it is a pure function of the
+   curves).
+2. **Trim and Split on a dense curve.** One click intersects the target with
+   every other curve, re-sampling the target twice per curve and with no
+   bounding-box reject, then projects each crossing by a Python scan: 2.3 s
+   in the window for the largest front plus a 2000-node trace, 7.4 s among
+   100 curves, 63 s for 8000 nodes among 200. Split pays it on every click.
+   Direction: sample the target once, reject by envelope, cache each curve's
+   line per revision, project vectorized.
+3. **Rebuild's node count.** No cap, a full refit on every digit, and a
+   deviation check that grows with the square of the input: one keystroke
+   took 27.7 s on a 20 000-vertex polyline, and "1000000" 112 s. A 64-node
+   spline "rebuilt" to 17 000 nodes is accepted on Enter, and the count
+   differs from the one asked for (the 0.01 mm hairline merge). Direction:
+   cap the count against the source, debounce as the Offset tool now does,
+   say when the merge changed the count.
+4. **`fitting._max_deviation` (2.0.1's shapely version).** GEOS measures a
+   point against a line by brute force, so a fit of 16 000 points spends
+   16.6 s here and a 16 000-vertex zigzag 48 s. It feeds Rebuild, the DXF
+   import's fit and the offset refit. An STRtree of the polyline's segments
+   (`query_nearest`) gave bit-identical results 70 to 110 times faster on
+   four cases; check it on the library's offsets before it lands.
+5. **Undo on a dense design.** Each snapshot is a deep copy of the tab, 100
+   to a tab: at 20 times the largest front, +220 MB and full garbage
+   collections of 1 s that land on random edits (2.8 s at 50 times). A
+   pickled snapshot was 8 times faster to take, one untracked object, and 5
+   times smaller.
+
+**Wrong answers accepted without a word.**
+6. **Intersections miss a curve that ends on another from outside.** Curves
+   are intersected as 16-chords-a-segment polylines, which lie inside the
+   curve by their sagitta: a line ending exactly on a circle is seen 36 times
+   in 36 from inside and never from outside. Trim then finds no crossing (or
+   cuts between the wrong pair), the Intersection snap offers nothing, and
+   Split does not snap to the junction. On the library: 74 such junctions
+   and 140 slight overshoots unseen, which the Frame Fill (0.1 mm stitch)
+   does join. Shallow crossings land the cut off by about sagitta / sin of
+   the angle (60 of 1382 library crossings more than 0.1 mm, the worst 2
+   mm); overlapping curves give a pseudo-crossing every 1 to 2.5 mm, so Trim
+   removes a sliver of a duplicated lens. Direction: adaptive flattening
+   well below the closure tolerance, each hit refined on the exact curves,
+   an end within a hair of a curve counted as a touch, an overlap reported
+   by its two ends. This and item 2 are one change.
+7. **Trim's keep test is in t, not millimeters** (`trim.py:228`, `:230`): on
+   a dense polyline it deletes a 20 mm head with the clicked piece.
+8. **Bookmarks can make a design unopenable.** Each stores the whole design,
+   uncapped and indented; a dense front with 20 bookmarks saved a 78.5 MB
+   `front.svg` without complaint, and the next open refused it (the 64 MB
+   cap) and showed an empty front, as did the autosave's recovery file.
+   Direction: check the size at save and say so; compact JSON; bookmarks as
+   differences.
+9. **A locked lens committed at A or B = 0** (or a partial "5" for "52")
+   shrinks the lenses to the 0.5 mm floor while the outline follows the
+   unclamped target (164.5 to 40.5 mm wide), and the readiness dot stays
+   green. **Fillet with a radius equal to a leg** keeps zero-length lines
+   under "Fillet applied". **`boxing.lens_polygon`'s `buffer(0)`** drops a
+   lobe of a lens with a loop at one node: A reads 39.57 for 50.00 and
+   Resize to 50 makes it 63.18. **The arc-sweep thresholds disagree**
+   (1e-9° in geometry, 0.001° on the canvas): a fillet of nearly straight
+   legs draws as a full circle. **The 0.5 mm crossing merge and 0.25 mm end
+   tolerance are absolute:** with bars 0.4 mm apart Trim deletes 15 mm.
+   **Typed magnitudes have no ceiling:** a move of 1e300 is accepted, and Fit
+   then silently does nothing.
+
+**Lag at scale.**
+10. A selected dense spline makes five scene items a node and updates every
+    handle line on each drag tick: at 5000 nodes, a 0.5 s select and 100 ms
+    ticks; inserting a node is a 200-points-a-segment scan (0.5 s). The
+    Perpendicular snap (on by default) re-samples nearby splines on every
+    mouse move while drawing: 50 ms a move at 2000 nodes, 121 ms at 5000.
+    The Intersection snap recomputes every nearby pair on the first move
+    after any edit (to 0.56 s). The temple endpiece measurement samples the
+    whole outline on every drag tick (129 ms at 3000 nodes). Reference photos
+    are kept at full resolution (47 MB a 12 MP photo; 20 add 936 MB). The
+    Frame Fill's end stitch is quadratic (369 ms at 1800 pieces), and the
+    Layers panel re-wraps its tooltips on every change (two thirds of a
+    10 ms pass). Rebuild's readout measures the fit on 24 samples a segment
+    and can report twice the true deviation.
+
+**Files in and out.** On the library every file operation is fast (open 8
+ms, save 2 ms, a batch catalog of all 46 in 0.7 s), and the `.gdraw`, DXF
+and SVG round trips are exact over ten cycles. The faults are in foreign
+input:
+11. **Import selects each new curve one at a time** (`app.py:12337`, `:12389`,
+    and the drill holes at `:10005`), each selection change rescanning the
+    selection: 2000 DXF lines 1.1 s, 5000 7 s, the 20 000-curve cap 163 s.
+    `scene.select_items` already does it in one pass. SVG import has no curve
+    cap at all.
+12. **DXF fit tolerances are in the file's units, not millimeters**
+    (`dxf_import.py:51-54`, `:148`; the scale comes after, `:488`): a lens
+    spline drawn in inches imports 0.05 to 0.12 mm off, in meters 0.4 to 0.6
+    mm off with 2 nodes, and a near-circle ellipse becomes a circle; the note
+    says only "scaled to millimeters". The plausibility window (1 to 2000 mm)
+    is too wide and skipped for files stamped mm: a lens drawn in mm but
+    stamped inches comes in 1.27 m across.
+13. **Block expansion is bounded by curves made, not work:** a 21 KB DXF of
+    nested blocks with TEXT leaves runs 9 s, deeper never ends; MINSERT
+    arrays are dropped (a 2 × 5 drill grid imports as one hole) without a
+    note.
+14. **SVG:** fill-rule is ignored, while GuildModel fills ENGRAVING even-odd,
+    so overlapping logo shapes lose ink (7.7% of two overlapping discs) with
+    no warning; the 0.01 mm hairline rule, applied per segment before the
+    import's scale, drops a densely sampled outline whole and blames the file
+    ("No supported geometry"); a width/height aspect unlike the viewBox's
+    imports at the wrong scale.
+15. **OMA:** each round trip with a bevel grows the lens (A +0.12, B +0.13 mm
+    over ten cycles at 0.5 mm; the export grows with a round-join buffer, the
+    import shrinks with the spline offset); a UTF-16 file and an absurd radius
+    give unhelpful messages. The bookmark size cap is item 8 (a 48 000-node
+    curve with three bookmarks already passes it).
+
+**Proposed order, as a round of its own.** (0) The offset's refit under the
+budget, and traces fitted for noise. (1) The readiness check: the chain
+walk, the pairs, the stock keystrokes, a debounce. (2) Trim, Split and the
+intersection snap: one sampling, an envelope reject, exact refinement, mm
+keep test, overlaps. (3) Rebuild: a cap, a debounce, the indexed deviation.
+(4) The bookmark size check, and import selecting in one pass. (5) The junk
+guards of item 9 and the DXF units. (6) Undo snapshots pickled; dense
+selection drawn lighter; snap samples cached; the rest of 13 to 15. The
+rule to keep from the offset: every live preview debounced, every count
+capped against its source, every pairwise loop indexed, and *out of range*
+said plainly instead of junk returned.
+
+**Done in 2.0.1 (2026-10-29, the maker: "roll up as many fixes as we can
+into 2.0.1").** Fixes only, no file-format change. Five agents worked at once
+on files no other touched (the validator; Trim, Split and the intersections;
+the DXF import; the SVG import; the canvas), each writing its tests first,
+seeing them fail, and checking its results against the library; the main
+session took the offset, fitting, OMA, Rebuild, Fillet, boxing, typed
+lengths and the window. 1305 tests pass.
+- *Item 0.* `fitting._max_deviation` asks an STRtree of the polyline's
+  segments (bit-identical on the 5780 deviations the library's offsets
+  measure). The untangle also counts the segment pairs it weighs
+  (`_LOOP_MAX_PAIRS`, 300 000; the library peaks at 245 000), beside the
+  confirmed `_LOOP_MAX_WORK`; all 13 956 library offsets match the code
+  before the round, but for the same 515 refusals. A noisy 1000-, 2000- and
+  5000-point trace now refuses −0.5 mm in 2.3, 4 and 6 s (3.7, 19 and 70).
+  An OMA trace noisier than its rounding (third differences: every library
+  lens reads 0.0033 mm; the gate is 0.005) is smoothed by a quadratic
+  Savitzky–Golay filter and fitted to at most 256 nodes: 32 to 72 nodes, A
+  and B within 0.01 mm, the shrink in 0.03 to 0.1 s; each lens shrinks on its
+  own, and the status bar names a smoothed trace. The Offset tool suggests
+  Rebuild for a curve over 200 nodes. Tried and taken out: cutting every bare
+  loop in one pass (the same nodes, within 0.005 mm), because the faster
+  search turned refusals of far open offsets into self-crossing results.
+- *Item 1* (`validate.py`): chains joined through a grid and walked once,
+  bridges found by Tarjan and never walked, chains worked out once a check,
+  STRtree prefilters for copies, the Ghost, contours and inlay seats, imports
+  at module level. Identical findings on 1640 library calls and 203 stress
+  designs; 899 exploded pieces 297 s → 0.017 s, 2000 closed curves on
+  OUTLINE 20.8 → 0.15 s. The stock boxes commit on Enter.
+- *Items 2, 6, 7* (`geometry.py` intersections, Trim, Split): an adaptive
+  0.002 mm flattening, crossings settled by Newton on both curves, a free end
+  within 0.1 mm of a curve counted as a meeting (the validator's closure
+  tolerance), overlaps reported by their two ends, one flattening per click
+  with an envelope reject, the keep test in millimeters, a refusal on an
+  exact copy. On the library: 1190 crossings both ways (the 99th percentile
+  moved 0.24 mm), 765 found only now (557 T-junctions), 100 only before (86
+  overlap pseudo-crossings, 14 where the chords crossed and the curves do
+  not). A 2000-node trace among 100 curves: 8.6 s → 13 ms. Left for the
+  maker: merging crossings of different curves only within 0.1 mm, which
+  fixes bars 0.4 mm apart but changes six targets in one library design.
+- *Items 3, 4:* Rebuild's count capped (four times the curve's nodes, at
+  least 64, never past its samples), a 150 ms pause, "the most for this
+  curve" in the HUD; the indexed deviation.
+- *Item 8:* a `.gdraw`'s own tabs open to 256 MB (`gdraw._MAX_TAB_BYTES`; a
+  loose SVG keeps 64 MB), and a save that passes it says so. Bookmarks as
+  differences would change the format: later.
+- *Item 9:* a locked lens refuses A or B outside 10 to 120 mm (B reads to
+  120); Fillet drops a consumed leg and refuses legs within 1e-6° of
+  straight; `lens_polygon` repairs with `make_valid`, keeping every lobe;
+  every arc-sweep test uses geometry's 1e-9°; typed lengths past 10 m are
+  refused (`typed._MAX_TYPED_MM`); the merge and end tolerances are capped at
+  a quarter of a small curve.
+- *Item 10* (the canvas): a drag tick redraws only the lines at the moved
+  node; insertion scans only the segments that can be nearest; snap samples
+  and intersection pairs cached per curve; the Frame Fill stitch counted;
+  the temple endpiece samples only the hinge end. Identical on 981 990 snap
+  results.
+- *Items 11 to 15:* imports select in one pass; DXF tolerances in
+  millimeters whatever the units, the 3 to 300 mm window for every file,
+  MINSERT arrays, a 200 000-entity cap; SVG hairlines merged cumulatively
+  after the scale, preserveAspectRatio, a 20 000-curve cap, an iterative walk.
+- *Left for later:* undo snapshots pickled (item 5); photos kept at full
+  resolution and the Layers panel's tooltips (item 10); the SVG fill rule
+  against GuildModel's even-odd (a contract question); the OMA round trip's
+  growth; a walk that meets an open spur at a fork (still quadratic, 0.6 s at
+  2000 pieces); the fitting engine itself, pure Python (a dense noisy curve
+  still takes seconds to refuse).
+- Tests: `test_v201_investigation.py` (main session),
+  `test_v201_validator_scale.py`, `test_v201_intersections.py`,
+  `test_v201_dxf_import.py`, `test_v201_svg_import.py`,
+  `test_v201_canvas_scale.py`.
+
+**Record.** The four reports, with every number's script, are in
+`/home/chad/Documents/Programs/_attic/2026-10-29-guilddraw-investigation/`
+(not in the repo; no drawing is copied there).
+
+---
+
+# OMA traces from a practice (2026-10-29)
+
+> **Why.** A friend's practice lent 412 OMA files from its tracer to test
+> against. They are private: not in the repo, never named; the probe scripts
+> (no data) are in `_attic/2026-10-29-oma-repository/`. The maker's ruling on
+> the bevel question: traces come from drill-mount shapes, demo lenses and
+> eyewire bevels, and whether to allow for padding is the user's call, by
+> origin and application.
+
+**What the files are.** One 3D tracer, ASCII with CRLF, both eyes at 500
+points. 381 frame traces (F). 31 pattern traces (P), all FTYP=3 (rimless),
+without DBL, FCRV or ZTILT, and L an exact mirror of R. No DRILLE anywhere.
+Records: ZFMT, CIRC, FCRV, FTYP (1 to 4), ZTILT, DBL, MPD (DBL plus the mean
+HBOX, to 0.01 mm), VBOX, HBOX.
+
+**What held.** All 412 parse and round-trip through `parse_oma` and
+`build_oma` byte for byte. Each trace sits on its boxing center (within
+0.009 mm), point 0 at 3 o'clock, counterclockwise, for both eyes; HBOX and
+VBOX match the radii within 0.014 mm. Tracer noise reads 0.0033 mm on all
+824 traces, so the smoothing gate (0.005) never fires. Through the app,
+offscreen, import then export, as traced and at 1 mm: DBL exact, HBOX and
+VBOX within 0.03 mm, no dialog or error.
+
+**Done (2.0.1, uncommitted).**
+- *The import's fit.* `trace_to_curve` fits a trace of more than 32 points
+  with `fit_curve`: first at 0.015 mm (`_TRACE_FIT_TOL_MM`; the fitter's own
+  measure runs up to 0.008 mm under `_worst_miss`), tightened by 0.7 up to
+  three times until no point misses 0.02 mm and the curve traces back. The
+  Catmull-Rom decimation is the fallback; a sparser trace keeps each point.
+  Nodes a lens: 72 to 256 (median 108) before, 20 to 54 (median 35) after,
+  every traced point within 0.02 mm and none refused; the 1 mm shrink, median
+  0.14 s (at most 0.37) before, 0.05 s (at most 0.13) after.
+- *The fitter.* `_generate_bezier` could return a span that runs backward
+  along its chord (handles of 14 mm on a 0.7 mm chord): a fold the
+  deviation cannot see, since it measures from the points to the curve
+  only. 11 of the 824 fitted traces then failed the export's star-shape
+  check. Now, in the tolerance fit only, such a span falls back to chord/3
+  handles and splits if it must. The test is exact: the velocity along the
+  chord, a quadratic q0, q1, q2 in Bernstein form, dips below zero where
+  q1 < -sqrt(q0·q2). Tried first and narrowed: Paper.js's q1 < 0 (handles
+  that cross), which changed 248 cases on a scratch copy of the library
+  (1163 curves; offsets at ±0.5 and ±1 mm, Rebuild by count and by
+  tolerance): 16 offsets came out up to 0.013 mm less parallel, and in
+  Rebuild by count, which cannot split a span, all four results within
+  0.5 mm came out 0.5 to 1.2 mm worse. Budget mode (`_fit_single_cubic`)
+  keeps its crossed handles. With the exact test, 10 offsets change, by
+  0.025 mm at most, and no Rebuild; no result gains or loses a crossing.
+- *The export's resampling.* `points_to_trace` interpolated the radius
+  linearly in angle, which bows a straight segment outward by r·Δθ²/8. The
+  2.0.1 `lens_polygon` (flattened to 0.01 mm) leaves chords up to 4 mm long
+  on a gentle stretch, so the bevel export stood up to 0.09 mm outside the
+  finished outline. Each ray now meets its segment exactly, and the export
+  flattens its outline to 0.001 mm (`oma._EXPORT_OUTLINE_TOL_MM`;
+  `finished_geometry` takes a tolerance): at 0.01 the chords put it up to
+  0.01 mm inside.
+- *The import dialog.* No longer says every trace follows a groove; it names
+  what the file declares (`oma.trace_origin`: TRCFMT's F, P or D; FTYP 1
+  plastic, 2 metal, 3 rimless, any other by number, 0 as not stated) and
+  offers **Shrink by the Bevel Depth** or **Import As Traced**. No default
+  from FTYP, by the maker's ruling. Only FTYP 3 = rimless and the F/P/D
+  meanings were confirmed from a source; 1 and 2 are the usual reading.
+- Tests: `test_v201_oma_traces.py` (14), on synthetic shapes only. The three
+  that pin the faults fail on the code before.
+
+**Item 15, the round trip's growth, on eleven of the lenses.** Ten export
+and import cycles, A / B change in mm (mean):
+
+| Import fit; export | Bevel 0.5 mm | Bevel 1.0 mm |
+|---|---|---|
+| Catmull-Rom; before (linear in angle, 0.01 mm outline) | +0.03 / +0.12 | +0.05 / +0.09 |
+| Catmull-Rom; the new export | +0.02 / 0.00 | +0.04 / −0.01 |
+| The fit at 0.010 mm (about 56 nodes); the new export | +0.04 / −0.01 | +0.04 / −0.01 |
+| The fit at 0.015 mm (as built); the new export | +0.07 / +0.02 | +0.10 / +0.02 |
+
+B's growth was the export's outward bow; it is gone. The A that remains
+scales with the import's tolerance: a fit wanders up to ±0.015 mm, and a
+bounding box takes the outermost wander, so each cycle adds a little at the
+nasal and temporal extremes (about 0.008 mm a round trip, under the R
+records' 0.01 mm step). **Kept at 0.015, by the maker's rule** (2026-10-29):
+fewer nodes matter more than tighter tolerance, up to the point of
+diminishing returns. 0.010 would halve the drift at about 56 nodes; fitting
+at 0.02 first would save about eight nodes more and break the import's
+0.02 mm promise, on which the lab re-export rests.
+
+**For the forming work.** The corpus's FCRV, ZTILT and CIRC (CIRC is a 3D
+length; "0.00" is not measured; FCRV differs between the eyes) are in
+`RESEARCH-forming-preview-and-draft-view.md` §3.6, beside Q10 and Q11.
+
+---
+
+# Road to 2.3 — the forming preview and the tip bend (2026-11-03)
+
+> **The decision.** 2.0.1's hunt and GuildModel's prepared 2.1.0 are not cut
+> as releases of their own. Both apps jump to **2.3.0** together, built on
+> `RESEARCH-forming-preview-and-draft-view.md` (2026-10-29): GuildDraw shows
+> the front head-on as it will look after the press and the temple with its
+> tip bend; GuildModel builds the draft view and the dimensioned drawing.
+> GuildDraw's side goes first, with a bug hunt and an interface review of
+> the whole app, as GuildModel had in its 2.1.0 round.
+
+**The maker's questions, answered here for the build** (research §8; each
+is a choice the maker can reverse, and the code says where).
+
+| Q | Choice |
+|---|---|
+| Q1 | The preview headlines **head-on A**, as asked; the ISO lens-plane A sits beside it, and the OMA export and the drawing take the lens-plane value. |
+| Q2 | The coupon is the maker's; until then the length-keeping surface sits at the front face (`neutral_fraction` 0, GuildModel's assumption), a field on the Forming group. |
+| Q3 | Forming is **stored in the `.gdraw`**, on the front tab under a new `thermoform` block whose keys are named after GuildModel's `FormingMetadata`; GuildModel reads it as the default for its own forming (its reader is the 2.3 hand-off). |
+| Q4c | GuildDraw carries **its own copy of the SBT rows** (`forming.PRESS_ROWS`); it never reads `~/.guildmodel`. |
+| Q5 | "Construction (Forming)" is renamed **Nose Fit**; the new group is **Forming**. |
+| Q6 | The adjustable length is the **length to bend**; the downward angle and the bend radius are fields beside it; the drop and the overall length are readouts. The datum is the hinge end of the outline (ISO's dowel point is the screw's axis, which the drawing has not got). |
+| Q7 | **Every layer** moves with the bend, texts included: the view is what the bench produces. The three values are stored per temple tab (`tip_bend`), so the draft view can read them. |
+| Q10 | **Unform** ships: a command on the front's lenses, undoable. |
+| Q11 | The OMA export writes FCRV, ZTILT and CIRC, and the radii in the lens plane, when the front has forming. A flat front exports as before. |
+
+## What lands
+
+1. **`framedraft/forming.py`**, Qt-free: GuildModel's `ThermoformMap`
+   (`BridgeGeometry`, the die profile, the map) ported verbatim with the
+   constant 530 in place of the schema import; `ThermoformParams` (the
+   stored block), the press rows, `FrontForming` (the map built from the
+   drawn lenses, the cruder bridge estimate: half the gap between the
+   lenses), the readouts (`lens_readout`, `front_readout`), `unform_curve`,
+   and the temple's `TipBend`. Parity with GuildModel is pinned by a test
+   that runs GuildModel's own module in its venv when the tree is on disk.
+2. **View Formed** (toolbar, View menu, hotkey): on the front the formed
+   outlines head-on over the faded flat drawing, on a temple the bent
+   temple; a corner chip says *formed*. A view only: every tool, the file
+   and every export but the OMA trace keep the flat drawing.
+3. **The Forming group** (Guides tab, front): press row, base curve,
+   radius rule, face form (included; per side in the readout), bridge
+   projection, sheet thickness, the length-keeping surface. **Formed
+   measurements** (Properties tab, front): A in the lens plane and head-on,
+   B, DBL, boxed-center distance, overall width, circumference (lens plane
+   and 3D), edge sag, per-eye tilt, FCRV, endpiece set, the front's depth;
+   the ISO flag and the bridge-band flag.
+4. **The Tip Bend group** (Guides tab, temples): length to bend, downward
+   angle, bend radius; drop, overall length and reach as readouts; *out of
+   range* when the bend does not fit, as the Offset tool says it.
+5. **Unform Lenses**: the drawn lenses become the flat shapes that form to
+   them in the lens plane.
+6. The OMA export's forming records (Q11).
+7. The files: `thermoform` on the front, `tip_bend` on the temples, pinned
+   in the contract test; absent in every earlier file, so nothing opens
+   differently.
+8. The bug hunt and the interface review of the whole app, GuildModel's
+   2.1.0 pattern.
+9. The version 2.3.0, the user guide, the README, the release notes.
+
+**Landed 2026-11-03, uncommitted** (items 1–7 and 9): `framedraft/forming.py`
+(the research's worked table reproduced to the hundredth; parity with
+GuildModel's module to 1e-6 mm through its venv), `canvas/formed.py`,
+`FormedBadge`, the three groups, Unform, the OMA records, the two blocks
+pinned in `tests/test_gdraw_contract.py`; tests in `test_forming.py`,
+`test_forming_parity.py`, `test_view_formed.py`. The readouts measure the
+finished lens at the groove line (`GROOVE_APEX_MM`, GuildModel's 1.5 mm)
+with the neutral surface at the front face, so base 4 on a 50 mm lens reads
+about 0.8 mm off the flat A and trips the ISO flag: the model's honest
+answer until the coupon (Q2) says otherwise. The Formed Measurements group
+is a four-column table (head-on, lens plane, 3D, flat) with the single
+values under it, since the one-line readouts clipped at the dock's width.
+`docs/RELEASE-v2.0.1.md` became `docs/RELEASE-v2.3.0.md` with the 2.0.1
+notes under *Fixes since 2.0.0*. GuildModel's side is handed off in
+`Programs/HANDOFF-GuildModel-2026-11-03.md`. Item 8, the hunt and the
+interface review, follows.
+
+## The hunt and the interface review (2026-11-03)
+
+Five read-only reviews, each confirming its findings offscreen: the new
+forming code, the interface of the whole app, the main window, the files and
+exports, the canvas and tools. The record is in the scratchpad of the
+session; the fixes are pinned in `tests/test_v230_bug_hunt.py` and
+`tests/test_view_formed.py`.
+
+**The forming work.** View Formed set a swatch fill's item to 1.0 on the way
+out, over its slider (the fade is a factor over each item's own opacity now,
+`FrameScene._set_base_opacity`), and faded the selection halo with the curve
+(a curve and a text fade their pen instead, `CurveItem.set_faded`); a lens
+fill rebuilt under the view came back unfaded. The PNG export is the canvas
+as seen, View Formed included, as it is with View Obverse: the content
+rectangle takes the overlay in (a bent temple's tail), and the status bar
+says *formed*; the tooltip and the user guide say so. `TipBend.out_of_range`
+returned None for a straight temple with more length to bend than temple
+(the drop read negative). `ThermoformParams.from_dict` admitted values past
+the fields' bounds, which the next edit of any field stored clamped; the
+bounds are the fields'. The formed table's headers restyle with the theme. A
+temple with no outline is not faded under an empty overlay. The OMA export's
+FCRV is the radius in use as diopters (530 / 144 is 3.68 D on the SBT base-4
+row, not the tag's 4.00), and its DRILLE holes move with the lenses into the
+lens plane. The interface review's items: the one-line readouts clipped at
+the dock's width (the table); the table hides on a flat front; a
+`chrome.warning` token (4.5:1 on the chrome) for the red notes in place of
+the canvas's node red; "Length to bend" twice in Tip Bend (the readout is
+*Ear point*); the Radius rule row hides, not grays, on a press row; the
+special values read Flat, Auto and Straight as GuildModel's do; "Press:",
+"Per side: 8.02° (ISO)"; the Forming note clears while the view is on; the
+Unform message names OD and OS; tooltips on the Nose Fit fields (keyboard
+tracking off there too), the boxing fields, the bevel, the fill color
+buttons, the hole diameter, the library's and the bookmarks' buttons; the
+icon's baseline darker; W on the Component tab says why nothing happens.
+
+**The rest of the app.** A `.gdraw` whose manifest names a tab the archive
+does not hold opened "ok" and kept its path, so the next Save wrote an empty
+tab over it: it is an error now, and a file with no manifest opens as it did.
+The OMA export wrote in place, the one export not through `_atomic_write`,
+and a failed write left a stub over a good trace. `parse_oma` took `1_000`
+and non-ASCII digits as radii. A relative command-line path stayed relative.
+Group (Ctrl+G) regrouped only the selected curves, so a placed hinge's REF
+guide on a hidden layer kept the old id alone (whole groups now, as every
+other group operation), and a selection that is already one group pushed an
+undo step. Space and Shift+Tab passed the hotkey conflict check (Space beat
+the pan). The apical radius typed at the field's minimum over a file's 0.0
+read as no change and the 0.0 was saved (stored from the field's handler).
+Transform at ±360° pushed an undo step for no turn. Preferences could not
+open over a prefs file whose theme mode was not a mapping. A click picked
+the topmost curve in the pick box, so beside two close lines the later-drawn
+one took every click, and a curve's 2 mm hit stroke let a click 27 px beside
+it select it at 30 px/mm: the nearest in screen pixels within 7 px now. A
+double-click on the last node popped a node its own press had not added
+(refused as a zero-length segment in 2.0.1): a real node gone, or a two-node
+curve canceled. The Offset tool took any typed distance (1e11 mm); it goes
+through `parse_typed` now. Rebuild of a hairline committed a one-node closed
+spline; a fit with fewer nodes than a curve needs is refused.
+
+**Left as found.** A lens straddling the axis reads 0 in the snapped boxing
+and a locked resize changes nothing, silently. Single-letter hotkeys fire
+while a non-editable combo has focus. A cursor tool left live on a tab is
+torn down silently on return. The snap palette's tips and four status
+messages over 230 characters keep their wording. Properties ▸ Drawing shows a
+disabled Line weight field with nothing selected. The Component tab's Guides
+page is one fold.
+
+## The Forming group's cleanup (2026-11-04, the maker's review)
+
+The maker's rules, on trying the group; they replace what *What lands* items 3
+and 4 say of it.
+
+- **Tooling index, 1.53 by default, in Preferences only** (General ▸ Forming).
+  The historical standard, so the group no longer offers a choice; the *Radius
+  rule* combo is gone. The radius is (index − 1) × 1000 / D, free between 1.4
+  and 2.0, not two fixed rules; a press row's die still wins. FCRV stays 530 /
+  R, as the lab data standard presumes 1.53.
+- **Sheet thickness and neutral surface, in Preferences too,** with plainer
+  tooltips. The user guide keeps the coupon's reasoning.
+- **Face form in low degrees, per side:** each lens plane's angle to the front
+  from the center of the bridge, as it is usually stated. The field is 0–15°;
+  the *Per side* readout is gone; Formed Measurements reads "8.02° per side ·
+  163.97° included". `face_form_wrap_deg` in the file does not change. The field
+  rounds to 0.01°, so `_thermoform_from_widgets` keeps the stored angle while
+  the field still shows it: an SBT row's 8.015° would read back as 8.02° and
+  fall off the row at any other edit.
+- **"Press:" is "Preset:".**
+- **Show forming preview,** a checkbox at the top of the group: `_act_formed`
+  by another name, so the toolbar button lights with it. The note under the
+  group is gone.
+- **Unform Lenses is Flatten Lens Shape,** behind a box in the maker's words
+  (their "previously viewer" read as "viewed"). The box follows the app's
+  convention: *Don't ask again*, and Preferences ▸ General ▸ Prompts brings it
+  back. It is not asked when the command cannot run. The math keeps the name
+  `unform_*`.
+
+**The temple's section, to match.** *Tip Bend* is titled **Forming** too, so the
+section reads the same from tab to tab, and its first row is **Show temple tip
+bend**, the same switch again. Its fold key stays "Tip Bend", so the two tabs'
+folds stay apart. The text under it is gone but for *Out of range*, which shows
+only when it applies: such a bend leaves the temple straight, and nothing else
+would say why. "Draw the temple's OUTLINE" moved to the status bar, when the
+switch goes on, as the front's "the front is flat" does.
+
+**Decided here, the maker can reverse: Preferences win over a file's copy.**
+The three values describe the shop's press and sheet, and no design has a field
+for them any more; if a design kept its own, a coupon that settled the neutral
+surface could never reach the designs saved before it. `FormingSetup` holds
+them; `ThermoformParams.with_setup` applies them when a file is read, when a
+preference changes and when a design is saved. The keys stay in the `thermoform`
+block (the contract test still pins them) as the copy GuildModel reads, as of
+the last save. Opening a file with other values does not star it: an open is not
+an edit. A preference changed over an open front with forming set does star it,
+as the Lens Fill defaults do. A radius stored under the same index stands, so a
+read changes nothing else.
+
+**What Flatten keeps.** The formed lens matches the drawn shape in the lens
+plane, to 1e-8 mm against a fixed map; head-on it stays narrower by the tilt
+(50.00 → 49.50 mm at SBT base 4). The box's "as it was previously viewed" is the
+lens plane's. The readouts move a little more, as flattening moves the lenses'
+gap and the map is built from it (49.99 flat → 49.95 in the plane, on the finished
+lens at the groove).
+
+Tests: `tests/test_view_formed.py` (the group, the switch, the rounding on all
+four rows, Preferences, a file's copy, the box), `tests/test_forming.py`
+(`FormingSetup`, `with_setup`).
+
+## The sweep before the release (2026-11-05)
+
+**GuildModel's hand-off first** (`HANDOFF-GuildDraw-2026-11-04.md`). The left
+temple's tip bent the wrong way: both tabs took "down" as +y, and the left tab
+is the right's mirror about the core line (every corpus pair is; Temple Copy
+makes it so). `TipBend` carries `down`, −1 on Temple L, as GuildModel's
+`temple_axes` reads it; 400 random cases agree with GuildModel's `TipBend` to
+0.0. "Let-back" is "splay" in the research document, the only place it stood.
+
+**Four read-only reviews**, each finding confirmed by running it: the forming
+math and the file contract with GuildModel 03a68cc (eleven `.gdraw` files read
+through its own reader in its venv), the window and the Forming interface, the
+files and exports (61 damaged archives, 2.0 ↔ 2.3 both ways, the lab standard's
+text), the canvas and the tools (every confirmed finding there is also in
+2.0.0). The contract held: every `thermoform` and `tip_bend` value reads back
+identical. What was fixed, each pinned in `tests/test_forming.py`,
+`test_view_formed.py`, `test_v230_bug_hunt.py`, `test_oma.py`,
+`test_frame_corpus.py` or `test_batch_catalog.py`:
+
+*Forming.* **Flatten Lens Shape was wrong between the nodes**: the handles went
+through the map as if they lay on the lens (0.03 to 0.26 mm off on the corpus
+lenses at SBT base 4, the two-node lens 0.4 mm wide; over a millimeter at base
+8), which is the size of the correction it exists to make. `unform_curve` now
+unforms each span's samples and fits the handles by least squares at the
+samples' own parameters; the drawn nodes stay, a node the drawn curve runs
+smoothly through keeps one line for its two handles (left free, the fits met
+up to 1.1° off line, a corner to the Offset tool), and a span that misses
+`UNFORM_TOL_MM` (0.015, the fitter's own) gets a node at its middle: 4 to 7
+nodes on the corpus lenses at SBT base 4, worst miss 0.014 mm. A polygon lens
+becomes a spline. The search for the flat shape is checked (`UnformDiverged`:
+past base 10 or so its last guess, tens of millimeters off, was taken).
+**Straight sides were formed from their ends**: `flatten_for_view` and
+`lens_readout` cut chords to `MAX_CHORD_MM` (a temple drawn with the Line tool
+showed bent as a skewed quadrilateral, 22 mm off; a polygon lens read a
+millimeter narrow at base 6 and its trace was 0.5 mm off). The bridge-band flag
+fired on every front with a bevel (the band is measured from the drawn lenses,
+the readout from the finished ones): it takes the bevel as an outset and half a
+millimeter of reach (`BAND_REACH_TOL_MM`). A third curve on LENS moved the
+rims' apex; a stray line on LENS counted as a lens (`is_lens_shape`). The OMA
+export divided by a radius of zero when a front had face form and no base
+curve. A hand-edited radius with no base curve reads flat, as GuildModel reads
+it.
+
+*The window.* **A value typed and not entered was lost**: the number fields
+take a value on Enter or on leaving, and Ctrl+S, a click on a workspace tab or
+a toolbar button, and closing take no focus. The file was written without the
+value and with no star, a tab switch dropped it, closing lost it unasked; 2.0.0
+had this on the boxing and line weight fields, and 2.3 had spread it to Nose
+Fit, Stock and the Forming fields. `_commit_pending_field` enters the focused
+field before a shortcut runs and on a press anywhere outside it (two branches
+in the app-wide event filter), before a save and before the unsaved-changes
+question. Flatten left the node dots where the nodes had been (the next drag
+wrecked the lens), ignored a locked or hidden LENS layer, and left Edit ▸ Undo
+gray. A maker who already used W lost both bindings and found Preferences' OK
+disabled: a hotkey a version adds stays unassigned beside a key in use
+(`prefs._new_hotkeys_yield`). View Formed's overlay went stale after Edit Text,
+a text moved alone and a line weight. The *Don't ask again* boxes' checkbox had
+no parent (a crash at the next restyle whenever a box outlived its call).
+
+*Files.* **OMA drill holes used the wrong origin, both ways, since 1.x.** DCS
+3.14 §5.5.2 places a `DRILLE` hole from the box center of its own lens's trace
+and reads `B` as the right lens's hole, mirrored for the left; GuildDraw wrote
+and read the midpoint between the lenses, every hole `B`. An edger would have
+drilled each lens a lens-width off, and a mount's own file came in with its
+holes heaped at the lens centers. The export writes one record a hole, `R` or
+`L`, from that lens's box center (of a formed front, from the trace's own box
+in the lens plane, which also settles the forming review's hole against HBOX);
+`oma.place_drills` places `R`, `L` and `B`, counts edge- and box-referenced
+holes and slots instead of misplacing them, and reads a GuildDraw export from
+before 2.3 the old way, told apart by a hole that lands a lens-width off its
+lens. A file's `DBL=0` (a rimless pattern's "not stated") is the boxing
+guide's. The parser takes a byte-order mark, end padding, `TRCFMT=0`, the
+standard's four-field record and an absent diameter. `ghost_twins` tried every
+twin against every drawn curve (21 s to reopen 20 000 pieces with the Ghost and
+the fill on; an index by bounds, 0.25 s). A fill image named in a `.gdraw` and
+not found keeps its name. The catalog batch leaves a read-only design alone and
+keeps a file's mode. Three absurd preference values no longer stop the start.
+
+*The canvas, all in 2.0.0 too.* A closed polyline's offset chose its side by
+which result had the larger area, and past half the shape's size the
+inside-out one has; it is the winding's now, and a result that crosses itself
+is rebuilt from the shape (`_SPLITS_SHAPE` when it would come apart). A
+double-click ending a line folded its last node away within 12 px of the one
+before (5 now, a click's own reach). Split took a double-click as a second
+press, and snapped to a crossing 1.5 mm away at any zoom (12 px on screen now).
+The cursor tools picked a curve up to 60 px beside the click at high zoom
+(`curve_item_at`, the nearest within the tolerance on screen). Join folded a V
+of two lines into one. A typed length took any Unicode digit.
+
+**Decided here, the maker can reverse.** Temple Copy takes the tip bend with
+the temple (two reviews found the pair saved with two bends). Flatten refuses a
+hidden LENS layer as it does a locked one. Flatten keeps the drawn nodes and
+adds what the tolerance asks, in place of refitting the lens whole. The OMA
+export's drill records changed meaning in one release, since the old one was
+wrong at the lab; the notes say to export again. A double-click's fold radius
+is 5 px.
+
+**Left as found.** GuildModel bends a temple with no hinge pocket from its tip
+(handed off, `Programs/HANDOFF-GuildModel-2026-11-05.md`). Rebuild by node
+count on a cornered outline can return handles meters long while the readout
+says a few millimeters (`fitting._generate_bezier` has no bound; the preview
+shows it; tolerance mode is sound). Split and Trim can still leave a duplicate
+node at a node (`geometry._seg_local` judges "at the node" in parameter, not
+millimeters), and node editing a zero-length segment (an insert past an end
+dot, the endpoint magnet onto the curve's own end). Join brings a chain's ends
+together across up to 2 mm, so three sides of a narrow slot close as a
+triangle. Fillet takes the midpoint of the two picked ends for the corner.
+Handles are snap targets on unselected curves, and On-curve snaps to the
+nearest of 24 samples a segment. The map's table ends at ±150 mm, and a bend
+radius under a temple's half height folds its inner edge (both as in
+GuildModel). Edge- and box-referenced drill holes and slots are counted, not
+read. A stored photo named like a member prefix is renamed on reopen. The HUD
+fonts name Segoe UI, and the font picker may offer macOS's private system
+family. One window-teardown crash in ten runs of one probe, not reproduced in
+135 further teardowns.
 
 # Security hardening
 

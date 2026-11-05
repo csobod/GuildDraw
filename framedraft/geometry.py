@@ -20,6 +20,7 @@ Curve parameterization: t in [0.0, 1.0].
 """
 
 from __future__ import annotations
+import bisect
 import math
 from typing import List, Tuple
 
@@ -472,32 +473,110 @@ def _refine_t(curve: Curve, px: float, py: float,
     return (lo + hi) / 2.0
 
 
+def _seg_ctrl(curve: Curve):
+    """Every segment's four control points as an (ns, 4, 2) array, built in
+    one pass over the nodes (a line's handles sit on its nodes)."""
+    import numpy as np
+    nodes = curve.nodes
+    ia = np.arange(_n_segs(curve))
+    ib = (ia + 1) % len(nodes)
+    if curve.kind != "spline":
+        xy = np.array([(nd.x, nd.y) for nd in nodes], dtype=float)
+        return np.stack([xy[ia], xy[ia], xy[ib], xy[ib]], axis=1)
+    # Per node: itself, its out handle, its in handle (a missing one on it).
+    pts = np.array([v for nd in nodes for v in (
+        nd.x, nd.y,
+        *((nd.cp_out.x, nd.cp_out.y) if nd.cp_out else (nd.x, nd.y)),
+        *((nd.cp_in.x, nd.cp_in.y) if nd.cp_in else (nd.x, nd.y)))],
+        dtype=float).reshape(-1, 3, 2)
+    return np.stack([pts[ia, 0], pts[ia, 1], pts[ib, 2], pts[ib, 0]], axis=1)
+
+
+def _bezier_np(c, t):
+    """_bezier_eval for arrays: control points *c* (..., 4, 2) at *t* (...)."""
+    t = t[..., None]
+    u = 1.0 - t
+    return (u**3*c[..., 0, :] + 3*u**2*t*c[..., 1, :]
+            + 3*u*t**2*c[..., 2, :] + t**3*c[..., 3, :])
+
+
+def _sample_grid(curve: Curve, n_per_seg: int, exact: bool = True):
+    """sample_curve's samples as arrays (xs, ys, ts), or None: the same grid,
+    evaluated at once. Point by point, t_nearest's grid of 32 a segment cost
+    half a second a click on an 8000-node trace (2.0.1).
+
+    *exact* evaluates every point by sample_curve's own formula, so the
+    samples and every t found among them are the ones it gave, to the bit;
+    without it, a spline's grid is one product with the Bernstein basis,
+    fifteen times faster, for a hover that only ranks."""
+    import numpy as np
+    nodes = curve.nodes
+    if curve.kind in ("circle", "arc"):
+        if not nodes:
+            return None
+        cx, cy, r = nodes[0].x, nodes[0].y, curve.radius or 0.0
+        if curve.kind == "circle":
+            n = n_per_seg * 8
+            i = np.arange(n + 1)
+            a = 2 * math.pi * i / n
+        else:
+            sa = math.radians(curve.start_angle or 0.0)
+            sw = math.radians(_arc_sweep_deg(curve))
+            n = max(n_per_seg, int(math.degrees(abs(sw)) / 5))
+            i = np.arange(n + 1)
+            a = sa + sw * i / n
+        return cx + r * np.cos(a), cy + r * np.sin(a), i / n
+    if len(nodes) < 2:
+        if not nodes:
+            return None
+        return np.array([nodes[0].x]), np.array([nodes[0].y]), np.array([0.0])
+    ns = _n_segs(curve)
+    c = _seg_ctrl(curve)
+    local = np.arange(n_per_seg) / n_per_seg
+    ts = np.append(((np.arange(ns)[:, None] + local[None, :]) / ns).ravel(), 1.0)
+    if curve.kind == "spline" and not exact:
+        u = 1.0 - local
+        basis = np.stack([u**3, 3*u**2*local, 3*u*local**2, local**3], axis=1)
+        pts = np.matmul(basis[None], c).reshape(-1, 2)
+        end = c[-1, 3]
+    elif curve.kind == "spline":
+        pts = _bezier_np(c[:, None], np.broadcast_to(local, (ns, n_per_seg))).reshape(-1, 2)
+        end = c[-1, 3]
+    else:
+        a, b = c[:, 0], c[:, 3]
+        pts = (a[:, None] + (b - a)[:, None] * local[None, :, None]).reshape(-1, 2)
+        end = a[-1] + (b[-1] - a[-1]) * 1.0
+    pts = np.vstack([pts, end])
+    return pts[:, 0], pts[:, 1], ts
+
+
 def _nearest_sample_t(samples, px: float, py: float) -> tuple:
-    """(t_best, t_prev, t_next) around the nearest sample."""
-    best_i, best_d2 = 0, float("inf")
-    for i, (x, y, _t) in enumerate(samples):
-        d2 = (x - px) ** 2 + (y - py) ** 2
-        if d2 < best_d2:
-            best_d2, best_i = d2, i
-    t_best = samples[best_i][2]
-    t_prev = samples[best_i - 1][2] if best_i > 0 else t_best
-    t_next = samples[best_i + 1][2] if best_i + 1 < len(samples) else t_best
+    """(t_best, t_prev, t_next) around the nearest sample (the first, on a tie)."""
+    import numpy as np
+    xs, ys, ts = samples
+    i = int(np.argmin((xs - px) ** 2 + (ys - py) ** 2))
+    t_best = float(ts[i])
+    t_prev = float(ts[i - 1]) if i > 0 else t_best
+    t_next = float(ts[i + 1]) if i + 1 < len(ts) else t_best
     return t_best, t_prev, t_next
 
 
-def _nearest_refined_t(curve: Curve, samples, px: float, py: float) -> float:
+def _nearest_refined_t(curve: Curve, samples, px: float, py: float,
+                       iters: int = 40) -> float:
     """The sample nearest (px, py), refined between its neighbors — and on a
     closed curve whose nearest sample is the seam, refined on both sides of
     it. The first and last samples are the same point there, and the first
     won the tie, so a point on the closing segment resolved to t = 0 (a Split
-    opened 0.9 mm from the click; a Trim cut the wrong side)."""
+    opened 0.9 mm from the click; a Trim cut the wrong side). *samples* are
+    _sample_grid's arrays."""
+    ts = samples[2]
     _t, t_prev, t_next = _nearest_sample_t(samples, px, py)
-    t = _refine_t(curve, px, py, t_prev, t_next)
+    t = _refine_t(curve, px, py, t_prev, t_next, iters)
     closed = curve.closed or curve.kind == "circle"
-    if closed and len(samples) > 2 and (_t <= samples[0][2] or _t >= samples[-1][2]):
+    if closed and len(ts) > 2 and (_t <= ts[0] or _t >= ts[-1]):
         options = [t,
-                   _refine_t(curve, px, py, 0.0, samples[1][2]),
-                   _refine_t(curve, px, py, samples[-2][2], 1.0)]
+                   _refine_t(curve, px, py, 0.0, float(ts[1]), iters),
+                   _refine_t(curve, px, py, float(ts[-2]), 1.0, iters)]
 
         def d2(tt):
             x, y = point_at_t(curve, tt)
@@ -509,11 +588,12 @@ def _nearest_refined_t(curve: Curve, samples, px: float, py: float) -> float:
 def t_nearest_coarse(curve: Curve, px: float, py: float, n_per_seg: int = 8) -> float:
     """`t_nearest` on a coarser grid, refined the same way: for a hover that
     only ranks candidates, 8 samples a segment instead of 64 (a 500-node
-    DXF spline cost 37 ms a mouse move in Trim and Split)."""
-    samples = sample_curve(curve, n_per_seg=n_per_seg)
-    if not samples:
+    DXF spline cost 37 ms a mouse move in Trim and Split). 24 steps of the
+    refinement leave 6e-5 of a bracket two samples wide, enough to rank."""
+    samples = _sample_grid(curve, n_per_seg, exact=False)
+    if samples is None:
         return 0.0
-    return _nearest_refined_t(curve, samples, px, py)
+    return _nearest_refined_t(curve, samples, px, py, iters=24)
 
 
 def t_nearest(curve: Curve, px: float, py: float) -> float:
@@ -522,8 +602,8 @@ def t_nearest(curve: Curve, px: float, py: float) -> float:
     Nearest of the samples, then refined between its neighbors: the raw
     sample grid is 1/64 of a segment, which left a trim end up to 0.7 mm
     short of the cutting edge on a 100 mm line."""
-    samples = sample_curve(curve, n_per_seg=_SAMPLES_PER_SEG * 2)
-    if not samples:
+    samples = _sample_grid(curve, _SAMPLES_PER_SEG * 2)
+    if samples is None:
         return 0.0
     return _nearest_refined_t(curve, samples, px, py)
 
@@ -531,22 +611,504 @@ def t_nearest(curve: Curve, px: float, py: float) -> float:
 # ---------------------------------------------------------------------------
 # Shapely conversion + intersection
 # ---------------------------------------------------------------------------
+#
+# Two curves are met as polylines flattened within _ISECT_FLAT_MM, and each
+# place the polylines cross is then settled on the curves themselves, by
+# Newton on both parameters. They were met as polylines of 16 chords a
+# segment, which lie inside a curve by their sagitta (0.08 mm on a library
+# lens): a line ending on a curve from outside went unseen, and a shallow
+# crossing landed off by the sagitta over the sine of its angle, up to 2 mm on
+# the Frame Library. Sampled again for every pair and placed by a Python scan,
+# one Trim click on a 2000-node trace among 100 curves took 7 s (2.0.1).
+
+_ISECT_FLAT_MM = 0.002   # the polylines' flattening; every meeting is refined after
+
+# A free end of an open curve this near another curve meets it. It is the
+# closure tolerance (the validator's _CLOSURE_TOL_MM, GuildModel's auto-close)
+# and the Frame Fill's stitch: both already join a gap that small, and Trim,
+# Split and the Intersection snap now agree with them. The snaps put an end
+# on a curve to within a few µm; the old Trim and Intersection snap left ends
+# inside a curve by its chords' sagitta, up to 0.08 mm on a library lens,
+# which this still meets. Less than a pixel at 1:1, no such gap is drawn to
+# stay open.
+_TOUCH_MM = 0.1
+
+# Two curves this near each other along this long lie one on the other: a
+# copy, a datum along a straight edge, a curve rebuilt over its original. They
+# meet once at each end of that run, not every 1 to 2.5 mm along it (Trim
+# removed a sliver of a copied lens). The Frame Library's shallowest real
+# crossings, REF curves traced over a lens or an outline at 1 to 2°, stay
+# this near for 2.5 mm at most, and a single crossing is never a run.
+_OVERLAP_MM     = 0.01
+_OVERLAP_MIN_MM = 3.0
+_GRAZE_SIN      = 0.02   # crossings shallower than this are weighed for a run
+
+
+class _Flat:
+    """A curve flattened for the crossing search: the polyline's vertices
+    (xy, n × 2), the curve's parameter at each (ts) and their bounds. The
+    index of its segments is built when first asked for."""
+
+    __slots__ = ("curve", "closed", "xy", "ts", "box", "_tree", "_pts")
+
+    def __init__(self, curve: Curve, xy, ts):
+        self.curve = curve
+        self.closed = curve.closed or curve.kind == "circle"
+        self.xy, self.ts = xy, ts
+        self.box = (float(xy[:, 0].min()), float(xy[:, 1].min()),
+                    float(xy[:, 0].max()), float(xy[:, 1].max()))
+        self._tree = None
+        self._pts = None
+
+    def pts(self) -> list:
+        """The vertices as a list of (x, y) floats, for the per-pair math."""
+        if self._pts is None:
+            self._pts = self.xy.tolist()
+        return self._pts
+
+    def tree(self):
+        if self._tree is None:
+            import numpy as np
+            import shapely
+            self._tree = shapely.STRtree(
+                shapely.linestrings(np.stack([self.xy[:-1], self.xy[1:]], axis=1)))
+        return self._tree
+
+    def t_at(self, i: int, s: float) -> float:
+        """The parameter at fraction *s* along polyline segment *i*."""
+        return float(self.ts[i] + s * (self.ts[i + 1] - self.ts[i]))
+
+
+def _flat(curve: Curve, tol: float = _ISECT_FLAT_MM):
+    """*curve* as a _Flat within *tol* of it (flatten_curve's rule, with the
+    parameter kept at every vertex), or None when it draws no line."""
+    import numpy as np
+    nodes = curve.nodes
+    if curve.kind in ("circle", "arc"):
+        r = curve.radius or 0.0
+        if not nodes or not r > 0.0:
+            return None
+        cx, cy = nodes[0].x, nodes[0].y
+        step = max(2.0 * math.acos(1.0 - tol / r) if tol < r else math.pi / 2,
+                   2 * math.pi / 4096)
+        if curve.kind == "circle":
+            a0, sw = 0.0, 2 * math.pi
+        else:
+            a0 = math.radians(curve.start_angle or 0.0)
+            sw = math.radians(_arc_sweep_deg(curve))
+        n = max(8 if curve.kind == "circle" else 2, math.ceil(sw / step))
+        ts = np.arange(n + 1) / n
+        a = a0 + sw * ts
+        xy = np.column_stack([cx + r * np.cos(a), cy + r * np.sin(a)])
+        if curve.kind == "circle":
+            xy[-1] = xy[0]
+    elif len(nodes) < 2:
+        return None
+    elif curve.kind == "line":
+        ns = _n_segs(curve)
+        pts = [(nd.x, nd.y) for nd in nodes]
+        xy = np.array(pts + pts[:1] if curve.closed else pts, dtype=float)
+        ts = np.arange(ns + 1) / ns
+    else:
+        ns = _n_segs(curve)
+        c = _seg_ctrl(curve)
+        d = np.maximum(np.hypot(*(c[:, 0] - 2 * c[:, 1] + c[:, 2]).T),
+                       np.hypot(*(c[:, 1] - 2 * c[:, 2] + c[:, 3]).T))
+        k = np.clip(np.ceil(np.sqrt(0.75 * d / tol)), 1, 256).astype(int)
+        # Both handles retracted: a straight run, one chord (its control
+        # points' second difference is the run's length, not a bend).
+        k[(c[:, 1] == c[:, 0]).all(axis=1) & (c[:, 2] == c[:, 3]).all(axis=1)] = 1
+        seg = np.repeat(np.arange(ns), k)
+        u = (np.arange(len(seg)) - np.repeat(np.cumsum(k) - k, k)) / np.repeat(k, k)
+        xy = np.vstack([_bezier_np(c[seg], u), c[-1, 3]])
+        ts = np.append((seg + u) / ns, 1.0)
+    if not np.isfinite(xy).all():
+        return None
+    return _Flat(curve, xy, ts)
+
+
+def _ctrl_box(curve: Curve):
+    """Bounds that hold all of *curve* (a Bézier lies within its handles),
+    cheap enough to skip a far curve before it is flattened; None if empty."""
+    nodes = curve.nodes
+    if not nodes:
+        return None
+    if curve.kind in ("circle", "arc"):
+        cx, cy, r = nodes[0].x, nodes[0].y, abs(curve.radius or 0.0)
+        return (cx - r, cy - r, cx + r, cy + r)
+    xs = [n.x for n in nodes]
+    ys = [n.y for n in nodes]
+    if curve.kind == "spline":
+        for n in nodes:
+            for cp in (n.cp_in, n.cp_out):
+                if cp is not None:
+                    xs.append(cp.x)
+                    ys.append(cp.y)
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _boxes_meet(p, q, pad: float) -> bool:
+    return (p[0] - pad <= q[2] and q[0] - pad <= p[2]
+            and p[1] - pad <= q[3] and q[1] - pad <= p[3])
+
+
+def _point_deriv(curve: Curve, t: float):
+    """(x, y, dx/dt, dy/dt) of *curve* at t in [0, 1], as point_at_t has it."""
+    nodes = curve.nodes
+    if curve.kind in ("circle", "arc"):
+        cx, cy, r = nodes[0].x, nodes[0].y, curve.radius or 0.0
+        if curve.kind == "circle":
+            a, sw = 2 * math.pi * t, 2 * math.pi
+        else:
+            sw = math.radians(_arc_sweep_deg(curve))
+            a = math.radians(curve.start_angle or 0.0) + sw * t
+        c, s = math.cos(a), math.sin(a)
+        return cx + r * c, cy + r * s, -sw * r * s, sw * r * c
+    ns = _n_segs(curve)
+    scaled = t * ns
+    seg = min(int(scaled), ns - 1)
+    local = scaled - seg
+    a, b = _seg_nodes(curve, seg)
+    if curve.kind == "spline":
+        p0, p1, p2, p3 = _seg_pts(a, b)
+        x, y = _bezier_eval(p0, p1, p2, p3, local)
+        u = 1.0 - local
+        dx = 3*u*u*(p1[0]-p0[0]) + 6*u*local*(p2[0]-p1[0]) + 3*local*local*(p3[0]-p2[0])
+        dy = 3*u*u*(p1[1]-p0[1]) + 6*u*local*(p2[1]-p1[1]) + 3*local*local*(p3[1]-p2[1])
+        return x, y, dx * ns, dy * ns
+    return (a.x + (b.x - a.x) * local, a.y + (b.y - a.y) * local,
+            (b.x - a.x) * ns, (b.y - a.y) * ns)
+
+
+def _settle(fa: _Flat, ta: float, fb: _Flat, tb: float):
+    """Newton on a(ta) = b(tb), from where the two polylines cross. Returns
+    (ta, tb, x, y, sin), sin that of the angle the curves cross at, or None
+    when it does not settle: the curves run together there, or touch."""
+    a, b = fa.curve, fb.curve
+    for _ in range(20):
+        ax, ay, adx, ady = _point_deriv(a, ta)
+        bx, by, bdx, bdy = _point_deriv(b, tb)
+        fx, fy = ax - bx, ay - by
+        la, lb = math.hypot(adx, ady), math.hypot(bdx, bdy)
+        if la == 0.0 or lb == 0.0:
+            return None
+        cross = adx * bdy - ady * bdx
+        if math.hypot(fx, fy) <= 1e-10 * (1.0 + abs(ax) + abs(ay)):
+            return ta, tb, ax, ay, abs(cross) / (la * lb)
+        if abs(cross) <= 1e-12 * la * lb:
+            return None
+        ta += (fy * bdx - fx * bdy) / cross
+        tb += (fy * adx - fx * ady) / cross
+        ta = ta % 1.0 if fa.closed else min(max(ta, 0.0), 1.0)
+        tb = tb % 1.0 if fb.closed else min(max(tb, 0.0), 1.0)
+    return None
+
+
+def _foot(f: _Flat, x: float, y: float, reach: float = _TOUCH_MM):
+    """(t, fx, fy, d): the point of f's curve nearest (x, y), found on its
+    polyline and refined on the curve; None when that is beyond *reach*."""
+    import numpy as np
+    import shapely
+    if len(f.xy) <= 65:
+        cand = np.arange(len(f.xy) - 1)         # a few segments: no index
+    else:
+        cand = f.tree().query(shapely.Point(x, y), predicate="dwithin",
+                              distance=reach + 2 * _ISECT_FLAT_MM)
+    if not len(cand):
+        return None
+    p = f.xy[cand]
+    r = f.xy[cand + 1] - p
+    l2 = (r * r).sum(axis=1)
+    w = np.column_stack([x - p[:, 0], y - p[:, 1]])
+    s = np.clip(np.divide((w * r).sum(axis=1), l2, out=np.zeros_like(l2), where=l2 > 0),
+                0.0, 1.0)
+    d2 = ((p + r * s[:, None] - (x, y)) ** 2).sum(axis=1)
+    k = int(np.argmin(d2))
+    i = int(cand[k])
+    if d2[k] == 0.0 and s[k] in (0.0, 1.0):
+        # On a vertex of the polyline, which lies on the curve: an end
+        # drawn to a node, often a corner the steps below cannot settle at.
+        v = i + int(s[k])
+        return float(f.ts[v]), float(f.xy[v, 0]), float(f.xy[v, 1]), 0.0
+    # Gauss-Newton from the polyline's foot: a few steps, where the ternary
+    # search below takes 140 evaluations. It does not settle at a corner, or
+    # where the curve stalls (a retracted handle); the search takes those.
+    t = f.t_at(i, float(s[k]))
+    for _ in range(12):
+        cx, cy, dx, dy = _point_deriv(f.curve, t)
+        dd = dx * dx + dy * dy
+        if dd == 0.0:
+            break
+        step = ((x - cx) * dx + (y - cy) * dy) / dd
+        t1 = (t + step) % 1.0 if f.closed else min(max(t + step, 0.0), 1.0)
+        settled = abs(t1 - t) <= 1e-13
+        t = t1
+        if settled:
+            px, py = point_at_t(f.curve, t)
+            d = math.hypot(px - x, py - y)
+            if d <= math.sqrt(d2[k]) + 2 * _ISECT_FLAT_MM:
+                return (t, px, py, d) if d <= reach else None
+            break
+    ts, last = f.ts, len(f.ts) - 1
+    brackets = [(ts[max(i - 1, 0)], ts[min(i + 2, last)])]
+    if f.closed and i == 0:
+        brackets.append((ts[max(last - 2, 0)], 1.0))
+    elif f.closed and i >= last - 1:
+        brackets.append((0.0, ts[min(2, last)]))
+    best = None
+    for lo, hi in brackets:
+        t = _refine_t(f.curve, x, y, float(lo), float(hi), iters=70)
+        px, py = point_at_t(f.curve, t)
+        d = math.hypot(px - x, py - y)
+        if best is None or d < best[3]:
+            best = (t, px, py, d)
+    return best if best[3] <= reach else None
+
+
+def _polyline_crossings(fa: _Flat, fb: _Flat):
+    """Where the two polylines meet: (crossings, runs). A crossing is
+    (ta, tb, x, y), a point where a segment of A crosses one of B; a run is
+    (ta, x, y) at each end of a stretch where segments of each lie on the
+    same line, one after another."""
+    import numpy as np
+    import shapely
+    x0, y0, x1, y1 = fa.box
+    p, q = fb.xy[:-1], fb.xy[1:]
+    near = np.nonzero((np.maximum(p[:, 0], q[:, 0]) >= x0) & (np.minimum(p[:, 0], q[:, 0]) <= x1)
+                      & (np.maximum(p[:, 1], q[:, 1]) >= y0) & (np.minimum(p[:, 1], q[:, 1]) <= y1))[0]
+    if not len(near):
+        return [], []
+    na = len(fa.xy) - 1
+    if na * len(near) <= 64:
+        # A few segments: every pair is weighed, cheaper than an index (120
+        # REF lines met pairwise by the Intersection snap).
+        pairs = [(i, j) for j in near.tolist() for i in range(na)]
+    else:
+        qi, ia = fa.tree().query(shapely.linestrings(np.stack([p[near], q[near]], axis=1)),
+                                 predicate="intersects")
+        pairs = zip(ia.tolist(), near[qi].tolist(), strict=True)
+    A, B = fa.pts(), fb.pts()
+    seen = set()
+    crossings, spans = [], []
+    for i, j in pairs:
+        (px, py), (ux, uy) = A[i], A[i + 1]
+        (qx, qy), (vx, vy) = B[j], B[j + 1]
+        rx, ry, sx, sy = ux - px, uy - py, vx - qx, vy - qy
+        lr, ls = math.hypot(rx, ry), math.hypot(sx, sy)
+        if lr == 0.0 or ls == 0.0:
+            continue
+        wx, wy = qx - px, qy - py
+        den = rx * sy - ry * sx
+        if abs(den) > 1e-12 * lr * ls:
+            sig = (wx * sy - wy * sx) / den
+            tau = (wx * ry - wy * rx) / den
+            if not (-1e-12 <= sig <= 1 + 1e-12 and -1e-12 <= tau <= 1 + 1e-12):
+                continue
+            sig, tau = min(max(sig, 0.0), 1.0), min(max(tau, 0.0), 1.0)
+            x, y = px + rx * sig, py + ry * sig
+            key = (round(x, 9), round(y, 9))
+            if key in seen:             # a crossing at a vertex, found twice
+                continue
+            seen.add(key)
+            crossings.append((fa.t_at(i, sig), fb.t_at(j, tau), x, y))
+            continue
+        # Parallel: on one line, and overlapping along it?
+        if abs(wx * ry - wy * rx) > 1e-12 * lr * (lr + math.hypot(wx, wy)):
+            continue
+        s0 = (wx * rx + wy * ry) / (lr * lr)
+        s1 = ((wx + sx) * rx + (wy + sy) * ry) / (lr * lr)
+        if max(s0, s1) < -1e-12 or min(s0, s1) > 1 + 1e-12:
+            continue
+        lo, hi = min(max(min(s0, s1), 0.0), 1.0), min(max(max(s0, s1), 0.0), 1.0)
+        spans.append((fa.t_at(i, lo), fa.t_at(i, hi),
+                      (px + rx * lo, py + ry * lo), (px + rx * hi, py + ry * hi)))
+    # Segments on one line one after another are one stretch: only its two
+    # ends are meetings, not every vertex along it.
+    spans.sort(key=lambda sp: (sp[0], sp[1]))
+    merged: list = []
+    for t0, t1, p0, p1 in spans:
+        if merged and t0 <= merged[-1][1] + 1e-12:
+            if t1 > merged[-1][1]:
+                merged[-1][1], merged[-1][3] = t1, p1
+        else:
+            merged.append([t0, t1, p0, p1])
+    if fa.closed and len(merged) > 1 and merged[0][0] <= 1e-12 and merged[-1][1] >= 1 - 1e-12:
+        merged[0][0], merged[0][2] = merged[-1][0], merged[-1][2]   # through the seam
+        merged.pop()
+    runs = []
+    for t0, t1, p0, p1 in merged:
+        runs.append((t0, *p0))
+        if math.hypot(p1[0] - p0[0], p1[1] - p0[1]) > 1e-12:
+            runs.append((t1, *p1))
+    return crossings, runs
+
+
+def _overlaps(fa: _Flat, fb: _Flat, marks: list) -> list:
+    """The stretches of A that lie on B: within _OVERLAP_MM of it along
+    _OVERLAP_MIN_MM or more, and holding marks (x, y, weight) that weigh 2
+    or more: 2 where the polylines run together or no crossing settles, 1
+    where they cross at a graze. Each is a shapely LineString along A's
+    polyline."""
+    import numpy as np
+    import shapely
+    from shapely.geometry import LineString
+    if not marks:
+        return []
+    # Only B's stretch within A's bounds can lie on A: buffered whole, a long
+    # outline cost a click its millisecond for a datum along one edge.
+    x0, y0, x1, y1 = fa.box
+    m = 2 * _OVERLAP_MM
+    lb = shapely.clip_by_rect(LineString(fb.xy), x0 - m, y0 - m, x1 + m, y1 + m)
+    if lb.is_empty:
+        return []
+    near = LineString(fa.xy).intersection(lb.buffer(_OVERLAP_MM, quad_segs=4))
+    parts = [g for g in shapely.get_parts(near) if g.geom_type == "LineString"]
+    if not parts:
+        return []
+    runs = []
+    pts = shapely.points(np.array([(x, y) for x, y, _w in marks], dtype=float))
+    weights = np.array([w for _x, _y, w in marks], dtype=float)
+    for run in shapely.get_parts(shapely.line_merge(shapely.multilinestrings(parts))):
+        if run.length < _OVERLAP_MIN_MM:
+            continue
+        inside = shapely.distance(run, pts) <= _OVERLAP_MM + 2 * _ISECT_FLAT_MM
+        if weights[inside].sum() >= 2:
+            runs.append(run)
+    return runs
+
+
+def _run_end(fa: _Flat, x: float, y: float, snaps):
+    """(t, x, y) on A at the end of an overlap run found at (x, y): at the
+    nearest node, free end or crossing within a few _OVERLAP_MM of it (a
+    corner the run leaves by is where it ends), else at (x, y)."""
+    import numpy as np
+    if len(snaps):
+        d = np.hypot(snaps[:, 0] - x, snaps[:, 1] - y)
+        i = int(np.argmin(d))
+        if d[i] <= 4 * _OVERLAP_MM:
+            x, y = float(snaps[i, 0]), float(snaps[i, 1])
+    hit = _foot(fa, x, y, reach=8 * _OVERLAP_MM)
+    if hit is None:
+        return None
+    return hit[0], hit[1], hit[2]
+
+
+def _on_curve_points(curve: Curve) -> list:
+    """The points a curve's shape turns on: its nodes and free ends."""
+    if curve.kind in ("circle", "arc"):
+        return [(x, y) for x, y, _n in open_ends(curve)]
+    return [(n.x, n.y) for n in curve.nodes]
+
+
+def _meet(fa: _Flat, fb: _Flat, a_ends: bool = False):
+    """Where curve B meets curve A: ([(ta, x, y), ...], covered), sorted by
+    ta, with (x, y) on A. The meetings are the curves' crossings, settled on
+    both; each free end of B within _TOUCH_MM of A (with *a_ends*, also A's
+    free ends within _TOUCH_MM of B, at their foot on B); and the two ends of
+    every run where they lie one on the other. *covered* is True when such a
+    run is all of A."""
+    import numpy as np
+    if not _boxes_meet(fa.box, fb.box, _TOUCH_MM + 2 * _ISECT_FLAT_MM):
+        return [], False
+    crossings, collinear = _polyline_crossings(fa, fb)
+    # loose: where the polylines meet but no crossing settles, kept at the
+    # polyline's point and put on A at the end (along a flat segment the
+    # parameter is only interpolated, and a straight run with its handles
+    # retracted is not uniform in it).
+    settled, loose, grazes = [], [], []
+    for ta0, tb0, sx, sy in crossings:
+        got = _settle(fa, ta0, fb, tb0)
+        if got is not None:
+            ta, tb, x, y, sin = got
+            # Settled far from where the polylines crossed, it found another crossing.
+            if math.hypot(x - sx, y - sy) <= 0.01 + 4 * _ISECT_FLAT_MM / max(sin, 1e-9):
+                settled.append((ta, x, y))
+                if sin < _GRAZE_SIN:
+                    grazes.append((x, y, 1))
+                continue
+        loose.append((ta0, sx, sy))
+    loose += collinear
+
+    # Free ends that stop on the other curve (or a hair short of it, or past
+    # it by less than the polylines can show): no crossing settles there.
+    touches = []
+    for f, g, own in ((fb, fa, False), (fa, fb, True)) if a_ends else ((fb, fa, False),):
+        x0, y0, x1, y1 = g.box
+        pad = _TOUCH_MM + 2 * _ISECT_FLAT_MM
+        for k, (ex, ey, _n) in enumerate(open_ends(f.curve)):
+            if not (x0 - pad <= ex <= x1 + pad and y0 - pad <= ey <= y1 + pad):
+                continue
+            hit = _foot(g, ex, ey)
+            if hit is None:
+                continue
+            # A crossing found by its end already is the meeting.
+            if any(math.hypot(x - ex, y - ey) <= _DEDUP_TOL_MM for _t, x, y in settled):
+                continue
+            t, x, y, _d = hit
+            loose = [h for h in loose if math.hypot(h[1] - x, h[2] - y) > _DEDUP_TOL_MM]
+            touches.append((float(k) if own else t, x, y))   # A's own end: t 0 or 1
+
+    hits = settled + loose + touches
+    covered = False
+    if loose or len(grazes) >= 2:
+        runs = _overlaps(fa, fb, [(x, y, 2) for _t, x, y in loose] + grazes)
+        if runs:
+            import shapely
+            snaps = np.array(_on_curve_points(fa.curve) + _on_curve_points(fb.curve)
+                             + [(x, y) for _t, x, y in hits], dtype=float).reshape(-1, 2)
+            pts = shapely.points(np.array([(x, y) for _t, x, y in hits], dtype=float).reshape(-1, 2))
+            keep = np.ones(len(hits), dtype=bool)
+            ends = []
+            length = float(np.hypot(*np.diff(fa.xy, axis=0).T).sum())
+            for run in runs:
+                keep &= shapely.distance(run, pts) > _OVERLAP_MM + 2 * _ISECT_FLAT_MM
+                (x0, y0), (x1, y1) = run.coords[0], run.coords[-1]
+                if fa.closed and run.length >= length - 4 * _OVERLAP_MM and \
+                        math.hypot(x1 - x0, y1 - y0) <= 4 * _OVERLAP_MM:
+                    covered = True              # all of a closed curve: no ends
+                    continue
+                for x, y in ((x0, y0), (x1, y1)):
+                    end = _run_end(fa, x, y, snaps)
+                    if end is not None:
+                        ends.append(end)
+                if not fa.closed and run.length >= length - 4 * _OVERLAP_MM:
+                    covered = True
+            hits = [h for h, k in zip(hits, keep.tolist(), strict=True) if k] + ends
+
+    placed = set(map(id, loose))
+    for n, h in enumerate(hits):
+        if id(h) in placed:
+            hit = _foot(fa, h[1], h[2], reach=4 * _ISECT_FLAT_MM)
+            hits[n] = hit[:3] if hit is not None else (h[0], *point_at_t(fa.curve, h[0]))
+    hits.sort(key=lambda h: h[0])
+    out = []
+    for h in hits:
+        if out and math.hypot(h[1] - out[-1][1], h[2] - out[-1][2]) <= 1e-7:
+            continue
+        out.append(h)
+    if fa.closed and len(out) > 1 and \
+            math.hypot(out[0][1] - out[-1][1], out[0][2] - out[-1][2]) <= 1e-7:
+        out.pop()
+    return out, covered
+
 
 def curve_to_shapely(curve: Curve):
-    """Convert curve to a Shapely geometry for intersection queries, or None."""
-    pts = [(x, y) for x, y, _ in sample_curve(curve, _SAMPLES_PER_SEG)]
-    if len(pts) < 2:
+    """The curve as a Shapely geometry, flattened within _ISECT_FLAT_MM, or
+    None."""
+    f = _flat(curve)
+    if f is None:
         return None
     try:
-        if curve.kind == "circle" or curve.closed:
-            return _sg.LinearRing(pts)
-        return _sg.LineString(pts)
+        if f.closed:
+            return _sg.LinearRing(f.xy)
+        return _sg.LineString(f.xy)
     except Exception:
         return None
 
 
 def _iter_shapely_pts(geom):
-    """Yield shapely Points from any Shapely geometry."""
+    """Yield shapely Points from any Shapely geometry. A line, where two
+    geometries overlap, gives its two ends: an overlap meets there."""
     if geom is None or geom.is_empty:
         return
     gtype = geom.geom_type
@@ -556,69 +1118,119 @@ def _iter_shapely_pts(geom):
                    "MultiLineString", "MultiPolygon"):
         for g in geom.geoms:
             yield from _iter_shapely_pts(g)
-    elif gtype == "LineString":
-        # Overlapping collinear segment — sample a few midpoints
+    elif gtype in ("LineString", "LinearRing"):
         coords = list(geom.coords)
-        step = max(1, len(coords) // 4)
-        for x, y in coords[::step]:
-            yield _sg.Point(x, y)
+        yield _sg.Point(coords[0])
+        if coords[-1] != coords[0]:
+            yield _sg.Point(coords[-1])
 
 
 def curve_intersections(a: Curve, b: Curve) -> List[Tuple[float, float]]:
-    """Intersection points (x, y) of two curves' sampled shapely geometry.
+    """Points (x, y) where curves *a* and *b* meet: their crossings, settled
+    on both curves; a free end of either that stops on the other (within
+    _TOUCH_MM); the two ends of a run where they lie one on the other.
 
     Used by the intersection snap; returns [] for disjoint/degenerate input.
     """
-    ga = curve_to_shapely(a)
-    gb = curve_to_shapely(b)
-    if ga is None or gb is None:
+    pa, pb = _ctrl_box(a), _ctrl_box(b)
+    if pa is None or pb is None or not _boxes_meet(pa, pb, _TOUCH_MM + 2 * _ISECT_FLAT_MM):
         return []
-    try:
-        inter = ga.intersection(gb)
-    except Exception:
+    fa, fb = _flat(a), _flat(b)
+    if fa is None or fb is None:
         return []
-    return [(p.x, p.y) for p in _iter_shapely_pts(inter)]
+    hits, _covered = _meet(fa, fb, a_ends=True)
+    out: List[Tuple[float, float]] = []
+    seen = set()
+    for _t, x, y in hits:
+        key = (round(x, 7), round(y, 7))
+        if key not in seen:
+            seen.add(key)
+            out.append((x, y))
+    return out
 
 
 def intersect_curve_params(target: Curve, other: Curve,
                            end_tol_mm: float = _END_TOL_MM) -> List[float]:
     """
-    Return t values on `target` where it intersects `other`.
+    Return t values on `target` where it intersects `other`: where they
+    cross, where a free end of `other` stops on it, and at each end of a run
+    where the two lie one on the other.
 
     For open curves, intersections within end_tol_mm (scene mm) of either
     endpoint are dropped — they are trivial endpoint touches, not crossings.
     Closed curves keep all intersections (t≈0/1 is the seam, a real point).
     """
-    ga = curve_to_shapely(target)
-    gb = curve_to_shapely(other)
-    if ga is None or gb is None:
-        return []
-    try:
-        inter = ga.intersection(gb)
-    except Exception:
-        return []
+    return [t for t, _o in target_crossings(target, [other], end_tol_mm)]
 
-    is_closed = target.closed or target.kind == "circle"
+
+def target_crossings(target: Curve, others: list,
+                     end_tol_mm: float = _END_TOL_MM,
+                     near: tuple | None = None,
+                     along: list | None = None) -> list:
+    """[(t, other), ...]: intersect_curve_params for every curve of *others*
+    at once (one Trim or Split click). The target is flattened and indexed
+    once, and a curve whose bounds cannot reach it is never flattened.
+
+    *near* = (x, y, r) keeps the meetings within r mm of (x, y), and skips
+    every curve that cannot hold one (Split's snap). The others that
+    *target* lies on along its whole length are appended to *along*, when
+    given (a copy: they meet nowhere)."""
+    fa = _flat(target)
+    if fa is None:
+        return []
+    pad = _TOUCH_MM + 2 * _ISECT_FLAT_MM
+    if near is not None:
+        nx, ny, nr = near
+        reach = (nx - nr, ny - nr, nx + nr, ny + nr)
+        if not _boxes_meet(fa.box, reach, pad):
+            return []
+    is_closed = fa.closed
     if not is_closed:
         sx, sy = point_at_t(target, 0.0)
         ex, ey = point_at_t(target, 1.0)
-
-    # Sample the target once; t_nearest would re-sample it per point.
-    samples = sample_curve(target, n_per_seg=_SAMPLES_PER_SEG * 2)
-
-    def nearest_t(px: float, py: float) -> float:
-        if not samples:
-            return 0.0
-        return _nearest_refined_t(target, samples, px, py)
-
-    ts = []
-    for pt in _iter_shapely_pts(inter):
-        if not is_closed:
-            if (math.hypot(pt.x - sx, pt.y - sy) <= end_tol_mm
-                    or math.hypot(pt.x - ex, pt.y - ey) <= end_tol_mm):
+        end_tol_mm = _small_tol(target, end_tol_mm)
+    out = []
+    for other in others:
+        if other is target:
+            continue
+        box = _ctrl_box(other)
+        if box is None or not _boxes_meet(fa.box, box, pad):
+            continue
+        if near is not None and not _boxes_meet(box, reach, pad):
+            continue
+        fb = _flat(other)
+        if fb is None:
+            continue
+        hits, covered = _meet(fa, fb)
+        if covered and along is not None:
+            along.append(other)
+        for t, x, y in hits:
+            if near is not None and math.hypot(x - nx, y - ny) > nr:
                 continue
-        ts.append(nearest_t(pt.x, pt.y))
-    return ts
+            if not is_closed:
+                if (math.hypot(x - sx, y - sy) <= end_tol_mm
+                        or math.hypot(x - ex, y - ey) <= end_tol_mm):
+                    continue
+            out.append((t, other))
+    return out
+
+
+def _small_tol(curve: Curve, tol_mm: float) -> float:
+    """*tol_mm*, but no more than a quarter of the curve's size. Absolute,
+    the 0.5 mm merge and the 0.25 mm end tolerance swallowed a feature under
+    a millimeter: a 0.4 mm line could not be cut or split, and a 0.2 mm
+    circle's two crossings were one (2.0.1). No Frame Library curve is small
+    enough to feel it."""
+    b = _ctrl_box(curve)
+    if b is None:
+        return tol_mm
+    return min(tol_mm, 0.25 * math.hypot(b[2] - b[0], b[3] - b[1]))
+
+
+def _along_mm(curve: Curve, t0: float, t1: float, n: int = 16) -> float:
+    """Length of *curve* from t0 to t1 (t0 <= t1), on n chords."""
+    pts = [point_at_t(curve, t0 + (t1 - t0) * k / n) for k in range(n + 1)]
+    return sum(math.dist(p, q) for p, q in zip(pts, pts[1:], strict=False))
 
 
 def dedup_ts_mm(curve: Curve, ts: List[float],
@@ -628,20 +1240,29 @@ def dedup_ts_mm(curve: Curve, ts: List[float],
     Distance is measured in mm rather than t-space so the tolerance does not
     grow with the number of segments in the curve.  For closed curves the
     first and last survivors are also compared across the t=0/1 seam.
+
+    Two points merge only when they are near along the curve as well: a
+    line across both arms of a hairpin, or both walls of a narrow slot, made
+    two crossings that were taken for one. On a curve under four times
+    tol_mm across, the tolerance is a quarter of its size (_small_tol).
     """
     if not ts:
         return []
+    tol_mm = _small_tol(curve, tol_mm)
     ts  = sorted(ts)
     out = [ts[0]]
     for t in ts[1:]:
         x0, y0 = point_at_t(curve, out[-1])
         x1, y1 = point_at_t(curve, t)
-        if math.hypot(x1 - x0, y1 - y0) > tol_mm:
+        if (math.hypot(x1 - x0, y1 - y0) > tol_mm
+                or _along_mm(curve, out[-1], t) > 2 * tol_mm):
             out.append(t)
     if (curve.closed or curve.kind == "circle") and len(out) > 1:
         x0, y0 = point_at_t(curve, out[0])
         x1, y1 = point_at_t(curve, out[-1])
-        if math.hypot(x1 - x0, y1 - y0) <= tol_mm:
+        if (math.hypot(x1 - x0, y1 - y0) <= tol_mm
+                and _along_mm(curve, out[-1], 1.0) + _along_mm(curve, 0.0, out[0])
+                <= 2 * tol_mm):
             out.pop()
     return out
 
@@ -662,7 +1283,13 @@ def _extract_spline_segment(curve: Curve,
     def _seg_local(t):
         scaled = t * ns
         seg    = min(int(scaled), ns - 1)
-        return seg, scaled - seg
+        local  = scaled - seg
+        # A t a hair below a node (t_nearest at a node can land there) is
+        # the node: read as the end of the segment before, the piece after
+        # began with a second node 4e-9 mm from it, a hook when dragged.
+        if local > 1 - 1e-9 and seg < ns - 1:
+            seg, local = seg + 1, 0.0
+        return seg, local
 
     seg_s, local_s = _seg_local(t_start)
     seg_e, local_e = _seg_local(t_end)
@@ -924,6 +1551,13 @@ def split_curve_at_t(curve: Curve,
 _OFFSET_TOL_MM    = 0.02  # max deviation of the offset from true parallel (mm)
 _OFFSET_MAX_DEPTH = 8     # bezier subdivision limit per source segment
 _OFFSET_JOIN_TOL  = 0.02  # adjacent segment offsets closer than this merge (mm)
+
+
+class OffsetOutOfRange(ValueError):
+    """The distance is out of range for the curve: an inward offset that
+    leaves nothing of a closed shape, or one that folds over itself too often
+    to untangle. The message says which, worded to follow "−10 mm is out of
+    range for this curve: ". The Offset tool shows it instead of a preview."""
 
 
 def _abs_polygon_area(nodes) -> float:
@@ -1256,17 +1890,26 @@ def _point_polyline_dist(p, poly) -> float:
 def _offset_matches(reduced: Curve, reference: Curve) -> bool:
     """True when the reduced offset stays within a small band of the Tiller–
     Hanson reference everywhere (two-sided). Catches a fit that self-intersected
-    on an inward offset past the curvature limit — there we keep TH instead."""
+    on an inward offset past the curvature limit — there we keep TH instead.
+    Vectorized (2.0.1): point by point in Python it was nine tenths of an
+    outline's offset, three to eight seconds of the tool's live preview. Each
+    line is prepared, so the test of every point is indexed: unprepared, an
+    offset far past its bends (a TH of thousands of cubics) took four seconds."""
+    import numpy as np
+    import shapely
+
     tol = max(_OFFSET_TOL_MM * 5.0, 0.08)
-    pa = [(x, y) for x, y, _ in sample_curve(reduced, _OFFSET_FIT_PER_SEG)]
-    pb = [(x, y) for x, y, _ in sample_curve(reference, _OFFSET_FIT_PER_SEG)]
+    pa = np.asarray([(x, y) for x, y, _ in sample_curve(reduced, _OFFSET_FIT_PER_SEG)])
+    pb = np.asarray([(x, y) for x, y, _ in sample_curve(reference, _OFFSET_FIT_PER_SEG)])
     if len(pa) < 2 or len(pb) < 2:
         return False
-    if max(_point_polyline_dist(p, pb) for p in pa) > tol:
+    la, lb = shapely.linestrings(pa), shapely.linestrings(pb)
+    shapely.prepare(la)
+    shapely.prepare(lb)
+    # The prepared line first: the other way round GEOS does not use it.
+    if not shapely.dwithin(lb, shapely.points(pa), tol).all():
         return False
-    if max(_point_polyline_dist(p, pa) for p in pb) > tol:
-        return False
-    return True
+    return bool(shapely.dwithin(la, shapely.points(pb), tol).all())
 
 
 def _reduce_offset_nodes(curve: Curve, d_mm: float, th: Curve):
@@ -1312,6 +1955,367 @@ def _reduce_offset_nodes(curve: Curve, d_mm: float, th: Curve):
         return None
 
 
+# ---- Offset loops (2.0.1) -------------------------------------------------
+#
+# At a corner the offset pieces of the two sides either leave a gap (the
+# outside, bridged by a bevel) or run past each other (the inside), and the
+# bevel joining their ends then makes a small loop; an inward offset past the
+# curvature of a tight bend loops the same way. Every shipped hinge pocket at
+# −0.3 mm, and most library outlines at −1 mm, crossed themselves so.
+
+_LOOP_FLAT_TOL_MM = 0.0005   # flattening tolerance of the crossing search
+_LOOP_MAX_CUTS    = 500
+# The search's work, its flattened points summed over the passes that found a
+# crossing; each costs 4-7 µs. The Frame Library's 425 splines peak at 25 000
+# at ±1 mm, 145 000 at ±3 mm and 355 000 at +5 mm; an offset far past its
+# bends ran 980 000 and more, minutes for some, with the GUI frozen. The
+# segment pairs it weighs are counted too, apart: the library peaks at 47 000
+# at ±3 mm and 245 000 at +5 mm, and a lens trace with tracer noise weighs
+# 80 000 a pass, where points alone let it run 40 passes (17 s).
+_LOOP_MAX_WORK    = 400_000
+_LOOP_MAX_PAIRS   = 300_000
+_FOLDS_TOO_OFTEN  = "it folds over itself too often to untangle"
+_NOTHING_LEFT     = "nothing of the shape would be left"
+_SPLITS_SHAPE     = "the shape would come apart into separate pieces"
+
+
+def _cubic_straight(c) -> bool:
+    """Both handles retracted: a straight run, which the loop search
+    parameterizes by its chord so a cut lands where it was found."""
+    return (abs(c[1][0] - c[0][0]) + abs(c[1][1] - c[0][1]) < 1e-12
+            and abs(c[2][0] - c[3][0]) + abs(c[2][1] - c[3][1]) < 1e-12)
+
+
+def _cubic_tiny(c) -> bool:
+    return all(abs(p[0] - c[0][0]) + abs(p[1] - c[0][1]) < 1e-9 for p in c[1:])
+
+
+def _cubic_at(c, t: float):
+    if _cubic_straight(c):
+        return (c[0][0] + (c[3][0] - c[0][0]) * t, c[0][1] + (c[3][1] - c[0][1]) * t)
+    return _bezier_eval(c[0], c[1], c[2], c[3], t)
+
+
+def _cubic_deriv(c, t: float):
+    p0, p1, p2, p3 = c
+    if _cubic_straight(c):
+        return (p3[0] - p0[0], p3[1] - p0[1])
+    u = 1.0 - t
+    return (3*u*u*(p1[0]-p0[0]) + 6*u*t*(p2[0]-p1[0]) + 3*t*t*(p3[0]-p2[0]),
+            3*u*u*(p1[1]-p0[1]) + 6*u*t*(p2[1]-p1[1]) + 3*t*t*(p3[1]-p2[1]))
+
+
+def _cubic_cut(c, t: float, at):
+    """(left, right) of cubic *c* cut at *t*, the cut end of each pinned to
+    the point *at* (its handle moved with it)."""
+    if _cubic_straight(c):
+        return [c[0], c[0], at, at], [at, at, c[3], c[3]]
+    left, right = split_bezier_at_t(c[0], c[1], c[2], c[3], t)
+    dx, dy = at[0] - left[3][0], at[1] - left[3][1]
+    return ([left[0], left[1], (left[2][0] + dx, left[2][1] + dy), at],
+            [at, (right[1][0] + dx, right[1][1] + dy), right[2], right[3]])
+
+
+def _flatten_cubics(cubics: list):
+    """The chain of cubics as a polyline: its vertices, and per segment the
+    cubic it lies on with the parameters at its ends. Zero-length segments
+    are left out, so two segments that touch are neighbors."""
+    verts = [cubics[0][0]]
+    segs: list = []
+    for k, c in enumerate(cubics):
+        if _cubic_straight(c):
+            n = 1
+        else:
+            p0, p1, p2, p3 = c
+            d = max(math.hypot(p0[0] - 2*p1[0] + p2[0], p0[1] - 2*p1[1] + p2[1]),
+                    math.hypot(p1[0] - 2*p2[0] + p3[0], p1[1] - 2*p2[1] + p3[1]))
+            n = max(1, min(256, math.ceil(math.sqrt(0.75 * d / _LOOP_FLAT_TOL_MM))))
+        t0 = 0.0
+        for j in range(1, n + 1):
+            t = j / n
+            p = _cubic_at(c, t)
+            if abs(p[0] - verts[-1][0]) + abs(p[1] - verts[-1][1]) >= 1e-12:
+                verts.append(p)
+                segs.append((k, t0, t))
+            t0 = t
+    return verts, segs
+
+
+def _point_on_seg(p, a, b):
+    """(distance, parameter, foot) of point p's nearest point on segment ab."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 < 1e-24 else min(max(((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2, 0.0), 1.0)
+    foot = (a[0] + dx * t, a[1] + dy * t)
+    return math.hypot(p[0] - foot[0], p[1] - foot[1]), t, foot
+
+
+def _chain_crossings(verts: list, closed: bool, pairs: list | None = None) -> list:
+    """(i, σ, j, τ, point) for every point where segment i, at σ, crosses a
+    later segment j, at τ, that is not its neighbor. The number of segment
+    pairs weighed is appended to *pairs*, when given.
+
+    A hairpin counts as a crossing too: two segments within the offset's
+    accuracy (_OFFSET_TOL_MM) whose way round along the chain is ten times
+    their gap. Past a bend tighter than the offset distance the exact offset
+    loops; the approximation, held only to that accuracy, can lose the
+    crossing and leave a hair-thin spike in its place (two library outlines
+    at ±1 mm). The point is then midway across the gap."""
+    import numpy as np
+    import shapely
+
+    n = len(verts) - 1
+    if n < 3:
+        return []
+    a = np.asarray(verts, dtype=float)
+    lines = shapely.linestrings(np.stack([a[:-1], a[1:]], axis=1))
+    ii, jj = shapely.STRtree(lines).query(lines, predicate="dwithin",
+                                          distance=_OFFSET_TOL_MM)
+    keep = jj > ii + 1
+    if closed:
+        keep &= ~((ii == 0) & (jj == n - 1))
+    ii, jj = ii[keep], jj[keep]
+    if pairs is not None:
+        pairs.append(len(ii))
+    if not len(ii):
+        return []
+    cum = np.concatenate([[0.0], np.cumsum(np.hypot(*(a[1:] - a[:-1]).T))])
+    gap = shapely.distance(lines[ii], lines[jj])
+    way = cum[jj + 1] - cum[ii]           # the most the way round can be
+    if closed:
+        way = np.minimum(way, cum[-1] - cum[jj] + cum[ii + 1])
+    near = (gap <= 1e-12) | ((way > 10.0 * gap) & (way > 2.0 * _OFFSET_TOL_MM))
+    out = []
+    for i, j in zip(ii[near].tolist(), jj[near].tolist(), strict=True):
+        p, q = verts[i], verts[i + 1]
+        r, s = verts[j], verts[j + 1]
+        rx, ry = q[0] - p[0], q[1] - p[1]
+        sx, sy = s[0] - r[0], s[1] - r[1]
+        den = rx * sy - ry * sx
+        if abs(den) > 1e-12 * math.hypot(rx, ry) * math.hypot(sx, sy):
+            wx, wy = r[0] - p[0], r[1] - p[1]
+            sig = (wx * sy - wy * sx) / den
+            tau = (wx * ry - wy * rx) / den
+            if -1e-9 <= sig <= 1 + 1e-9 and -1e-9 <= tau <= 1 + 1e-9:
+                sig, tau = min(max(sig, 0.0), 1.0), min(max(tau, 0.0), 1.0)
+                out.append((i, sig, j, tau, (p[0] + rx * sig, p[1] + ry * sig)))
+                continue
+        # No crossing: the nearest pair of points, a hairpin's if the way
+        # round between them is long enough.
+        d0, t0, f0 = _point_on_seg(p, r, s)
+        d1, t1, f1 = _point_on_seg(q, r, s)
+        d2, t2, f2 = _point_on_seg(r, p, q)
+        d3, t3, f3 = _point_on_seg(s, p, q)
+        dist, sig, tau, u, v = min((d0, 0.0, t0, p, f0), (d1, 1.0, t1, q, f1),
+                                   (d2, t2, 0.0, f2, r), (d3, t3, 1.0, f3, s))
+        if dist > _OFFSET_TOL_MM:
+            continue
+        ai = cum[i] + sig * (cum[i + 1] - cum[i])
+        aj = cum[j] + tau * (cum[j + 1] - cum[j])
+        way_ij = aj - ai if not closed else min(aj - ai, cum[-1] - aj + ai)
+        if way_ij > 10.0 * dist and way_ij > 2.0 * _OFFSET_TOL_MM:
+            out.append((i, sig, j, tau, ((u[0] + v[0]) / 2.0, (u[1] + v[1]) / 2.0)))
+    return out
+
+
+def _refine_crossing(ca, s: float, cb, u: float):
+    """Newton on ca(s) = cb(u) from the polyline's estimate. Returns
+    (s, u, point), or None when it does not settle."""
+    best = None
+    for _ in range(30):
+        pa, pb = _cubic_at(ca, s), _cubic_at(cb, u)
+        fx, fy = pa[0] - pb[0], pa[1] - pb[1]
+        err = math.hypot(fx, fy)
+        if best is None or err < best[0]:
+            best = (err, s, u, ((pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0))
+        if err < 1e-12:
+            break
+        da, db = _cubic_deriv(ca, s), _cubic_deriv(cb, u)
+        det = db[0] * da[1] - da[0] * db[1]
+        if abs(det) < 1e-18:
+            break
+        s = min(max(s + (fx * db[1] - fy * db[0]) / det, 0.0), 1.0)
+        u = min(max(u + (fx * da[1] - fy * da[0]) / det, 0.0), 1.0)
+    if best[0] > 1e-6:
+        return None
+    return best[1], best[2], best[3]
+
+
+def _cut_loop(cubics: list, closed: bool, ka: int, ta: float,
+              kb: int, tb: float, at, inner: bool) -> list:
+    """The chain with the stretch from (ka, ta) to (kb, tb) cut out, the two
+    ends meeting at *at* (inner); or, for a closed chain, that stretch alone,
+    closed at *at*."""
+    if inner:
+        left = _cubic_cut(cubics[ka], ta, at)[0]
+        right = _cubic_cut(cubics[kb], tb, at)[1]
+        pieces = cubics[:ka] + [left, right] + cubics[kb + 1:]
+    elif ka == kb:
+        rest = _cubic_cut(cubics[ka], ta, at)[1]
+        pieces = [_cubic_cut(rest, (tb - ta) / (1.0 - ta), at)[0]]
+    else:
+        pieces = ([_cubic_cut(cubics[ka], ta, at)[1]] + cubics[ka + 1:kb]
+                  + [_cubic_cut(cubics[kb], tb, at)[0]])
+    return [c for c in pieces if not _cubic_tiny(c)]
+
+
+def _cubics_curve(cubics: list, like: Curve) -> Curve:
+    """A spline Curve through *cubics*, with *like*'s layer and weight; a
+    retracted handle is no handle, as _curve_cubics reads it."""
+    import dataclasses
+
+    def _handle(p, base):
+        same = abs(p[0] - base[0]) + abs(p[1] - base[1]) < 1e-12
+        return None if same else ControlPoint(*p)
+
+    nodes: List[SplineNode] = []
+    for k, c in enumerate(cubics):
+        nd = SplineNode(x=c[0][0], y=c[0][1])
+        nd.cp_out = _handle(c[1], c[0])
+        if k:
+            nd.cp_in = _handle(cubics[k - 1][2], cubics[k - 1][3])
+        nodes.append(nd)
+    last = cubics[-1]
+    if like.closed:
+        nodes[0].cp_in = _handle(last[2], last[3])
+    else:
+        end = SplineNode(x=last[3][0], y=last[3][1])
+        end.cp_in = _handle(last[2], last[3])
+        nodes.append(end)
+    return dataclasses.replace(like, nodes=nodes)
+
+
+def _untangle_offset(source: Curve, off: Curve, d: float) -> Curve:
+    """*off* with the loops its corners and tight bends make cut out, each
+    pair of pieces trimmed where they cross into one sharp node.
+
+    Such a loop turns against the offset side (*d*, signed along the
+    left-hand normal), and one with no other crossing on it is cut first.
+    A closed offset then keeps its main loop: an inward one also cuts a
+    loop of the other side of a crossing (its corner loops turn against the
+    shape, its main loop and any lobe with it); after that the smaller side
+    of each crossing goes, a lobe pinched off or an outward offset's loop
+    inside its main one. An open offset cuts corner and bend loops only,
+    never a crossing of two far parts. *off* is returned unchanged when it
+    does not cross itself, when *source* does, or when the result is not
+    one clean loop. OffsetOutOfRange when the loops are more than the
+    search's budget, or a closed offset turns inside out (an inward one past
+    the shape's width)."""
+    try:
+        if off.kind != "spline" or len(off.nodes) < 2:
+            return off
+        closed = off.closed
+        cubics = [c for c in _curve_cubics(off) if not _cubic_tiny(c)]
+        if len(cubics) < 2:
+            return off
+        cut = False
+        src_area = 0.0
+        work = weighed = 0
+        for _ in range(_LOOP_MAX_CUTS):
+            verts, segs = _flatten_cubics(cubics)
+            pairs: list = []
+            hits = _chain_crossings(verts, closed, pairs)
+            if not hits:
+                break
+            if not cut:
+                src = flatten_curve(source, 0.01)
+                ring = (_sg.LinearRing(src) if source.closed and len(src) >= 4
+                        else _sg.LineString(src))
+                if not ring.is_simple:
+                    return off        # the source crosses itself: so may this
+                if closed:
+                    src_area = _signed_area_pts(
+                        [(x, y) for x, y, _ in sample_curve(source)])
+            work += len(verts)
+            weighed += sum(pairs)
+            if work > _LOOP_MAX_WORK or weighed > _LOOP_MAX_PAIRS:
+                raise OffsetOutOfRange(_FOLDS_TOO_OFTEN)
+            inward = closed and d * src_area > 0.0
+            # The loop between two crossing segments, by its signed area: a
+            # running shoelace sum, closed at the crossing point.
+            run = [0.0]
+            for g in range(len(verts) - 1):
+                run.append(run[-1] + verts[g][0] * verts[g + 1][1]
+                           - verts[g + 1][0] * verts[g][1])
+            total = run[-1] / 2.0
+            spans = [(i + sig, j + tau) for i, sig, j, tau, _x in hits]
+            # Another crossing on a loop, by bisection: a crossing's own ends
+            # never fall strictly inside or outside its span, so all of them
+            # are counted (one by one this was the square of the crossings, a
+            # minute and more when an offset far past its bends made thousands).
+            ends = sorted(p for span in spans for p in span)
+            best = None
+            for k, (i, sig, j, tau, x) in enumerate(hits):
+                vi, vj = verts[i + 1], verts[j]
+                area = (x[0] * vi[1] - vi[0] * x[1] + run[j] - run[i + 1]
+                        + vj[0] * x[1] - x[0] * vj[1]) / 2.0
+                lo, hi = spans[k]
+                bare_in = (bisect.bisect_left(ends, hi - 1e-9)
+                           <= bisect.bisect_right(ends, lo + 1e-9))
+                bare_out = (bisect.bisect_left(ends, lo - 1e-9) == 0
+                            and bisect.bisect_right(ends, hi + 1e-9) == len(ends))
+                sides = [(area, True, bare_in)]
+                if closed:
+                    sides.append((total - area, False, bare_out))
+                for a, inner, bare in sides:
+                    against = a * d < 0.0 or abs(a) < 1e-9
+                    if bare and against and (inward or not closed):
+                        cand = (0, abs(a), inner)
+                        if best is None or cand < best[0]:
+                            best = (cand, i, sig, j, tau, x)
+                if closed:
+                    inner = abs(area) <= abs(total - area)
+                    cand = (1, min(abs(area), abs(total - area)), inner)
+                    if best is None or cand < best[0]:
+                        best = (cand, i, sig, j, tau, x)
+            if best is None:
+                break                 # an open curve's far parts crossing
+            (_rank, _size, inner), i, sig, j, tau, x = best
+            ka, a0, a1 = segs[i]
+            kb, b0, b1 = segs[j]
+            ta, tb = a0 + (a1 - a0) * sig, b0 + (b1 - b0) * tau
+            exact = _refine_crossing(cubics[ka], ta, cubics[kb], tb)
+            if (exact is not None and (ka != kb or exact[0] < exact[1])
+                    and math.hypot(exact[2][0] - x[0], exact[2][1] - x[1])
+                    < 20 * _LOOP_FLAT_TOL_MM):
+                ta, tb, x = exact
+            cubics = _cut_loop(cubics, closed, ka, ta, kb, tb, x, inner)
+            cut = True
+            if len(cubics) < (2 if closed else 1):
+                if closed:
+                    raise OffsetOutOfRange(_NOTHING_LEFT)
+                return off
+        else:
+            raise OffsetOutOfRange(_FOLDS_TOO_OFTEN)
+        if not cut:
+            return off
+        if closed:
+            verts, _segs = _flatten_cubics(cubics)
+            if _chain_crossings(verts, True):
+                return off
+            src_area = _signed_area_pts([(x, y) for x, y, _ in sample_curve(source)])
+            if _signed_area_pts(verts) * src_area <= 0.0:
+                raise OffsetOutOfRange(_NOTHING_LEFT)   # inward past the width
+        return _cubics_curve(cubics, off)
+    except OffsetOutOfRange:
+        raise
+    except Exception:
+        return off
+
+
+def _offset_leaves_nothing(curve: Curve, d_mm: float) -> bool:
+    """An inward offset of a closed curve past its width, told before any
+    offset is built: the drawn shape, shrunk by |d| (shapely's buffer), is
+    empty. A shape that crosses itself is not judged."""
+    if not curve.closed or d_mm >= 0.0:
+        return False
+    pts = flatten_curve(curve, 0.01)
+    if len(pts) < 4:
+        return False
+    shape = _sg.Polygon(pts)
+    return shape.is_valid and shape.buffer(d_mm).is_empty
+
+
 def offset_curve(curve: Curve, d_mm: float) -> Curve:
     """Create a new curve parallel to *curve* at *d_mm* offset.
 
@@ -1331,6 +2335,10 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
     offset past the curvature limit) the TH result is returned unchanged.
     Corners (broken handles) get a straight bevel join and stay sharp across the
     refit. Circles and arcs are offset analytically (radius ± d).
+
+    Raises OffsetOutOfRange when nothing of a closed spline or polyline would
+    be left, or a spline's offset folds over itself too often to untangle
+    (2.0.1: −10 mm on an open outline froze the window for minutes).
     """
     import copy as _copy
 
@@ -1349,11 +2357,27 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
         return _copy.deepcopy(curve)
 
     closed = curve.closed
+    if _offset_leaves_nothing(curve, d_mm):
+        raise OffsetOutOfRange(_NOTHING_LEFT)
 
     if curve.kind != "line":
         th = _offset_spline(curve, d_mm)
         reduced = _reduce_offset_nodes(curve, d_mm, th)
-        return reduced if reduced is not None else th
+        return _untangle_offset(curve, reduced if reduced is not None else th,
+                                _offset_winding_d(curve, d_mm))
+
+    # A repeated node is a zero-length segment with no normal: the node
+    # beside it was left where it was, so that corner kept no clearance
+    # (DXF import folds only a closing duplicate).
+    nodes = [nd for i, nd in enumerate(nodes)
+             if i == 0 or math.hypot(nd.x - nodes[i - 1].x,
+                                     nd.y - nodes[i - 1].y) >= 1e-9]
+    if closed and len(nodes) > 1 and math.hypot(
+            nodes[-1].x - nodes[0].x, nodes[-1].y - nodes[0].y) < 1e-9:
+        nodes = nodes[:-1]
+    n = len(nodes)
+    if n < 2:
+        return _copy.deepcopy(curve)
 
     def _seg_normal(ax: float, ay: float, bx: float, by: float):
         """Left-hand unit normal of segment a→b."""
@@ -1392,10 +2416,32 @@ def offset_curve(curve: Curve, d_mm: float) -> Curve:
 
     new_nodes = _line_nodes(d_mm)
     if closed and n >= 3:
-        # Normalize direction: +d must grow the shape whatever the winding.
-        grew = _abs_polygon_area(new_nodes) > _abs_polygon_area(nodes)
-        if grew != (d_mm > 0):
-            new_nodes = _line_nodes(-d_mm)
+        # +d must grow the shape whatever the winding: the side is the
+        # winding's. It was chosen by which result had the larger area, and
+        # past half a shape's size the inside-out inward one has: a 3.5 × 2
+        # mm slot offset +3 came back 2.5 × 4, on one winding of the two
+        # (the 2.3 sweep; one of a library front's two hinge slots).
+        src = [(nd.x, nd.y) for nd in nodes]
+        new_nodes = _line_nodes(-d_mm if _signed_area_pts(src) > 0 else d_mm)
+        # A corner that passes another side (a lug narrower than twice the
+        # distance) leaves the mitered polygon crossing itself, or turned
+        # inside out: then the shape itself is grown or shrunk (shapely's
+        # mitered buffer), which drops what the distance swallows. Nothing
+        # is said to be in range that is not one clean outline.
+        shape = _sg.Polygon(src)
+        got = _sg.Polygon([(nd.x, nd.y) for nd in new_nodes])
+        if shape.is_valid and not (got.is_valid and got.area > 0.0 and (
+                _signed_area_pts([(nd.x, nd.y) for nd in new_nodes]) > 0)
+                == (_signed_area_pts(src) > 0)):
+            grown = shape.buffer(d_mm, join_style=2, mitre_limit=6.0)
+            if grown.is_empty:
+                raise OffsetOutOfRange(_NOTHING_LEFT)
+            if grown.geom_type != "Polygon" or len(grown.interiors):
+                raise OffsetOutOfRange(_SPLITS_SHAPE)
+            ring = list(grown.exterior.coords)[:-1]
+            if (_signed_area_pts(ring) > 0) != (_signed_area_pts(src) > 0):
+                ring.reverse()                      # the source's own winding
+            new_nodes = [SplineNode(x=float(x), y=float(y)) for x, y in ring]
 
     return Curve(kind="line", layer=curve.layer, nodes=new_nodes,
                  closed=closed, line_weight=curve.line_weight,
@@ -1509,6 +2555,9 @@ def fillet_lines(corner: tuple, far1: tuple, far2: tuple, r: float):
     end_deg   = math.degrees(math.atan2(t2[1] - center[1], t2[0] - center[0]))
     if (end_deg - start_deg) % 360 > 180.0:   # always the minor (fillet) arc
         start_deg, end_deg = end_deg, start_deg
+    if (end_deg - start_deg) % 360 < 1e-6:
+        return None                   # legs all but straight: a sweep this thin
+                                      # was stored as 0 and read as a full circle
     return {
         "t1": t1, "t2": t2, "center": center, "radius": r,
         "start_deg": start_deg, "end_deg": end_deg, "tan_len": tan_len,

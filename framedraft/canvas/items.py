@@ -73,6 +73,19 @@ def _selection_halo_color() -> QColor:
 # All pens are cosmetic (constant screen width regardless of zoom).
 
 
+#: The opacity the flat drawing fades to while View Formed shows the formed
+#: one (Road to 2.3). On a curve's and a text's own pen, not the item, so the
+#: selection halo stays full under it.
+FLAT_FADE = 0.28
+
+
+def _faded(pen: QPen) -> QPen:
+    c = QColor(pen.color())
+    c.setAlphaF(c.alphaF() * FLAT_FADE)
+    pen.setColor(c)
+    return pen
+
+
 def _layer_pen(layer: Layer, line_weight: float | None = None) -> QPen:
     pen = QPen(QColor(theme.layer_color(layer)))
     pen.setCosmetic(True)
@@ -126,7 +139,10 @@ def build_path(curve: Curve) -> QPainterPath:
             sa_rad = math.radians(curve.start_angle)
             path.moveTo(cx + r * math.cos(sa_rad), cy + r * math.sin(sa_rad))
             sweep = (curve.end_angle - curve.start_angle) % 360
-            if sweep < 0.001:
+            if sweep < 1e-9:
+                # Equal angles: a full circle, by geometry's rule
+                # (_arc_sweep_deg). At 0.001 a fillet of nearly straight legs
+                # drew as a full circle; geometry and the DXF see a dot.
                 sweep = 360
             # arcTo uses Qt convention: angles CCW in Qt-space (CW on screen since Y-down).
             # Our stored angles are from atan2 in Qt scene (Y-down), so negate both to
@@ -163,14 +179,21 @@ class CurveItem(QGraphicsPathItem):
     def __init__(self, curve: Curve):
         super().__init__()
         self.curve = curve
+        self.faded = False          # View Formed's fade (set_faded)
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, True)
         self.setZValue(10)
         self.refresh()
 
     def refresh(self):
         self.setPath(build_path(self.curve))
-        self.setPen(_layer_pen(self.curve.layer, self.curve.line_weight))
+        pen = _layer_pen(self.curve.layer, self.curve.line_weight)
+        self.setPen(_faded(pen) if self.faded else pen)
         self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+
+    def set_faded(self, on: bool):
+        if on != self.faded:
+            self.faded = on
+            self.refresh()
 
     def shape(self) -> QPainterPath:
         # Use only the stroked outline as the hit area. The default

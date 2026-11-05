@@ -386,7 +386,9 @@ class ComponentLibrary:
         old = pathlib.Path(old_path)
         safe = _safe_filename(new_name)
         new_path = old.parent / f"{safe}.svg"
-        if new_path.exists() and new_path != old:
+        # samefile: on a disk that ignores case (macOS), a rename by case
+        # alone found its own file and was refused as taken.
+        if new_path.exists() and not new_path.samefile(old):
             raise ValueError(f"'{safe}' already exists in the library.")
         old.rename(new_path)
         return str(new_path)
@@ -473,7 +475,7 @@ class DrillLibrary:
     def rename_entry(self, old_path: str, new_name: str) -> str:
         safe     = _safe_filename(new_name, "pattern")
         new_path = _DRILLS_DIR / f"{safe}.json"
-        if new_path.exists() and new_path != pathlib.Path(old_path):
+        if new_path.exists() and not new_path.samefile(old_path):
             raise ValueError(f"'{safe}' already exists in the drill library.")
         pathlib.Path(old_path).rename(new_path)
         return str(new_path)

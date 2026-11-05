@@ -23,14 +23,20 @@ from ..canvas.items import CurveItem
 from ..document import Curve, SplineNode
 from ..geometry import fillet_lines
 from .circle import _RadiusHud
-from .trim import curve_item_at
-from ..typed import typed_char
+from .trim import GROUPED_REFUSAL, curve_item_at
+from ..typed import parse_typed, typed_char
+
+# The digits a typed length takes: str.isdigit() also says yes to "²" (a
+# plain key on an AZERTY keyboard) and to other scripts' digits, which went
+# into the buffer, did not parse, and Enter then ended the curve.
+_DIGITS = "0123456789"
 
 
 _HOVER_COLOR = "#ffd580"
 _HOVER_WIDTH = 2.5
 _HIT_TOL_PX  = 8
 _CORNER_TOL_MM = 2.0    # how close the two picked line ends must be to be a corner
+_HAIRLINE_MM   = 0.01   # what is left of a leg shorter than this goes with it
 
 
 class FilletTool(QObject):
@@ -99,8 +105,8 @@ class FilletTool(QObject):
             return False
         if self._line1 is None or self._line2 is None:
             item = self._item_at(pos)
-            if item is None or item.curve.kind != "line":
-                self.status_message.emit("Fillet: click a straight line")
+            if item is None or item.curve.kind != "line" or item.curve.closed:
+                self.status_message.emit("Fillet: click an open straight line")
                 return True
             if self._line1 is None:
                 self._line1 = item.curve
@@ -163,7 +169,7 @@ class FilletTool(QObject):
 
         if self._line1 is not None and self._line2 is not None:
             ch = typed_char(text)
-            if ch and (ch.isdigit() or ch == '.'):
+            if ch and (ch in _DIGITS or ch == '.'):
                 if ch == '.' and '.' in self._radius_input:
                     return True
                 self._radius_input += ch
@@ -210,7 +216,7 @@ class FilletTool(QObject):
 
     def _current_radius(self):
         try:
-            r = float(self._radius_input) if self._radius_input else None
+            r = parse_typed(self._radius_input) if self._radius_input else None
         except ValueError:
             return None
         if r is None or r < self._MIN_RADIUS:
@@ -236,13 +242,22 @@ class FilletTool(QObject):
                     radius=r, start_angle=res["start_deg"],
                     end_angle=res["end_deg"],
                     line_weight=self._line1.line_weight)
-        return [new1, new2, arc]
+        return [c for c in (new1, new2) if c is not None] + [arc]
 
     @staticmethod
-    def _trim_line(line: Curve, corner_idx: int, tangent: tuple) -> Curve:
+    def _trim_line(line: Curve, corner_idx: int, tangent: tuple) -> Curve | None:
+        """*line* with its corner end moved to the tangent point; None when
+        the fillet takes the whole leg. A radius equal to the leg left a
+        zero-length line under "Fillet applied", which the readiness dot then
+        called a curve that encloses no area."""
         nodes = [SplineNode(x=n.x, y=n.y) for n in line.nodes]
         ci = corner_idx if corner_idx == 0 else len(nodes) - 1
         nodes[ci] = SplineNode(x=tangent[0], y=tangent[1])
+        nb = 1 if ci == 0 else len(nodes) - 2       # the node beside the corner
+        if math.hypot(nodes[nb].x - nodes[ci].x, nodes[nb].y - nodes[ci].y) < _HAIRLINE_MM:
+            del nodes[ci]                           # its segment is used up
+        if len(nodes) < 2:
+            return None
         return Curve(kind="line", layer=line.layer, nodes=nodes,
                      closed=False, line_weight=line.line_weight)
 
@@ -263,6 +278,9 @@ class FilletTool(QObject):
             self._hud.hide()
         self._line1 = self._line2 = None
         self._radius_input = ""
+        if l1.group_id or l2.group_id:
+            self.status_message.emit(f"Fillet: {GROUPED_REFUSAL}")
+            return
         self.fillet_applied.emit(l1, l2, result)
         self.status_message.emit(
             "Fillet applied  |  click two lines to fillet another  |  Esc to cancel")
@@ -300,7 +318,7 @@ class FilletTool(QObject):
                 cx, cy = c.nodes[0].x, c.nodes[0].y
                 rr = c.radius
                 sweep = (c.end_angle - c.start_angle) % 360
-                if sweep < 0.001:
+                if sweep < 1e-9:         # geometry's rule (_arc_sweep_deg)
                     sweep = 360
                 sa = math.radians(c.start_angle)
                 path.moveTo(cx + rr * math.cos(sa), cy + rr * math.sin(sa))
@@ -312,8 +330,10 @@ class FilletTool(QObject):
 
     def _item_at(self, scene_pos: QPointF) -> CurveItem | None:
         # Only lines are filletable, so a spline beside one never shadows it.
+        # Open lines only: a closed polyline came back open, its closing
+        # side gone, under "Fillet applied".
         return curve_item_at(self._view, scene_pos, _HIT_TOL_PX,
-                             accept=lambda c: c.kind == "line")
+                             accept=lambda c: c.kind == "line" and not c.closed)
 
     def _clear_hover(self):
         if self._hover_item is not None:

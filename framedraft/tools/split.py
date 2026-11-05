@@ -23,16 +23,19 @@ from PySide6.QtGui  import QPen, QColor
 
 from ..canvas.items import CurveItem
 from ..geometry import (
-    intersect_curve_params, dedup_ts_mm, t_nearest,
-    split_curve_at_t, point_at_t, _DEDUP_TOL_MM,
+    target_crossings, dedup_ts_mm, t_nearest,
+    split_curve_at_t, point_at_t, _DEDUP_TOL_MM, _END_TOL_MM, _small_tol,
 )
-from .trim import _visible_curves, curve_item_at
+from .trim import GROUPED_REFUSAL, _visible_curves, curve_item_at
 
 
 _HOVER_COLOR    = "#ffd580"
 _HOVER_WIDTH    = 2.5
 _HIT_TOL_PX     = 8
-_ISECT_SNAP_MM  = 1.5    # within this many mm of an intersection → snap to it
+_ISECT_SNAP_MM  = 1.5    # within this many mm of an intersection → snap to it…
+_ISECT_SNAP_PX  = 12     # …and no farther than this on screen: at 80 px/mm the
+                         # 1.5 mm was 120 px, and a click nowhere near a crossing
+                         # split there, and the crossing curve too (the 2.3 sweep)
 
 
 class SplitTool(QObject):
@@ -101,7 +104,10 @@ class SplitTool(QObject):
         if split_t is None:
             split_t = t_nearest(target, px, py)
 
-        left, right = split_curve_at_t(target, split_t)
+        # The end tolerance shrinks with a curve under a millimeter, which
+        # could not be split at all (2.0.1).
+        left, right = split_curve_at_t(target, split_t,
+                                       _small_tol(target, _END_TOL_MM))
         opened = right is None and left is not target   # closed curve opened
         if right is None and not opened:
             self.status_message.emit(
@@ -124,13 +130,16 @@ class SplitTool(QObject):
             if is_locked is not None and is_locked(other.layer):
                 continue
             o_t = t_nearest(other, split_x, split_y)
-            ol, orr = split_curve_at_t(other, o_t)
+            ol, orr = split_curve_at_t(other, o_t, _small_tol(other, _END_TOL_MM))
             if orr is not None:
                 extra_pairs.append((other, [ol, orr]))
             elif ol is not other:               # a closed curve, opened
                 extra_pairs.append((other, [ol]))
 
         self._clear_hover()
+        if target.group_id or any(o.group_id for o, _parts in extra_pairs):
+            self.status_message.emit(f"Split: {GROUPED_REFUSAL}")
+            return True
 
         # All splits from this click in ONE emission = one undo step.
         self.split_applied.emit([(target, results)] + extra_pairs)
@@ -163,7 +172,10 @@ class SplitTool(QObject):
     def handle_dbl_click(self, pos: QPointF,
                           use_snap: bool = True,
                           constrain: bool = False) -> bool:
-        return self.handle_press(pos, use_snap, constrain)
+        # The press already split here, as in Trim: taken as a second press,
+        # the double-click split one of the two pieces again, a second undo
+        # step and a fragment a millimeter long (the 2.3 sweep).
+        return True
 
     def handle_key(self, key, text: str = "") -> bool:
         if not self.active:
@@ -194,14 +206,24 @@ class SplitTool(QObject):
         the other curves that pass through that same point. (None, []) when
         the click is not near an intersection.
         """
+        # Only the curves that can meet the target near the click are met,
+        # the target flattened once for them: every click met every curve,
+        # sampling the target twice for each (seconds on a dense trace).
+        reach = _ISECT_SNAP_MM
+        if self._view is not None:
+            scale = abs(self._view.transform().m11())
+            if scale > 1e-9:
+                reach = min(reach, _ISECT_SNAP_PX / scale)
+        by_other: dict = {}
+        for t, other in target_crossings(target, all_curves,
+                                         near=(px, py, reach)):
+            by_other.setdefault(id(other), (other, []))[1].append(t)
         hits = []    # (distance to click, t on target, x, y, other)
-        for other in all_curves:
-            if other is target:
-                continue
-            for t in dedup_ts_mm(target, intersect_curve_params(target, other)):
+        for other, ts in by_other.values():
+            for t in dedup_ts_mm(target, ts):
                 ix, iy = point_at_t(target, t)
                 d = math.hypot(ix - px, iy - py)
-                if d <= _ISECT_SNAP_MM:
+                if d <= reach:
                     hits.append((d, t, ix, iy, other))
         if not hits:
             return None, []

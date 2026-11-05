@@ -170,7 +170,7 @@ def test_trace_to_curve_circle():
     radii = [25.0] * 400
     c = trace_to_curve(radii)
     assert c.kind == "spline" and c.closed and c.layer == Layer.LENS
-    assert 24 <= len(c.nodes) <= 36
+    assert 4 <= len(c.nodes) <= 16      # the cubic fit (Catmull-Rom took 32)
     for nd in c.nodes:
         assert math.hypot(nd.x, nd.y) == pytest.approx(25.0, abs=1e-9)
     # between-node fidelity: evaluate densely, radius stays ~25 mm
@@ -281,3 +281,135 @@ def test_a_tight_cornered_trace_comes_back_within_two_hundredths():
            for i, r in enumerate(radii)]
     line = LineString([(x, y) for x, y, _t in sample_curve(c, 24)])
     assert float(shapely.distance(shapely.points(pts), line).max()) <= 0.02
+
+
+def test_a_radius_field_is_a_plain_integer():
+    """int() took "1_000" as 1000 and non-ASCII digits (the 2.3 hunt)."""
+    import pytest
+    from framedraft.export.oma import parse_oma
+    good = parse_oma("TRCFMT=1;3;E;R;F\nR=2550;-10;+2548\n")
+    assert good.traces["R"].radii_mm == [25.5, -0.1, 25.48]
+    for bad in ("R=1_000;2550;2550\n", "R=٢٥٥٠;2550;2550\n", "R=25.50;2550;2550\n"):
+        with pytest.raises(ValueError):
+            parse_oma("TRCFMT=1;3;E;R;F\n" + bad)
+
+
+# ── DRILLE as the standard defines it (the 2.3 sweep; DCS 3.14 §5.5.2) ──────
+
+def _ring(cx, cy, a, b, n=120):
+    return [(cx + a * math.cos(2 * math.pi * i / n), cy + b * math.sin(2 * math.pi * i / n))
+            for i in range(n)]
+
+
+#: A rimless mount's four holes, as its maker's own file gives them: 2 and 5
+#: mm inside each edge of a 54 mm lens, the right lens's, "B" for both.
+_MOUNT = (
+    "DRILLE=B;C;-25.00;9.00;1.40;-25.00;9.00;0;1;F\r\n"
+    "DRILLE=B;C;-22.00;9.16;1.40;-22.00;9.16;0;1;F\r\n"
+    "DRILLE=B;C;21.67;6.20;1.40;21.67;6.20;0;1;F\r\n"
+    "DRILLE=B;C;24.67;6.20;1.40;24.67;6.20;0;1;F\r\n"
+)
+
+
+def test_a_b_record_is_the_right_lens_s_hole_mirrored_onto_the_left():
+    """It was read from the midpoint between the lenses: the mount's eight
+    holes came in as four, heaped at the two lens centers."""
+    from framedraft.export.oma import place_drills
+    job = parse_oma("TRCFMT=1;4;E;R;P\r\nR=2700;2000;2700;2000\r\n" + _MOUNT)
+    centers = {"R": (-36.0, 0.0), "L": (36.0, 0.0)}
+    outlines = {"R": _ring(-36, 0, 27, 20), "L": _ring(36, 0, 27, 20)}
+    lay = place_drills(job.drills, centers, outlines)
+    assert not lay.legacy and (lay.unread, lay.slots, lay.no_lens) == (0, 0, 0)
+    got = sorted((round(x, 2), round(y, 2)) for x, y, _ in lay.holes)
+    assert got == sorted([(-61.0, -9.0), (-58.0, -9.16), (-14.33, -6.2), (-11.33, -6.2),
+                          (61.0, -9.0), (58.0, -9.16), (14.33, -6.2), (11.33, -6.2)])
+    assert all(dia == pytest.approx(1.4) for _, _, dia in lay.holes)
+    # Every hole is in its lens, 2 to 5.4 mm inside an edge of its box.
+    for x, _y, _ in lay.holes:
+        assert 2.0 <= 27.0 - abs(abs(x) - 36.0) <= 5.4
+    # One lens traced: its holes only (the Ghost shows the twin's).
+    one = place_drills(job.drills, {"R": (-36.0, 0.0)}, {"R": outlines["R"]})
+    assert len(one.holes) == 4 and all(x < 0 for x, _, _ in one.holes)
+
+
+def test_r_and_l_records_go_to_their_own_lens_unmirrored():
+    from framedraft.export.oma import place_drills
+    job = parse_oma("DRILLE=R;C;21.00;6.00;1.40\r\nDRILLE=L;C;-21.00;6.00;2.00\r\n")
+    lay = place_drills(job.drills, {"R": (-36.0, 1.0), "L": (36.0, 1.0)})
+    assert sorted(lay.holes) == [(-15.0, -5.0, 1.4), (15.0, -5.0, 2.0)]
+    # A hole for a lens the file has no trace of is counted, not guessed.
+    alone = place_drills(job.drills, {"R": (-36.0, 1.0)})
+    assert alone.holes == [(-15.0, -5.0, 1.4)] and alone.no_lens == 1
+
+
+def test_a_guilddraw_export_from_before_2_3_is_read_as_it_was_written():
+    """Every hole tagged B and measured from the frame's center: the
+    standard's reading puts its temple-side holes off the lens."""
+    from framedraft.export.oma import place_drills
+    old = parse_oma("".join(
+        f"DRILLE=B;C;{x:.2f};{y:.2f};1.40;{x:.2f};{y:.2f};0;1;F\r\n"
+        for x, y in ((-56.0, 8.0), (-12.0, 6.0), (12.0, 6.0), (56.0, 8.0))))
+    centers = {"R": (-34.0, 0.0), "L": (34.0, 0.0)}
+    outlines = {"R": _ring(-34, 0, 25, 20), "L": _ring(34, 0, 25, 20)}
+    lay = place_drills(old.drills, centers, outlines)
+    assert lay.legacy
+    assert sorted(lay.holes) == [(-56.0, -8.0, 1.4), (-12.0, -6.0, 1.4),
+                                 (12.0, -6.0, 1.4), (56.0, -8.0, 1.4)]
+    # The mount's file is not taken for one: its holes are in the lens as the
+    # standard reads them.
+    mount = parse_oma(_MOUNT)
+    wide = {"R": _ring(-36, 0, 27, 20), "L": _ring(36, 0, 27, 20)}
+    assert not place_drills(mount.drills, {"R": (-36.0, 0.0), "L": (36.0, 0.0)}, wide).legacy
+
+
+def test_the_standard_s_minimal_record_and_an_unknown_diameter_are_read():
+    """`DRILLE=B;C;-17.0;10.32`, the standard's own example, was dropped
+    unsaid, and a "?" diameter refused the whole file."""
+    from framedraft.export.oma import DEFAULT_DRILL_DIA_MM
+    job = parse_oma("DRILLE=B;C;-17.0;10.32\r\nDRILLE=r;C;3;4;?\r\nDRILLE=L;;5;6;\r\n"
+                    "DRILLE=0\r\nDRILLE=R;0\r\n")
+    assert [(d.eye, d.ftype, d.x, d.y, d.dia) for d in job.drills] == [
+        ("B", "C", -17.0, 10.32, DEFAULT_DRILL_DIA_MM), ("R", "C", 3.0, 4.0, DEFAULT_DRILL_DIA_MM),
+        ("L", "C", 5.0, 6.0, DEFAULT_DRILL_DIA_MM)]
+    out = build_oma(job)
+    assert "DRILLE=B;C;-17.0;10.32\r\n" in out and "DRILLE=0\r\n" in out and "DRILLE=R;0" in out
+    with pytest.raises(ValueError, match="Bad DRILLE"):
+        parse_oma("DRILLE=B;C;abc;1;1.4\r\n")
+
+
+def test_edge_references_and_slots_are_counted_not_misplaced():
+    """An edge-referenced hole was placed as if from the center, and a slot
+    as a round hole, neither with a word."""
+    from framedraft.export.oma import place_drills
+    job = parse_oma("DRILLE=B;EN;3.0;5.0;1.4\r\nDRILLE=R;BT;2.5;0;1.4\r\n"
+                    "DRILLE=R;C;-20.0;5.0;1.4;-17.0;5.0;0;1;F\r\n"
+                    "DRILLE=R;CF;10.0;2.0;1.4;10.0;2.0;0;1;F\r\n")
+    lay = place_drills(job.drills, {"R": (-36.0, 0.0), "L": (36.0, 0.0)})
+    assert lay.unread == 2 and lay.slots == 1
+    assert sorted(lay.holes) == [(-56.0, -5.0, 1.4), (-26.0, -2.0, 1.4)]
+
+
+def test_a_hole_built_for_an_eye_names_it():
+    job = OmaJob()
+    job.drills.append(OmaDrill(x=-18.0, y=10.0, dia=1.4, eye="R"))
+    job.drills.append(OmaDrill(x=18.0, y=10.0, dia=1.4, eye="L"))
+    out = build_oma(job)
+    assert "DRILLE=R;C;-18.00;10.00;1.40;-18.00;10.00;0;1;F\r\n" in out
+    assert "DRILLE=L;C;18.00;10.00;1.40;18.00;10.00;0;1;F\r\n" in out
+
+
+def test_a_byte_order_mark_padding_and_a_no_trace_format_do_not_refuse_the_file():
+    """An editor's BOM (three replacement characters, read as ASCII), a DOS
+    host's Ctrl-Z or NUL padding, and TRCFMT=0, the standard's "no trace
+    available", each refused the whole file."""
+    body = "TRCFMT=1;4;E;R;F\r\nR=2000;2000;2000;2000\r\n"
+    for text in ("\ufffd\ufffd\ufffd" + body, "\ufeff" + body,
+                 body + "\x1a\r\n", body + "\x00\x00\x00\r\n", body + "\x1a"):
+        assert parse_oma(text).traces["R"].radii_mm == [20.0] * 4
+    none = parse_oma("TRCFMT=0\r\nHBOX=50.00;50.00\r\n")
+    assert none.traces == {} and ("TRCFMT", "0") in none.records
+    assert "TRCFMT=0\r\n" in build_oma(none)
+    with pytest.raises(ValueError, match="no '='"):
+        parse_oma(body + "this is not a record\r\n")
+    with pytest.raises(ValueError, match="format 4"):
+        parse_oma("TRCFMT=4;400;E;R;F\r\n")

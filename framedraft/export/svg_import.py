@@ -14,11 +14,17 @@ groups and applied to every point, which is exact for Béziers.
 
 Coordinates: SVG is Y-down like the scene, so no flip. User units become
 millimeters from the file's declared size (``width``/``height`` in mm, cm, in,
-pt or pc against the ``viewBox``); a file that declares no physical size — a
-plain ``viewBox``, or a width in px — is read at the CSS reference pixel, 96
-per inch, and :attr:`SvgDocument.physical` says so, so the caller can offer a
+pt or pc against the ``viewBox``, reconciled as ``preserveAspectRatio`` says
+when the two disagree); a file that declares no physical size — a plain
+``viewBox``, or a width in px — is read at the CSS reference pixel, 96 per
+inch, and :attr:`SvgDocument.physical` says so, so the caller can offer a
 size. GuildDraw's own saved ``.svg`` declares millimeters and a viewBox in
 scene coordinates, so it comes back exactly where it was drawn.
+
+A point within a hairline (0.01 mm) of the point kept before it is merged
+into it, on reading and again after a reduction in :func:`place_curves`, and
+the notes say how many. One import brings in at most 20 000 curves, as
+``dxf_import`` does.
 
 Layer policy, as for DXF: a shape (or a ``<g>`` above it) labeled with a
 GuildDraw layer name — Inkscape's ``inkscape:label``, GuildDraw's own
@@ -40,6 +46,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from xml.etree import ElementTree as ET
@@ -69,8 +76,13 @@ _EPS = 1e-6              # mm — two points this close are one point
 # a few microns short of its start, two anchors dropped on one spot. It
 # carries no shape and would import as a node sitting on its neighbor — a
 # closed spline crossing itself at the seam (2026-10-05) — so it is merged.
+# Measured from the last point kept, not segment by segment: see
+# _merge_hairlines.
 _HAIRLINE_MM = 0.01
 _QUARTER = math.pi / 2.0  # an arc is cut into cubics no wider than this
+# The most curves one import brings in, as in dxf_import: SVG import had no
+# cap, and each curve costs the window far more than the reading does.
+_MAX_CURVES = 20000
 
 # Never rendered directly: definitions and metadata.
 _SKIP = frozenset({
@@ -285,14 +297,14 @@ def _arc_segments(p0: Point, rx: float, ry: float, phi_deg: float,
     return segs
 
 
-def _parse_path(d: str) -> list[Subpath]:
-    """Path data → subpaths of line / cubic segments in user units.
+def _parse_path(d: str) -> Iterator[Subpath]:
+    """Path data → subpaths of line / cubic segments in user units, one at a
+    time, so an import that has reached its curve cap stops reading.
 
     Quadratics are raised to cubics exactly; S/T reflect the previous control
     point per the spec; arcs become cubics; Z closes with a straight segment
     back to the subpath's start when the pen is not already there."""
     lx = _PathLexer(d)
-    subpaths: list[Subpath] = []
     segs: list[Segment] = []
     cur: Point = (0.0, 0.0)
     start: Point = (0.0, 0.0)
@@ -324,13 +336,13 @@ def _parse_path(d: str) -> list[Subpath]:
             if segs:
                 if math.hypot(cur[0] - start[0], cur[1] - start[1]) > _EPS:
                     segs.append(("L", cur, start))
-                subpaths.append((segs, True))
+                yield segs, True
                 segs = []
             cur = start
         elif u == "M":
             p = pt(rel)
             if segs:
-                subpaths.append((segs, False))
+                yield segs, False
                 segs = []
             cur = start = p
         elif u == "L":
@@ -380,8 +392,7 @@ def _parse_path(d: str) -> list[Subpath]:
         prev_cubic_ctrl, prev_quad_ctrl = cubic_ctrl, quad_ctrl
 
     if segs:
-        subpaths.append((segs, False))
-    return subpaths
+        yield segs, False
 
 
 # ---------------------------------------------------------------------------
@@ -392,57 +403,93 @@ def _close(a: Point, b: Point, tol: float = _HAIRLINE_MM) -> bool:
     return math.hypot(a[0] - b[0], a[1] - b[1]) <= tol
 
 
+def _merge_hairlines(nodes: list[SplineNode], closed: bool,
+                     tol: float = _HAIRLINE_MM) -> tuple[list[SplineNode], int]:
+    """*nodes* with every hairline merged, and how many distinct points went.
+
+    Cumulative: a node goes when it, and the handles of the segment that
+    reaches it, lie within *tol* of the last node kept, which then leaves by
+    the dropped node's handle. Judged segment by segment, an outline sampled
+    every 5 µm lost every segment and came in as nothing, and one sampled
+    unevenly lost three nodes in four, with gaps to 0.22 mm (2026-10-29).
+
+    An open curve keeps its last point where the file puts it: a node before
+    it gives way instead. A closed curve's last node folds into its first
+    when the closing segment is a hairline; that is a seam, not thinning, so
+    it is not counted. Fewer than two nodes back means nothing was left.
+    The nodes are changed in place."""
+    def near(p, at: SplineNode) -> bool:
+        return p is None or math.hypot(p.x - at.x, p.y - at.y) <= tol
+
+    def flat(a: SplineNode, b: SplineNode, at: SplineNode) -> bool:
+        """The segment a → b lies within *tol* of *at*, one of its ends."""
+        return near(a, at) and near(b, at) and near(a.cp_out, at) and near(b.cp_in, at)
+
+    def distinct(a: SplineNode, b: SplineNode) -> int:
+        return 1 if math.hypot(a.x - b.x, a.y - b.y) > _EPS else 0
+
+    if len(nodes) < 2:
+        return nodes, 0
+    kept = [nodes[0]]
+    merged = 0
+    for n in (nodes[1:] if closed else nodes[1:-1]):
+        k = kept[-1]
+        if flat(k, n, k):
+            k.cp_out = n.cp_out
+            merged += distinct(n, k)
+        else:
+            kept.append(n)
+    if closed:
+        while len(kept) > 2 and flat(kept[-1], kept[0], kept[0]):
+            kept[0].cp_in = kept.pop().cp_in
+        return kept, merged
+    end = nodes[-1]
+    while len(kept) > 1 and flat(kept[-1], end, end):
+        gone = kept.pop()
+        end.cp_in = gone.cp_in
+        merged += distinct(gone, end)
+    if len(kept) == 1 and flat(kept[0], end, kept[0]):
+        return kept, merged                    # the whole curve is a speck
+    kept.append(end)
+    return kept, merged
+
+
 def _curve_from_subpath(segs: list[Segment], closed: bool, ctm: Affine,
-                        layer: Layer) -> Curve | None:
+                        layer: Layer) -> tuple[Curve | None, int]:
     """One subpath, transformed to millimeters, as a GuildDraw Curve: a
     polyline when every segment is straight, else a spline whose straight
     segments have no handles (GuildDraw draws a missing handle as straight).
-    Hairline segments are merged into their neighbor; a closing segment
-    that lands on the start folds into the first node, so a closed curve
-    never carries a duplicate seam node."""
-    placed: list[Segment] = []
+    A closing segment that lands on the start folds into the first node, so
+    a closed curve never carries a duplicate seam node; hairlines are merged
+    (:func:`_merge_hairlines`). Returns the curve and how many points the
+    merge took; None for the curve when nothing larger than a hairline is
+    left."""
+    x0, y0 = _apply(ctm, segs[0][1])
+    nodes = [SplineNode(x=x0, y=y0)]
     for s in segs:
-        if s[0] == "L":
-            a, b = _apply(ctm, s[1]), _apply(ctm, s[2])
-            if _close(a, b):
-                continue
-            placed.append(("L", a, b))
-        else:
-            a, c1, c2, b = (_apply(ctm, q) for q in s[1:])
-            if _close(a, b) and _close(a, c1) and _close(a, c2):
-                continue
-            placed.append(("C", a, c1, c2, b))
-    if not placed:
-        return None
-
-    if all(s[0] == "L" for s in placed):
-        pts = [placed[0][1]] + [s[2] for s in placed]
-        if closed and len(pts) > 1 and _close(pts[0], pts[-1]):
-            pts.pop()
-        if len(pts) < 2:
-            return None
-        return Curve(kind="line", layer=layer,
-                     nodes=[SplineNode(x=x, y=y) for x, y in pts],
-                     closed=closed and len(pts) >= 3)
-
-    def handle(node: SplineNode, p: Point) -> ControlPoint | None:
-        return None if _close((node.x, node.y), p) else ControlPoint(p[0], p[1])
-
-    nodes = [SplineNode(x=placed[0][1][0], y=placed[0][1][1])]
-    for s in placed:
-        node = nodes[-1]
-        end = SplineNode(x=s[-1][0], y=s[-1][1])
+        pts = [_apply(ctm, q) for q in s[2:]]
+        end = SplineNode(x=pts[-1][0], y=pts[-1][1])
         if s[0] == "C":
-            node.cp_out = handle(node, s[2])
-            end.cp_in = handle(end, s[3])
+            nodes[-1].cp_out = ControlPoint(pts[0][0], pts[0][1])
+            end.cp_in = ControlPoint(pts[1][0], pts[1][1])
         nodes.append(end)
     if closed and len(nodes) > 2 and _close((nodes[0].x, nodes[0].y),
-                                            (nodes[-1].x, nodes[-1].y)):
-        nodes[0].cp_in = nodes[-1].cp_in
-        nodes.pop()
+                                            (nodes[-1].x, nodes[-1].y), _EPS):
+        nodes[0].cp_in = nodes.pop().cp_in
+    nodes, merged = _merge_hairlines(nodes, closed)
     if len(nodes) < 2:
-        return None
-    return Curve(kind="spline", layer=layer, nodes=nodes, closed=closed)
+        return None, 0
+
+    # A cubic that survived the merge left its handles; none left is a polyline.
+    if all(n.cp_in is None and n.cp_out is None for n in nodes):
+        return Curve(kind="line", layer=layer, nodes=nodes,
+                     closed=closed and len(nodes) >= 3), merged
+    for n in nodes:
+        if n.cp_in is not None and _close((n.x, n.y), (n.cp_in.x, n.cp_in.y)):
+            n.cp_in = None
+        if n.cp_out is not None and _close((n.x, n.y), (n.cp_out.x, n.cp_out.y)):
+            n.cp_out = None
+    return Curve(kind="spline", layer=layer, nodes=nodes, closed=closed), merged
 
 
 # ---------------------------------------------------------------------------
@@ -534,11 +581,29 @@ def _hidden_classes(root) -> frozenset:
     return frozenset(out)
 
 
+_ALIGN = {"Min": 0.0, "Mid": 0.5, "Max": 1.0}
+_ALIGN_RE = re.compile(r"x(Min|Mid|Max)Y(Min|Mid|Max)$")
+
+
+def _aspect(elem) -> tuple[str, bool]:
+    """The element's ``preserveAspectRatio`` as ``(align, slice)``: the
+    alignment (``xMidYMid``, the default, or ``none``) and whether the
+    viewBox is scaled to cover the viewport (``slice``) rather than fit
+    inside it (``meet``, the default). ``defer`` applies to images only."""
+    words = (elem.get("preserveAspectRatio") or "").split()
+    if words[:1] == ["defer"]:
+        words = words[1:]
+    align = words[0] if words else "xMidYMid"
+    if align != "none" and not _ALIGN_RE.match(align):
+        align = "xMidYMid"
+    return align, words[1:2] == ["slice"]
+
+
 def _viewbox_transform(elem) -> Affine | None:
-    """A nested <svg>'s placement of its viewBox in its x, y, width and height
-    (preserveAspectRatio's default, xMidYMid meet, or none). Its content came
-    in at the viewBox's own scale, ten times too large in one file. None when
-    the element has no viewBox or no absolute size."""
+    """A nested <svg>'s placement of its viewBox in its x, y, width and height,
+    as its preserveAspectRatio says (:func:`_aspect`). Its content came in at
+    the viewBox's own scale, ten times too large in one file. None when the
+    element has no viewBox or no absolute size."""
     vb = [float(x) for x in _NUM_RE.findall(elem.get("viewBox") or "")]
     w, h = _parse_length(elem.get("width")), _parse_length(elem.get("height"))
     if len(vb) != 4 or vb[2] <= 0 or vb[3] <= 0:
@@ -551,10 +616,12 @@ def _viewbox_transform(elem) -> Affine | None:
     ww = w[0] * (to_user.get(w[1]) or _UNIT_MM[w[1]] / _MM_PER_PX)
     hh = h[0] * (to_user.get(h[1]) or _UNIT_MM[h[1]] / _MM_PER_PX)
     sx, sy = ww / vb[2], hh / vb[3]
-    if (elem.get("preserveAspectRatio") or "").strip().startswith("none"):
+    align, cover = _aspect(elem)
+    if align == "none":
         return _mul(_scale_m(sx, sy), _translate(-vb[0], -vb[1]))
-    k = min(sx, sy)
-    ox, oy = (ww - vb[2] * k) / 2.0, (hh - vb[3] * k) / 2.0
+    k = max(sx, sy) if cover else min(sx, sy)
+    ox = (ww - vb[2] * k) * _ALIGN[align[1:4]]
+    oy = (hh - vb[3] * k) * _ALIGN[align[5:8]]
     return _mul(_translate(ox, oy), _mul(_scale_m(k, k), _translate(-vb[0], -vb[1])))
 
 
@@ -571,9 +638,19 @@ def _parse_length(s: str | None) -> tuple[float, str] | None:
     return (float(m.group(1)), m.group(2).lower()) if m else None
 
 
-def _document_scale(root) -> tuple[float, bool]:
-    """``(mm per user unit, physical)`` from the root's size and viewBox.
-    *physical* is True when the file states a real-world size."""
+def _document_scale(root) -> tuple[float, float, bool]:
+    """``(mm per user unit across, mm per user unit down, physical)`` from the
+    root's size and viewBox. *physical* is True when the size that sets the
+    scale is a real-world one.
+
+    A width and a height whose aspect is not the viewBox's are reconciled as
+    ``preserveAspectRatio`` says: the smaller of the two scales (``meet``, the
+    default), the larger (``slice``), or each its own (``none``). The width
+    alone set it, so a file 100 by 50 mm with a square viewBox came in at
+    twice the size a browser draws it (2026-10-29). The alignment's offset is
+    not applied, as the viewBox's origin is not: the file's user-space origin
+    is the scene origin, which is how GuildDraw's own file comes back where
+    it was drawn."""
     vb = [float(x) for x in _NUM_RE.findall(root.get("viewBox") or "")]
     w, h = _parse_length(root.get("width")), _parse_length(root.get("height"))
 
@@ -581,16 +658,27 @@ def _document_scale(root) -> tuple[float, bool]:
         return ln is not None and ln[0] > 0 and ln[1] in _UNIT_MM
 
     if len(vb) == 4 and vb[2] > 0 and vb[3] > 0:
+        if known(w) and known(h):
+            sx, sy = w[0] * _UNIT_MM[w[1]] / vb[2], h[0] * _UNIT_MM[h[1]] / vb[3]
+            wp, hp = w[1] in _PHYSICAL_UNITS, h[1] in _PHYSICAL_UNITS
+            align, cover = _aspect(root)
+            if align == "none":
+                return sx, sy, wp and hp
+            if (sx >= sy) if cover else (sx <= sy):
+                return sx, sx, wp
+            return sy, sy, hp
         if known(w):
-            return w[0] * _UNIT_MM[w[1]] / vb[2], w[1] in _PHYSICAL_UNITS
+            k = w[0] * _UNIT_MM[w[1]] / vb[2]
+            return k, k, w[1] in _PHYSICAL_UNITS
         if known(h):
-            return h[0] * _UNIT_MM[h[1]] / vb[3], h[1] in _PHYSICAL_UNITS
-        return _MM_PER_PX, False
+            k = h[0] * _UNIT_MM[h[1]] / vb[3]
+            return k, k, h[1] in _PHYSICAL_UNITS
+        return _MM_PER_PX, _MM_PER_PX, False
     if known(w):
-        return _UNIT_MM[w[1]], w[1] in _PHYSICAL_UNITS
+        return _UNIT_MM[w[1]], _UNIT_MM[w[1]], w[1] in _PHYSICAL_UNITS
     if known(h):
-        return _UNIT_MM[h[1]], h[1] in _PHYSICAL_UNITS
-    return _MM_PER_PX, False
+        return _UNIT_MM[h[1]], _UNIT_MM[h[1]], h[1] in _PHYSICAL_UNITS
+    return _MM_PER_PX, _MM_PER_PX, False
 
 
 @dataclass
@@ -601,6 +689,10 @@ class _Walk:
     curves: list[Curve] = field(default_factory=list)
     refiled: dict[str, int] = field(default_factory=dict)      # recognized name → count
     unsupported: dict[str, int] = field(default_factory=dict)  # tag → count
+    merged: int = 0       # points within a hairline of the point kept before
+    specks: int = 0       # curves no larger than a hairline, left out
+    nonfinite: int = 0    # curves whose numbers are not finite, left out
+    full: bool = False    # stopped at _MAX_CURVES
 
     def target(self, name: str | None) -> tuple[Layer, bool]:
         if name in ALL_LAYER_NAMES and Layer(name) in self.allowed:
@@ -611,11 +703,29 @@ class _Walk:
         own = _layer_label(elem)
         name = own if own in ALL_LAYER_NAMES else hint
         layer, kept = self.target(name)
+        new: list[Curve] = []
+        merged = specks = nonfinite = 0
         try:
-            new = _shape_curves(elem, tag, ctm, layer)
+            for c, m in _shape_curves(elem, tag, ctm, layer):
+                if c is None:
+                    specks += 1
+                elif not curve_is_finite(c):
+                    # A number that overflowed (1e309, a nested scale(1e200))
+                    # or is NaN drew nothing, raised in every paint, and the
+                    # saved tab read back empty.
+                    nonfinite += 1
+                elif len(self.curves) + len(new) >= _MAX_CURVES:
+                    self.full = True
+                    break
+                else:
+                    new.append(c)
+                    merged += m
         except (ValueError, IndexError):
             self.unsupported["malformed path"] = self.unsupported.get("malformed path", 0) + 1
             return
+        self.merged += merged
+        self.specks += specks
+        self.nonfinite += nonfinite
         if not new:
             return
         self.curves.extend(new)
@@ -623,7 +733,11 @@ class _Walk:
             self.refiled[name] = self.refiled.get(name, 0) + len(new)
 
 
-def _shape_curves(elem, tag: str, ctm: Affine, layer: Layer) -> list[Curve]:
+def _shape_curves(elem, tag: str, ctm: Affine,
+                  layer: Layer) -> Iterator[tuple[Curve | None, int]]:
+    """The shape's curves, one subpath at a time, each with the number of
+    points the hairline merge took from it (None for a subpath no larger
+    than a hairline)."""
     if tag == "path":
         d = elem.get("d") or ""
     elif tag == "rect":
@@ -637,8 +751,9 @@ def _shape_curves(elem, tag: str, ctm: Affine, layer: Layer) -> list[Curve]:
         s = _similarity_scale(ctm)
         if s is not None and rx > _EPS and abs(rx - ry) <= _EPS:
             c = _apply(ctm, (cx, cy))
-            return [Curve(kind="circle", layer=layer, nodes=[SplineNode(x=c[0], y=c[1])],
-                          radius=rx * s, closed=True)]
+            yield Curve(kind="circle", layer=layer, nodes=[SplineNode(x=c[0], y=c[1])],
+                        radius=rx * s, closed=True), 0
+            return
         d = _ellipse_d(cx, cy, rx, ry)
     elif tag == "line":
         d = (f"M {_attr(elem, 'x1')} {_attr(elem, 'y1')} "
@@ -648,38 +763,40 @@ def _shape_curves(elem, tag: str, ctm: Affine, layer: Layer) -> list[Curve]:
     else:                                   # polygon
         d = _points_d(elem, closed=True)
     if not d.strip():
-        return []
-    out: list[Curve] = []
+        return
     for segs, closed in _parse_path(d):
-        c = _curve_from_subpath(segs, closed, ctm, layer)
-        if c is not None:
-            out.append(c)
-    return out
+        yield _curve_from_subpath(segs, closed, ctm, layer)
 
 
-def _walk(elem, ctm: Affine, hint: str | None, ctx: _Walk, *, is_root: bool) -> None:
-    ns, tag = _local(elem.tag)
-    if ns not in ("", _SVG_NS):            # sodipodi:namedview and friends
-        return
-    if tag in _SKIP or _hidden(elem, ctx.hidden_classes):
-        return
-    ctm = _mul(ctm, _parse_transform(elem.get("transform")))
-    if tag in _CONTAINERS:
-        if tag == "svg" and not is_root:   # a nested <svg> places its content at x, y
-            ctm = _mul(ctm, _translate(_attr(elem, "x"), _attr(elem, "y")))
-            fit = _viewbox_transform(elem)
-            if fit is not None:
-                ctm = _mul(ctm, fit)
-        label = _layer_label(elem)
-        if label in ALL_LAYER_NAMES:
-            hint = label
-        for child in elem:
-            _walk(child, ctm, hint, ctx, is_root=False)
-        return
-    if tag in _SHAPES:
-        ctx.shape(elem, tag, ctm, hint)
-        return
-    ctx.unsupported[tag] = ctx.unsupported.get(tag, 0) + 1
+def _walk(root, ctm: Affine, ctx: _Walk) -> None:
+    """Every shape under *root*, in document order, with the transforms and
+    the layer name of the groups above it. The descent keeps its own stack:
+    groups nested a few thousand deep ran into Python's recursion limit, and
+    the window said only "maximum recursion depth exceeded" (2026-10-29)."""
+    stack: list[tuple[ET.Element, Affine, str | None]] = [(root, ctm, None)]
+    while stack and not ctx.full:
+        elem, ctm, hint = stack.pop()
+        ns, tag = _local(elem.tag)
+        if ns not in ("", _SVG_NS):            # sodipodi:namedview and friends
+            continue
+        if tag in _SKIP or _hidden(elem, ctx.hidden_classes):
+            continue
+        ctm = _mul(ctm, _parse_transform(elem.get("transform")))
+        if tag in _CONTAINERS:
+            if tag == "svg" and elem is not root:  # a nested <svg> places its content at x, y
+                ctm = _mul(ctm, _translate(_attr(elem, "x"), _attr(elem, "y")))
+                fit = _viewbox_transform(elem)
+                if fit is not None:
+                    ctm = _mul(ctm, fit)
+            label = _layer_label(elem)
+            if label in ALL_LAYER_NAMES:
+                hint = label
+            stack.extend((child, ctm, hint) for child in reversed(elem))
+            continue
+        if tag in _SHAPES:
+            ctx.shape(elem, tag, ctm, hint)
+            continue
+        ctx.unsupported[tag] = ctx.unsupported.get(tag, 0) + 1
 
 
 # ---------------------------------------------------------------------------
@@ -737,12 +854,12 @@ def read_svg(path: str, active_layer: Layer, workspace_type: str = "front") -> S
         raise ValueError("Not an SVG file: the document element is "
                          f"<{_local(root.tag)[1]}>, not <svg>.")
 
-    mm_per_unit, physical = _document_scale(root)
+    sx, sy, physical = _document_scale(root)
     unit_notes = []
     if not physical and _ILLUSTRATOR_RE.search(data[:4096]):
         # Illustrator's px is a point: read at 96 an inch, its drawing was
         # offered at three quarters of its size.
-        mm_per_unit *= 96.0 / 72.0
+        sx, sy = sx * 96.0 / 72.0, sy * 96.0 / 72.0
         unit_notes.append("An Adobe Illustrator file: read at 72 units an inch, "
                           "Illustrator's own.")
     elif any((root.get(k) or "").strip().endswith("%") for k in ("width", "height")):
@@ -750,12 +867,7 @@ def read_svg(path: str, active_layer: Layer, workspace_type: str = "front") -> S
                           "size: it was read at 96 px an inch.")
     ctx = _Walk(allowed=set(WORKSPACE_LAYERS.get(workspace_type, list(Layer))),
                 active=active_layer, hidden_classes=_hidden_classes(root))
-    _walk(root, _scale_m(mm_per_unit, mm_per_unit), None, ctx, is_root=True)
-    # A number that overflowed (1e309, a nested scale(1e200)) or is NaN drew
-    # nothing, raised in every paint, and the saved tab read back empty.
-    finite = [c for c in ctx.curves if curve_is_finite(c)]
-    nonfinite = len(ctx.curves) - len(finite)
-    ctx.curves = finite
+    _walk(root, _scale_m(sx, sy), ctx)
 
     meta = root.find(f"{{{_SVG_NS}}}metadata")
     native = bool(meta is not None and meta.text and meta.text.lstrip().startswith("{"))
@@ -774,9 +886,13 @@ def read_svg(path: str, active_layer: Layer, workspace_type: str = "front") -> S
         for k, v in sorted(ctx.unsupported.items()):
             parts.append(f"{k}×{v}" + (f" ({hints[k]})" if k in hints else ""))
         notes.append("Skipped: " + ", ".join(parts))
-    if nonfinite:
-        notes.append(f"{nonfinite} curve(s) whose numbers are not finite (NaN or "
+    if ctx.nonfinite:
+        notes.append(f"{ctx.nonfinite} curve(s) whose numbers are not finite (NaN or "
                      "too large) were left out.")
+    notes += _hairline_notes(ctx.merged, ctx.specks, scaled=False)
+    if ctx.full:
+        notes.append(f"The import stopped at {_MAX_CURVES} curves; the rest of the "
+                     "file was left out.")
     if native:
         notes.append("This is a GuildDraw drawing — File ▸ Open keeps its full state.")
     return SvgDocument(curves=ctx.curves, notes=notes, physical=physical,
@@ -802,12 +918,34 @@ def _transform_curve(c: Curve, m: Affine, uniform: float) -> Curve:
                  group_id=c.group_id)
 
 
+def _hairline_notes(merged: int, specks: int, *, scaled: bool) -> list[str]:
+    """What the hairline merge took, on reading or (*scaled*) after a reduction."""
+    out = []
+    hair = f"{_HAIRLINE_MM:g} mm"
+    if merged and scaled:
+        out.append(f"{merged} point(s) came within {hair} of the point before at the "
+                   "chosen size and were merged into it.")
+    elif merged:
+        out.append(f"{merged} point(s) within {hair} of the point before were "
+                   "merged into it.")
+    if specks:
+        out.append(f"{specks} curve(s) no larger than {hair}"
+                   + (" at the chosen size" if scaled else "") + " were left out.")
+    return out
+
+
 def place_curves(curves: list[Curve], *, scale: float = 1.0,
-                 center: Point | None = None) -> list[Curve]:
+                 center: Point | None = None,
+                 notes: list[str] | None = None) -> list[Curve]:
     """Copies of *curves* scaled uniformly about their own center and, when
     *center* is given, moved so that center lands there (the view's middle,
     for a logo that arrived at page size). ``scale=1`` with no center is the
-    file's own placement."""
+    file's own placement.
+
+    A reduction can bring a point within a hairline of the one before, which
+    reading at the file's own size could not see; it is merged as on reading
+    (an enlargement brings none), and when *notes* is given, what the merge
+    took is said in it."""
     bb = content_bbox(curves)
     if bb is None:
         return [_transform_curve(c, _IDENTITY, 1.0) for c in curves]
@@ -815,7 +953,24 @@ def place_curves(curves: list[Curve], *, scale: float = 1.0,
     tx, ty = center if center is not None else (cx, cy)
     m = _mul(_translate(tx, ty), _mul(_scale_m(scale, scale), _translate(-cx, -cy)))
     placed = [_transform_curve(c, m, abs(scale)) for c in curves]
-    return [c for c in placed if curve_is_finite(c)]     # see read_svg
+    placed = [c for c in placed if curve_is_finite(c)]     # see _Walk.shape
+    if abs(scale) >= 1.0:
+        return placed
+    out: list[Curve] = []
+    merged = specks = 0
+    for c in placed:
+        if c.kind in ("line", "spline"):
+            c.nodes, took = _merge_hairlines(c.nodes, c.closed)
+            if len(c.nodes) < 2:
+                specks += 1
+                continue
+            merged += took
+            if c.kind == "line" and len(c.nodes) < 3:
+                c.closed = False
+        out.append(c)
+    if notes is not None:
+        notes += _hairline_notes(merged, specks, scaled=True)
+    return out
 
 
 def import_svg(
@@ -830,4 +985,5 @@ def import_svg(
     content's center and that center at *center* — :func:`read_svg` and
     :func:`place_curves` in one call, shaped like ``dxf_import.import_dxf``."""
     doc = read_svg(path, active_layer, workspace_type)
-    return place_curves(doc.curves, scale=scale, center=center), doc.notes
+    notes = list(doc.notes)
+    return place_curves(doc.curves, scale=scale, center=center, notes=notes), notes

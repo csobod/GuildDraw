@@ -38,13 +38,12 @@ class TextDialog(QDialog):
         self._font_note.setObjectName("hintLabel")
         self._font_note.setWordWrap(True)
         lay.addRow(self._font_note)
-        self._sync_font_note()
-        changed = getattr(self._font_combo, "family_changed", None)
-        if changed is not None:
-            changed.connect(lambda *_: self._sync_font_note())
-        else:
-            self._font_combo.currentTextChanged.connect(
-                lambda *_: self._sync_font_note())
+        self._sync_font_note(self._font_combo.current_family())
+        # Only a settled family gets a note. Refreshing on currentTextChanged
+        # asked current_family() per keystroke, which committed the half-typed
+        # name to the first family it was a prefix of and ate every keystroke
+        # after the first (the 2.0.0 font-box bug).
+        self._font_combo.family_changed.connect(self._sync_font_note)
 
         # Ranges cover what Transform can produce (a 0.1 mm floor, no cap on
         # scale-up or on where a scaled anchor lands); the old 1–50 mm and
@@ -109,9 +108,8 @@ class TextDialog(QDialog):
             lambda t: ok.setEnabled(bool(t.strip())))
         self._text_edit.setFocus()
 
-    def _sync_font_note(self):
+    def _sync_font_note(self, family: str):
         from ..textpath import font_stand_in
-        family = self._font_combo.current_family()
         shown = font_stand_in(family)
         self._font_note.setVisible(bool(shown))
         if shown:

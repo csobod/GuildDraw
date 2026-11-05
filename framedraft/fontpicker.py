@@ -16,7 +16,7 @@ dropdown arrow re-filters on whatever is already in the box, which is how you
 get from "Helvetica Neue" to its weights.
 """
 
-from PySide6.QtCore import QEvent, QStringListModel, Qt, QTimer
+from PySide6.QtCore import QEvent, QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QComboBox, QCompleter
 
@@ -55,8 +55,15 @@ class FontFilterCombo(QComboBox):
 
     Read the chosen family with :meth:`current_family` — it always returns a
     family that is actually installed, never whatever half-word was left in
-    the box.
+    the box. :attr:`family_changed` carries each family as it settles — on a
+    pick from the list, on leaving the box, on :meth:`set_family` — and never
+    mid-typing: anything that reacts to the box while the maker is still
+    typing must listen to that, not to ``currentTextChanged``, because asking
+    :meth:`current_family` per keystroke commits the half-typed name and eats
+    the rest of the typing.
     """
+
+    family_changed = Signal(str)
 
     def __init__(self, parent=None, family: str = ""):
         super().__init__(parent)
@@ -96,8 +103,11 @@ class FontFilterCombo(QComboBox):
         as typed so a document drawn with a font this machine lacks still
         reports what it asked for."""
         name = (name or "").strip() or QFont().family()
+        was = self._family
         self._family = name
         self.setEditText(name)
+        if name != was:
+            self.family_changed.emit(name)
 
     def current_family(self) -> str:
         self._commit()
@@ -161,7 +171,10 @@ class FontFilterCombo(QComboBox):
                 return
 
     def _on_picked(self, family: str):
+        was = self._family
         self._family = family
+        if family != was:
+            self.family_changed.emit(family)
 
     def _commit(self):
         """Resolve whatever is in the box to an installed family, falling back
@@ -175,8 +188,11 @@ class FontFilterCombo(QComboBox):
             # was a prefix of, and OK on an untouched Edit Text changed an
             # engraving's font (the 2.0 bug hunt).
             return
+        was = self._family
         resolved = resolve_family(text) if text else ""
         if resolved:
             self._family = resolved
         if self.lineEdit().text() != self._family:
             self.setEditText(self._family)
+        if self._family != was:
+            self.family_changed.emit(self._family)

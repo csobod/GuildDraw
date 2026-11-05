@@ -28,6 +28,17 @@ DEFAULTS: dict = {
     # paperclip stores one (the box's "Don't ask again" clears it;
     # Preferences ▸ General ▸ Prompts sets it back).
     "prompt_store_image":   True,
+    # Explain Flatten Lens Shape before it replaces the lenses (the same box,
+    # the same way back).
+    "prompt_flatten_lens":  True,
+    # Forming (Preferences ▸ General): the shop's press and sheet. Every design
+    # uses them, and saving writes a copy into the design for GuildModel
+    # (forming.FormingSetup).
+    "forming": {
+        "tooling_index":      1.53,   # 1.53 is the radius 530 / D
+        "sheet_thickness_mm": 6.0,
+        "neutral_fraction":   0.0,    # 0 the front face, 0.5 mid-thickness
+    },
     # Drawing
     "default_line_weight":  1.5,
     # Toolbar overflow ("⋯") pop-out pinned open across operations
@@ -97,7 +108,10 @@ DEFAULTS: dict = {
         "out":              "",          # empty = <library>/catalog
         "color":            "#000000",
         "opacity_pct":      100,
-        "save_fill":        True,
+        # Off until the maker turns it on: the run writes into their designs
+        # (the dialog says so, and its own fallback never applied: this
+        # default was always there first).
+        "save_fill":        False,
         "temple_ghost_off": False,
         "inlay_fill":        False,      # set the Inlay Fill too
         "inlay_color":       "#3fb0a5",
@@ -137,6 +151,7 @@ DEFAULTS: dict = {
         "stock":        True,
         "pad":          True,
         "obverse":      True,   # View Obverse (the drawing's other face)
+        "formed":       True,   # View Formed (the front after the press, the temple bent)
         "mirror":       True,   # Mirror (bake operation)
         # Shown since 2.0: a whole outline is drawn as a half and closed
         # across the axis, and the messages point to it.
@@ -213,6 +228,7 @@ DEFAULTS: dict = {
         "move_gizmo":   "M",
         "join":         "J",
         "obverse":      "V",
+        "formed":       "W",
         "bookmark":     "Ctrl+B",
         # Types "□" into the focused text field — frame-size notation
         # A□DBL-TempleLength in bookmark names, filenames, engravings.
@@ -236,8 +252,11 @@ def _fits(default, value):
     if isinstance(default, (int, float)):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return _MISSING
-        if not math.isfinite(value):
-            return _MISSING
+        try:
+            if not math.isfinite(value):
+                return _MISSING
+        except OverflowError:
+            return _MISSING         # an integer of 309 digits has no float
         if isinstance(default, int):
             return int(value) if float(value).is_integer() else _MISSING
         return float(value)
@@ -300,7 +319,7 @@ def load() -> dict:
         data = json.loads(_FILE.read_text(encoding="utf-8-sig"))
         if not isinstance(data, dict):
             raise ValueError("not a JSON object")
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         # A file cut short (a full disk, a power cut mid-write) or damaged:
         # the defaults for now, the file kept aside rather than overwritten
         # at the next save, as every setting was.
@@ -312,7 +331,36 @@ def load() -> dict:
         return copy.deepcopy(DEFAULTS)
     merged = _merged(DEFAULTS, data)
     _rename_layers(merged)
+    _show_mirror_close_after_upgrade(merged, data)
+    _new_hotkeys_yield(merged, data)
     return merged
+
+
+def _new_hotkeys_yield(prefs: dict, raw: dict) -> None:
+    """A hotkey this version adds (View Formed's W in 2.3) stays unassigned
+    for a maker who already uses that key: the default was merged in beside
+    their own binding, so neither fired, both tooltips promised the key, and
+    Preferences opened with OK disabled over the conflict until the Hotkeys
+    tab was put right (the 2.3 sweep). The maker's key wins; the new command
+    is in the menu and on the toolbar, and can be given a key in Preferences."""
+    theirs = raw.get("hotkeys")
+    if not isinstance(theirs, dict):
+        return
+    taken = {v.strip().lower() for v in theirs.values() if isinstance(v, str) and v.strip()}
+    for name, key in DEFAULTS["hotkeys"].items():
+        if name not in theirs and key and key.strip().lower() in taken:
+            prefs["hotkeys"][name] = ""
+
+
+def _show_mirror_close_after_upgrade(prefs: dict, raw: dict) -> None:
+    """Mirror Close's toolbar button, which 2.0 shows and its messages point
+    to, for a maker coming from 1.3: 1.3.1 wrote its whole toolbar dict at
+    every save, hidden button included, so its False was that version's
+    default and not a choice. A toolbar saved before 2.0 is the one without
+    "obverse" (new in 2.0); the next save writes it, so this runs once."""
+    tb = raw.get("toolbar")
+    if isinstance(tb, dict) and "obverse" not in tb:
+        prefs["toolbar"]["mirror_close"] = True
 
 
 def _rename_layers(prefs: dict) -> None:

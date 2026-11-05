@@ -127,6 +127,42 @@ class CanvasHint(QLabel):
         self.raise_()
 
 
+class FormedBadge(ObverseBadge):
+    """View Formed's chip (BUILDPLAN *Road to 2.3*): the one word "formed",
+    to the right of whichever face word shows, in the same HUD box. The
+    drawing beneath it is the front after the press or the temple with its
+    tip bend; the flat drawing shows faintly under it."""
+
+    def __init__(self, view):
+        super().__init__(view)
+        self.setObjectName("FormedBadge")
+        self.set_face("formed")
+
+    def refresh_theme(self):
+        self.setStyleSheet(
+            theme.build_hud_qss("#FormedBadge")
+            + f"#FormedBadge QLabel {{ font-size: {_FACE_PX}px; "
+            f'color: {theme.color("hud.accent")}; }}')
+        self.adjustSize()
+
+    def reposition(self):
+        """Right of the face word (the badge or the quiet label), or in its
+        place on a tab that names no face."""
+        view = self.parent()
+        if view is None:
+            return
+        self.adjustSize()
+        vp = view.viewport().geometry()
+        x = vp.left() + _TEXT_X - _PAD_X
+        for other in (getattr(view, "obverse_badge", None),
+                      getattr(view, "face_label", None)):
+            if other is not None and other is not self and other.isVisible():
+                x = other.geometry().right() + _MARGIN_PX
+                break
+        self.move(x, vp.top() + _TEXT_Y - _PAD_Y)
+        self.raise_()
+
+
 class QuietFaceLabel(QLabel):
     """The default view's face, said quietly where the Obverse badge appears:
     a front's "anterior", a temple's "posterior". Small, muted, no chip, and

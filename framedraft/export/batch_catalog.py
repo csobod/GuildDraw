@@ -48,6 +48,13 @@ class BatchCatalogOptions:
     inlay_color:   str | None = None
     inlay_opacity: float = 0.85    # 0..1
 
+    def __post_init__(self):
+        # Whole percents, as the window's opacity sliders hold them: 0.855
+        # came back from the active tab's slider as 0.86, so every run saw a
+        # change there and wrote every file again.
+        self.opacity = round(float(self.opacity) * 100) / 100
+        self.inlay_opacity = round(float(self.inlay_opacity) * 100) / 100
+
 
 @dataclass
 class FileVerdict:
@@ -135,11 +142,12 @@ def backup_original(path, backup_dir) -> Path:
 
 
 def fill_record(ws) -> dict:
-    """The fill as a workspace shows it, for the before/after compare."""
+    """The fill as a save writes it, for the before/after compare: Image
+    while a swatch not found here shows the color (2.0.1)."""
     return {"visible": bool(ws.fill_visible),
             "color":   str(ws.fill_color).lower(),
             "opacity": round(float(ws.fill_opacity), 4),
-            "style":   ws.fill_style}
+            "style":   ws.fill_style_saved}
 
 
 def wanted_fill(opts: BatchCatalogOptions) -> dict:
@@ -148,11 +156,11 @@ def wanted_fill(opts: BatchCatalogOptions) -> dict:
 
 
 def inlay_record(ws) -> dict:
-    """The Inlay Fill as a workspace shows it (see fill_record)."""
+    """The Inlay Fill as a save writes it (see fill_record)."""
     return {"visible": bool(ws.inlay_fill_visible),
             "color":   str(ws.inlay_fill_color).lower(),
             "opacity": round(float(ws.inlay_fill_opacity), 4),
-            "style":   ws.inlay_fill_style}
+            "style":   ws.inlay_fill_style_saved}
 
 
 # ── The run ────────────────────────────────────────────────────────────────
@@ -247,6 +255,7 @@ def run_batch_catalog(win, library, opts: BatchCatalogOptions,
                     continue
                 filled.append(t)
                 ws.fill_style = "color"
+                ws.fill_image_unfound = False
                 ws.fill_color = want["color"]
                 ws.fill_opacity = want["opacity"]
                 ws.scene.set_fill_color(QColor(want["color"]))
@@ -268,6 +277,7 @@ def run_batch_catalog(win, library, opts: BatchCatalogOptions,
                         continue
                     inlaid.append(t)
                     ws.inlay_fill_style = "color"
+                    ws.inlay_fill_image_unfound = False
                     ws.inlay_fill_color = opts.inlay_color.lower()
                     ws.inlay_fill_opacity = round(float(opts.inlay_opacity), 4)
                     ws.scene.set_inlay_fill_color(QColor(ws.inlay_fill_color))
@@ -288,6 +298,10 @@ def run_batch_catalog(win, library, opts: BatchCatalogOptions,
 
             changed = before != after or ghost_cleared or inlay_changed
             if changed and opts.save and not opts.dry_run:
+                if not os.access(path, os.W_OK):
+                    # As File ▸ Save refuses it: a read-only design was
+                    # replaced all the same, and came out writable.
+                    raise RuntimeError("the file is read-only (left untouched)")
                 if report.backup_dir is not None:
                     backup_original(path, report.backup_dir)
                 tmp = str(path) + ".tmp"
@@ -295,6 +309,7 @@ def run_batch_catalog(win, library, opts: BatchCatalogOptions,
                     not_carried = win._do_save_gdraw(tmp, carry_from=str(path)) or []
                     with open(tmp, "r+b") as f:
                         os.fsync(f.fileno())       # on disk before the swap
+                    shutil.copymode(path, tmp)     # a private design stays private
                     os.replace(tmp, path)
                 finally:
                     if os.path.exists(tmp):

@@ -28,6 +28,7 @@ class TextItem(QGraphicsPathItem):
     def __init__(self, text_obj, on_double_click=None):
         super().__init__()
         self.text_obj = text_obj
+        self.faded = False          # View Formed's fade (set_faded)
         self._on_double_click = on_double_click
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(self.GraphicsItemFlag.ItemSendsGeometryChanges, True)
@@ -42,11 +43,19 @@ class TextItem(QGraphicsPathItem):
         # Build glyphs about the origin; the item itself sits at the anchor.
         self.setPath(text_outline_path(replace(t, anchor_x=0.0, anchor_y=0.0)))
         pen = _layer_pen(t.layer, t.line_weight)
-        self.setPen(pen)
         fill = QColor(pen.color())
         fill.setAlpha(70)
+        if self.faded:
+            pen = _items._faded(pen)
+            fill.setAlphaF(fill.alphaF() * _items.FLAT_FADE)
+        self.setPen(pen)
         self.setBrush(QBrush(fill))
         self.setPos(t.anchor_x, t.anchor_y)
+
+    def set_faded(self, on: bool):
+        if on != self.faded:
+            self.faded = on
+            self.refresh()
 
     def sync_pos(self):
         """Move the item to the anchor without rebuilding the glyph path
@@ -100,6 +109,8 @@ _MAX_FACE_PIXELS = 120_000_000
 _FACE_PATH_KEY = 0x6764             # QGraphicsItem.data key: the photo's file
 _FACE_STORED_KEY = 0x6765           # …whether the design stores it
 _FACE_LINK_KEY = 0x6766             # …its id in image_links
+_FACE_ORDER_KEY = 0x6767            # …its place in the file it came from
+_BASE_OPACITY_KEY = 0x6768          # an item's own opacity, under View Formed's fade
 
 
 def _cross_color() -> QColor:
@@ -302,11 +313,14 @@ def _snap_free_ends(lines: list, tol: float) -> list:
     for n, (i, k) in enumerate(ends):
         coords[i][k] = placed[n]
     # End to line: an end no other end met, within tol of a line's run (a
-    # connector stopped a hair short of the curve it meets).
+    # connector stopped a hair short of the curve it meets). The ends at each
+    # place are counted once: asking every other end in turn was quadratic,
+    # 369 ms at 1800 pieces on each drag tick while the fill was on.
+    from collections import Counter
+    at = Counter(placed)
     met = {}
     for n, (i, k) in enumerate(ends):
-        met[(i, k)] = moved[n] or any(
-            placed[m] == placed[n] for m in range(len(ends)) if m != n)
+        met[(i, k)] = moved[n] or at[placed[n]] > 1
     line_tree = STRtree(lines)
     for i, k in ends:
         if met[(i, k)]:
@@ -441,6 +455,11 @@ class FrameScene(QGraphicsScene):
         self._cross_hh: float = 100.0
         self._draw_cross(0.0, 0.0, self._cross_hw, self._cross_hh)
         self.mirror: MirrorAxis | None = None
+        # View Formed (Road to 2.3): the formed drawing painted over the flat
+        # one, which fades meanwhile (`set_formed_fade`).
+        from .formed import FormedOverlay
+        self.formed = FormedOverlay(self)
+        self._formed_fade = False
 
     def init_mirror(self, horizontal: bool = False):
         self.mirror = MirrorAxis(self, horizontal=horizontal)
@@ -691,6 +710,17 @@ class FrameScene(QGraphicsScene):
         if item is not None:
             item.setData(_FACE_LINK_KEY, link_id)
 
+    def face_order(self, index: int) -> int | None:
+        """The photo's place in the file it was opened from, or None for one
+        shown since: the save puts the photos it did not show back by it."""
+        item = self.get_face_item(index)
+        return item.data(_FACE_ORDER_KEY) if item is not None else None
+
+    def set_face_order(self, index: int, order: int | None):
+        item = self.get_face_item(index)
+        if item is not None:
+            item.setData(_FACE_ORDER_KEY, order)
+
     # ------------------------------------------------------------------
     # Dark mode
     # ------------------------------------------------------------------
@@ -824,8 +854,8 @@ class FrameScene(QGraphicsScene):
         if not self._fill_shown():
             return False
         self._fill_item.setBrush(self._fill_brush())
-        self._fill_item.setOpacity(
-            self._fill_opacity if self.has_fill_image() else 1.0)
+        self._set_base_opacity(
+            self._fill_item, self._fill_opacity if self.has_fill_image() else 1.0)
         return True
 
     def set_fill_image(self, path: str, reload: bool = False) -> bool:
@@ -1046,8 +1076,8 @@ class FrameScene(QGraphicsScene):
         # for a swatch — the face photo reads through it exactly as it does
         # through a color. Color keeps its alpha in the brush (item opacity
         # 1.0) so the two paths can't compound.
-        self._fill_item.setOpacity(
-            self._fill_opacity if self.has_fill_image() else 1.0)
+        self._set_base_opacity(
+            self._fill_item, self._fill_opacity if self.has_fill_image() else 1.0)
         self._fill_item.setPen(QPen(Qt.PenStyle.NoPen))
         self._fill_item.setPath(path)
         self._fill_item.setVisible(True)
@@ -1225,6 +1255,7 @@ class FrameScene(QGraphicsScene):
             it.setPath(path)
             self.addItem(it)
             self._lens_fill_items.append(it)
+            self._fade_item(it)
 
     def rebuild_lens_fill(self):
         """Recompute and repaint the lens fill while it's visible. If an edit
@@ -1422,7 +1453,7 @@ class FrameScene(QGraphicsScene):
             it.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable, False)
             it.setBrush(self._inlay_brush(path.boundingRect(), rank))
             # A texture brush has no alpha of its own (see _apply_fill_path).
-            it.setOpacity(opacity)
+            self._set_base_opacity(it, opacity)
             it.setPen(QPen(Qt.PenStyle.NoPen))
             it.setPath(path)
             it.setData(0, rank)
@@ -1437,7 +1468,7 @@ class FrameScene(QGraphicsScene):
         opacity = self._inlay_fill_opacity if self.has_inlay_fill_image() else 1.0
         for it in self._inlay_fill_items:
             it.setBrush(self._inlay_brush(it.path().boundingRect(), it.data(0)))
-            it.setOpacity(opacity)
+            self._set_base_opacity(it, opacity)
         return True
 
     def rebuild_inlay_fill(self):
@@ -1472,6 +1503,7 @@ class FrameScene(QGraphicsScene):
         self.addItem(item)
         self._curve_items[id(curve)] = item
         item.fill_layer = curve.layer          # the layer its fill last saw
+        self._fade_item(item)
         self.revision += 1
         self._apply_layer_state_to_item(item)
         self._update_ghost_for(curve)
@@ -1508,6 +1540,50 @@ class FrameScene(QGraphicsScene):
     # ------------------------------------------------------------------
     # Mirror ghost display
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # View Formed (Road to 2.3)
+    # ------------------------------------------------------------------
+
+    def _fade_item(self, item) -> None:
+        """The fade as a factor over the item's own opacity (a swatch fill
+        carries its slider's value; the 2.3 forming review found View Formed
+        wiping it)."""
+        from .items import FLAT_FADE
+        if hasattr(item, "set_faded"):
+            # A curve or a text fades its pen, so the selection halo stays
+            # full (the 2.3 canvas review).
+            item.set_faded(self._formed_fade)
+            return
+        base = item.data(_BASE_OPACITY_KEY)
+        base = float(base) if base is not None else 1.0
+        item.setOpacity(base * (FLAT_FADE if self._formed_fade else 1.0))
+
+    def _set_base_opacity(self, item, opacity: float) -> None:
+        """An item's own opacity, kept under the fade."""
+        item.setData(_BASE_OPACITY_KEY, float(opacity))
+        self._fade_item(item)
+
+    def set_formed_fade(self, on: bool) -> None:
+        """Fade the flat drawing (curves, Ghost, texts and the fills) under
+        the formed overlay, or bring it back. Items added meanwhile take the
+        fade as they come."""
+        self._formed_fade = bool(on)
+        self.apply_formed_fade()
+
+    def formed_fade(self) -> bool:
+        return self._formed_fade
+
+    def apply_formed_fade(self) -> None:
+        """Re-apply the fade to every flat item: the fills rebuild their
+        items, so the overlay's refresh calls this after them."""
+        items = (list(self._curve_items.values()) + list(self._ghost_items.values())
+                 + list(self._text_items.values()) + list(self._lens_fill_items)
+                 + list(self._inlay_fill_items))
+        if self._fill_item is not None:
+            items.append(self._fill_item)
+        for item in items:
+            self._fade_item(item)
 
     def set_mirror_display(self, on: bool):
         self._mirror_display = on
@@ -1575,6 +1651,7 @@ class FrameScene(QGraphicsScene):
             ghost = self.addPath(path, pen)
             ghost.setZValue(9)
             self._ghost_items[key] = ghost
+            self._fade_item(ghost)
         else:
             ghost.setPath(path)
             ghost.setPen(pen)
@@ -1603,6 +1680,7 @@ class FrameScene(QGraphicsScene):
         self.addItem(item)
         self._text_items[id(text_obj)] = item
         self._apply_layer_state_to_text(item)
+        self._fade_item(item)
         return item
 
     def remove_text(self, text_obj):

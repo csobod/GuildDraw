@@ -19,7 +19,7 @@ re-simplifies any hand-drawn or offset-heavy spline.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Signal, QPointF, Qt
+from PySide6.QtCore import QObject, Signal, QPointF, Qt, QTimer
 from PySide6.QtGui  import QPen, QColor, QFont
 from PySide6.QtWidgets import QLabel
 
@@ -30,6 +30,9 @@ from ..typed import typed_char
 
 _PREVIEW_COLOR = "#ffd580"   # amber — matches the Offset preview
 _PREVIEW_WIDTH = 2.0
+# The fit waits for a pause in the typing, as the Offset preview does:
+# "1000" was four fits, and on a dense import each digit was seconds.
+_FIT_DELAY_MS = 150
 
 MODE_COUNT = "count"
 MODE_TOL   = "tol"
@@ -84,6 +87,12 @@ class RebuildSplineTool(QObject):
         self._mode: str = MODE_COUNT
         self._hud: _RebuildHud | None = None
         self._last_fit = None   # cached FitResult for the current input
+        self._fit_key = None    # the (mode, input, source) it was fitted for
+        self._capped = False    # the count asked for passed the most allowed
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.setInterval(_FIT_DELAY_MS)
+        self._fit_timer.timeout.connect(self._refit)
 
     # ------------------------------------------------------------------
     # Public interface (matches CanvasView draw-tool dispatch shape)
@@ -124,6 +133,7 @@ class RebuildSplineTool(QObject):
             )
 
     def deactivate(self) -> None:
+        self._fit_timer.stop()
         self._clear_preview()
         if self._hud:
             self._hud.hide()
@@ -170,6 +180,7 @@ class RebuildSplineTool(QObject):
             return False
 
         if key == Qt.Key.Key_Escape:
+            self._fit_timer.stop()
             if self._input_str:
                 self._input_str = ""
                 self._update_hud()
@@ -185,6 +196,7 @@ class RebuildSplineTool(QObject):
             return True
 
         if key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+            self._fit_timer.stop()
             self._mode = MODE_TOL if self._mode == MODE_COUNT else MODE_COUNT
             self._input_str = ""
             self._update_hud()
@@ -196,8 +208,7 @@ class RebuildSplineTool(QObject):
 
         if key == Qt.Key.Key_Backspace:
             self._input_str = self._input_str[:-1]
-            self._update_hud()
-            self._update_preview()
+            self._typed()
             return True
 
         # Count mode accepts digits only; tolerance mode adds "." for decimals.
@@ -207,8 +218,7 @@ class RebuildSplineTool(QObject):
             if ch == "." and "." in self._input_str:
                 return True
             self._input_str += ch
-            self._update_hud()
-            self._update_preview()
+            self._typed()
             return True
 
         return False
@@ -230,9 +240,14 @@ class RebuildSplineTool(QObject):
         except (ValueError, TypeError):
             return None
 
+    def _key(self):
+        return (self._mode, self._input_str, id(self._source_curve))
+
     def _compute_fit(self):
         """Fit the source at the current target; cache and return FitResult."""
         self._last_fit = None
+        self._fit_key = self._key()
+        self._capped = False
         if not self._source_curve:
             return None
         target = self._parse_target()
@@ -252,6 +267,13 @@ class RebuildSplineTool(QObject):
                    sample_curve(src, max(4, min(24, 2000 // n_seg)))]
         if len(pts) < 2:
             return None
+        if self._mode == MODE_COUNT:
+            # No more nodes than the curve can use: four times its own, and
+            # never past its samples. "100000" fitted a 64-node spline to
+            # 17 000 nodes in 4.5 s, and Enter took it.
+            most = max(2, min(len(pts), max(64, 4 * len(src.nodes))))
+            if target > most:
+                target, self._capped = most, True
         try:
             if self._mode == MODE_COUNT:
                 fr = fit_curve(pts, n_nodes=int(target), closed=bool(src.closed),
@@ -275,15 +297,33 @@ class RebuildSplineTool(QObject):
             return f"Rebuild: {self._input_str} mm tol   [Tab: node count]", False
         dev = fit.max_deviation_mm
         if self._mode == MODE_COUNT:
-            return (f"Rebuild: {fit.n_nodes} nodes   Δ {dev:.3f} mm   "
+            most = "  (the most for this curve)" if self._capped else ""
+            return (f"Rebuild: {fit.n_nodes} nodes{most}   Δ {dev:.3f} mm   "
                     f"[Tab: tolerance]"), True
         return (f"Rebuild: {self._input_str} mm  →  {fit.n_nodes} nodes   "
                 f"Δ {dev:.3f} mm   [Tab: node count]"), True
 
+    def _current_fit(self):
+        """The fit for the input as it stands, or None while it waits."""
+        return self._last_fit if self._fit_key == self._key() else None
+
+    def _typed(self) -> None:
+        """The input changed: the old preview goes at once, the fit comes
+        when the typing pauses."""
+        self._clear_preview_item()
+        self._update_hud()
+        self._fit_timer.start()
+
+    def _refit(self) -> None:
+        self._fit_timer.stop()
+        self._compute_fit()
+        self._update_hud()
+        self._update_preview()
+
     def _update_hud(self) -> None:
         if not self._hud or not self._view or not self._source_curve:
             return
-        fit = self._compute_fit()
+        fit = self._current_fit()
         text, valid = self._hud_text(fit)
         self._hud.refresh(text, valid)
 
@@ -300,7 +340,7 @@ class RebuildSplineTool(QObject):
         self._clear_preview_item()
         if not self._source_curve:
             return
-        fit = self._last_fit
+        fit = self._current_fit()
         if fit is None:
             return
         item = CurveItem(fit.curve)
@@ -325,11 +365,21 @@ class RebuildSplineTool(QObject):
         if not self._source_curve:
             self.status_message.emit("Rebuild: no source curve — click one first")
             return
-        fit = self._last_fit or self._compute_fit()   # the HUD already fitted it
+        self._fit_timer.stop()
+        fit = self._current_fit() or self._compute_fit()   # the preview's, if fitted
         if fit is None:
             hint = ("a node count (≥2)" if self._mode == MODE_COUNT
                     else "a tolerance in mm")
             self.status_message.emit(f"Rebuild: enter {hint}")
+            return
+        least = 3 if fit.curve.closed else 2
+        if len(fit.curve.nodes) < least:
+            # A hairline's nodes merge into one (fitting's hairline guard):
+            # nothing to replace the curve with.
+            self.status_message.emit(
+                f"Rebuild: the fit keeps {len(fit.curve.nodes)} node, fewer than "
+                f"a {'closed ' if fit.curve.closed else ''}curve needs ({least}); "
+                "the curve is too small to refit")
             return
         self._clear_preview_item()
         self.rebuild_applied.emit(self._source_curve, fit.curve)

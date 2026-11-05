@@ -8,14 +8,24 @@ nothing else.
 Built with Python + PySide6 (Qt 6). Scene units are true millimeters (1 scene
 unit = 1 mm) end to end: what you draw is what gets cut.
 
-**Status: v2.0.0 — stable.** All drafting features are complete and tested,
+**Status: v2.3.0 — stable.** All drafting features are complete and tested,
 and the full hardware round-trip is proven: physical frames have been cut on
-GuildModel from GuildDraw-exported DXF. The 2.0 round is the drawing side of
-the leap with GuildModel 2.0: an INLAY layer for seats, combination frames
-with two rims on a metal bridge, the HINGE layer become COMPONENT with a
-component library in folders, View Obverse, Inlay Fill, and reference images
-that stay on your computer unless you store them in the design (see *New in
-2.0*). Use it with GuildModel 2.0; GuildModel 1.8.1 skips COMPONENT pockets.
+GuildModel from GuildDraw-exported DXF. The 2.3 round shows the frame after
+the press: **View Formed** draws the front head-on as forming will leave it
+and the temple with its tip bend, a **Forming** group sets the base curve,
+the face form and the bridge projection (and travels to GuildModel), the
+formed measurements read flat against formed with ISO's tolerance flagged,
+**Flatten Lens Shape** gives the flat lens that forms to a traced one, and the
+OMA trace describes the formed lens (see *New in 2.3*). It also carries the
+bug hunt of 2.0.0: the Text dialog's font box types again, a file dropped on
+the drawing opens, an offset of a cornered spline comes out clean, and
+fronts GuildModel cannot build as drawn no longer read green (see *Fixes
+since 2.0.0*). Use it with GuildModel 2.3. The 2.0 round is the drawing
+side of the leap with GuildModel 2.0: an INLAY layer for seats, combination
+frames with two rims on a metal bridge, the HINGE layer become COMPONENT
+with a component library in folders, View Obverse, Inlay Fill, and
+reference images that stay on your computer unless you store them in the
+design (see *New in 2.0*); GuildModel 1.8.1 skips COMPONENT pockets.
 The 1.3.1 update adds **File ▸ Import
 ▸ SVG…**, so a logo or a colleague's drawing from any editor comes in as exact
 curves at the size you choose, and closes a hidden seam that closed shapes
@@ -70,6 +80,113 @@ files (see *New in 1.0*).
 - **Clean DXF out**: R2000 SPLINE entities (exact Bézier → B-spline, never
   flattened), strict layer vocabulary, per-workspace validation, and batch
   export of all four workspaces in one go.
+
+## New in 2.3
+
+GuildDraw 2.3 ships beside GuildModel 2.3, which builds the draft view, the
+assembled and dimensioned drawing of the frame after forming, from the same
+values. A 2.3 design opens in 2.0 as it did; the forming and the bends are
+two blocks 2.0 does not read and does not keep.
+
+- **View Formed** (toolbar, View menu, `W`): the front head-on as it will
+  look after the press, over the flat drawing shown faintly beneath; on a
+  temple, the temple with its tip bend, engraving included. A view only:
+  every tool works on the flat drawing, and the file and the exports keep
+  it, but for the OMA trace.
+- **Forming** (Guides tab, Frame Front): **Show forming preview**, the same
+  switch as View Formed; a preset, or the base curve in diopters and the face
+  form in degrees per side; the bridge projection. Saved with the design, and
+  read by GuildModel 2.3 as the default for its own forming. The old
+  *Construction (Forming)* group is **Nose Fit** now: those were always the
+  customer's nose measurements.
+- **Forming in Preferences** (General tab): the tooling index, 1.53 by
+  default; the sheet thickness; and the neutral surface, the layer of the
+  sheet that keeps its length. Every design uses them.
+- **Formed Measurements** (Properties tab): A head-on, in the lens plane
+  (ISO 8624's number) and flat; B; DBL, boxed centers and frame width
+  head-on; the circumference in the lens plane and in 3D; the edge sag; the
+  per-eye tilt; the frame curve; the endpiece set. Flagged in red when a
+  lens loses more than ISO's ±0.5 mm on A, reaches into the bridge band, or
+  the sheet is thicker than the bend can carry.
+- **Flatten Lens Shape**: the drawn lenses become the flat shapes that form
+  back to them (within 0.015 mm all along the lens), so a traced lens, a lab
+  shape or a design value is the finished size after the press. A box says
+  what it will do first; Ctrl+Z takes it back.
+- **Forming on a temple** (Guides tab, Temple R / L): **Show temple tip bend**,
+  the same switch as View Formed; length to bend, downward angle and bend
+  radius; the drop, the overall length and the reach as readouts;
+  *out of range* when the bend does not fit. Each temple bends toward its
+  own drop, and Temple Copy takes the bend with the temple.
+- **The OMA trace of a formed front** carries the lens in its own plane,
+  DBL head-on, and FCRV, ZTILT and CIRC, as a 3D tracer would.
+- The forming math is GuildModel's own map, ported and held to it by a test,
+  so the two apps show the same formed front.
+- **A bug hunt and an interface review** of the whole app: a design whose
+  archive lacked a tab it named no longer opens as if whole; Group takes
+  whole groups; a click picks the nearest curve, not the later-drawn one
+  beside it; a double-click keeps its last node; Offset refuses a distance
+  past ten meters; Space cannot become a hotkey; tooltips throughout the dock.
+
+## Fixes since 2.0.0
+
+A bug hunt of 2.0.0: five reviews of the whole app, about fifty fixes, each
+held by a test (`tests/test_v201_bug_hunt.py`). Files are unchanged, except
+that an SVG exported from a temple or the Component tab now names its tab.
+
+- **Typing.** The Text dialog's font box filters as you type (the first
+  letter jumped to a font and nothing after it landed). Boxing A, B and DBL
+  typed before *Snap to lens shape* survive un-snapping and a save. A click
+  through the Scale field keeps a 2-point calibration. Ctrl+G, Ctrl+Shift+G
+  and Ctrl+Y no longer act on the drawing while a text field has focus.
+- **The drawing.** Dropping a file on the drawing opens it. A second click
+  beside a selected curve keeps it selected at any zoom; a locked curve on
+  top no longer takes the click meant for its neighbor. An open end beside
+  the origin snaps to the end, not the origin. A tool switched mid-drag
+  leaves no editable nodes behind.
+- **The tools.** A double-click trims once and places no arc center. Fillet
+  takes open lines only. Rebuild and Explode refuse a placed component, as
+  Trim, Split and Fillet do, and a refusal is no longer followed by a success
+  message; Mirror Close keeps the group. The Line tool places no zero-length
+  segment, and a closed triangle keeps its three nodes. An offset of a spline
+  with sharp corners no longer crosses itself at each inside corner (every
+  shipped hinge pocket inward, most outlines): the pieces are trimmed where
+  they cross. A large outline offsets about ten times faster. A distance
+  too large for the curve, which could leave the window not responding for
+  minutes (−10 mm on an open outline), now reads *out of range*: nothing of
+  the shape would be left, or the offset folds over itself too often to
+  untangle. The preview waits for a pause in the typing.
+- **Large drawings and imports.** A pass for the Offset tool's kind of fault
+  found more: the readiness check after an Explode or a large import froze
+  every later edit (now a fraction of a second, findings unchanged); imports
+  selected their curves one at a time; Rebuild fitted on every digit with no
+  cap; dense curves were slow to drag and snap to; a dense design with
+  bookmarks saved a tab it could not open again. DXF units no longer shift a
+  lens, MINSERT arrays import, densely sampled SVG outlines import, noisy OMA
+  traces import smooth, and a locked lens refuses a size of 0. Details in
+  BUILDPLAN, *The offset's cousins*.
+- **OMA traces, tried on a practice's 412 tracer files.** A lens imports in
+  about 35 nodes, not 72 to 256, within 0.02 mm of every traced point; the
+  import's bevel question names what the file declares (frame, pattern or
+  demo lens trace; frame type) and leaves the choice to you.
+- **Files.** Each reference photo keeps its own calibration on reopen. Save
+  As keeps every stored photo. A temple's exported SVG opens back into its
+  tab. Photos beside a design at a drive's root are found. Catalog PDFs for a
+  Folder starts with saving into the files off. An Inkscape file with a
+  "curves" layer imports. The apical radius is saved as the file had it.
+  Mirror Close returns to the toolbar for upgraders from 1.3. A Frame Fill or
+  Inlay Fill image this computer lacks shows the color and is saved as an
+  image still; reference photos keep their stacking order through such a
+  save.
+- **Printing.** Print at 1:1 and Export PDF (Current View, 1:1) follow View
+  Obverse, as PNG export does, and the status bar names the face.
+- **The readiness dot.** A rim drawn without its lens, on either side, and
+  two lenses on one eye, no longer read green; GuildModel builds neither as
+  drawn. A rim
+  drawn open with touching ends gets the Ghost check; the dot never asks to
+  bake a twin the canvas does not show.
+- **Geometry.** Polygon lenses measure to their corners (A and B read up to
+  0.2 mm short). Split at a node leaves no hidden node; a polyline offset
+  moves the corner beside a repeated node.
 
 ## New in 2.0
 

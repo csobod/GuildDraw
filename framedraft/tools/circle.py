@@ -28,7 +28,12 @@ from PySide6.QtWidgets import QLabel
 
 from ..document import Curve, Layer, SplineNode
 from ..geometry import arc_start_end_center
-from ..typed import typed_char
+from ..typed import parse_typed, typed_char
+
+# The digits a typed length takes: str.isdigit() also says yes to "²" (a
+# plain key on an AZERTY keyboard) and to other scripts' digits, which went
+# into the buffer, did not parse, and Enter then ended the curve.
+_DIGITS = "0123456789"
 
 
 class _RadiusHud(QLabel):
@@ -253,10 +258,10 @@ class CircleTool(QObject):
 
     def handle_dbl_click(self, pos: QPointF, use_snap: bool = True,
                          constrain: bool = False) -> bool:
-        # The single-click from the preceding mousePressEvent already advanced
-        # state; handle_dbl_click arrives after the fact, so just treat it like
-        # a regular press (it's a no-op if already finished).
-        return self.handle_press(pos, use_snap, constrain)
+        # The press before it already placed this point. Taken as another
+        # press, a double-click on an arc's end placed its center on the
+        # chord and committed a half circle nobody drew.
+        return True
 
     def handle_key(self, key, text: str = "") -> bool:
         if not self.active:
@@ -267,7 +272,7 @@ class CircleTool(QObject):
         # the chord preview and swallow Enter.
         if self._state == 1 and self._kind != "arc_sec":
             ch = typed_char(text)
-            if ch and (ch.isdigit() or ch == '.'):
+            if ch and (ch in _DIGITS or ch == '.'):
                 if ch == '.' and '.' in self._radius_input:
                     return True
                 self._radius_input += ch
@@ -353,7 +358,7 @@ class CircleTool(QObject):
 
     def _update_locked_radius(self):
         try:
-            v = float(self._radius_input) if self._radius_input else None
+            v = parse_typed(self._radius_input) if self._radius_input else None
             self._locked_radius = v if (v is not None and v >= self._MIN_RADIUS) else None
         except ValueError:
             self._locked_radius = None
@@ -457,7 +462,7 @@ class CircleTool(QObject):
             return
         cx, cy, r, sa, ea = res
         sweep = (ea - sa) % 360
-        if sweep < 0.001:
+        if sweep < 1e-9:                 # geometry's rule (_arc_sweep_deg)
             sweep = 360
         arc_path = QPainterPath()
         sa_rad = math.radians(sa)
@@ -569,7 +574,7 @@ class CircleTool(QObject):
             end_angle = math.degrees(math.atan2(cursor.y() - cy, cursor.x() - cx))
             arc_sa, arc_ea = self._arc_angles(end_angle)
             sweep     = (arc_ea - arc_sa) % 360
-            if sweep < 0.001:
+            if sweep < 1e-9:             # geometry's rule (_arc_sweep_deg)
                 sweep = 360
 
             # Full circle ghost (thin, very transparent)

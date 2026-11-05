@@ -21,6 +21,8 @@ def _dense_closed_spline():
 def _type(tool, s):
     for ch in s:
         tool.handle_key(0, ch)
+    if tool._fit_timer.isActive():
+        tool._refit()                 # the pause in the typing (2.0.1)
 
 
 def _activate(source):

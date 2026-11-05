@@ -16,6 +16,10 @@ Rules:
   - Closed curves : need >=2 intersections (otherwise the geometry is
                     ambiguous and nothing happens).
   - Circles / arcs: fully supported via angle parameterization.
+  - A curve that ends on the target (within the 0.1 mm closure tolerance)
+    cuts it there, as a crossing does. Two curves lying one on the other
+    (a copy, a datum along a straight edge) meet only at the two ends of
+    that stretch; a target that lies on another all along is refused.
 """
 
 from __future__ import annotations
@@ -27,14 +31,22 @@ from PySide6.QtGui  import QPen, QColor
 
 from ..canvas.items import CurveItem, curve_layer_locked
 from ..geometry import (
-    intersect_curve_params, dedup_ts_mm, t_nearest, t_nearest_coarse, point_at_t,
-    extract_open_segment, extract_wrapping_segment, _point_polyline_dist,
+    target_crossings, dedup_ts_mm, t_nearest, t_nearest_coarse, point_at_t,
+    extract_open_segment, extract_wrapping_segment, flatten_curve,
+    _point_polyline_dist,
 )
 
 
 _HOVER_COLOR  = "#ffd580"
 _HOVER_WIDTH  = 2.5
 _HIT_TOL_PX   = 8         # viewport-pixel tolerance for curve hit-testing
+_KEEP_MIN_MM  = 1e-3      # a piece shorter than this has no length to keep
+
+
+def _length_mm(curve) -> float:
+    """Length of *curve* in scene mm, along its flattened polyline."""
+    pts = flatten_curve(curve, 0.01)
+    return sum(math.dist(p, q) for p, q in zip(pts, pts[1:], strict=False))
 
 
 def _visible_curves(scene, curves: list) -> list:
@@ -44,6 +56,11 @@ def _visible_curves(scene, curves: list) -> list:
     if is_visible is None:
         return curves
     return [c for c in curves if is_visible(c.layer)]
+
+
+#: The hit box is a square: its corner is this much farther than its side,
+#: and the coarse distance of a spline is a little long.
+_PICK_REACH = 1.5
 
 
 def _curve_dist_mm(curve, x: float, y: float) -> float:
@@ -65,6 +82,13 @@ def _curve_dist_mm(curve, x: float, y: float) -> float:
     return math.hypot(px - x, py - y)
 
 
+# Said by every operation that would break a group apart. The tools check
+# before they report success: the app's own refusal was overwritten at once
+# by "Trim → 1 segment kept" while nothing had changed (2.0.1).
+GROUPED_REFUSAL = ("the curve belongs to a group (a placed component); "
+                   "ungroup it first (Ctrl+Shift+G)")
+
+
 def curve_item_at(view, scene_pos: QPointF, tol_px: int = _HIT_TOL_PX,
                   accept=None) -> CurveItem | None:
     """The unlocked CurveItem nearest *scene_pos* within *tol_px* screen px.
@@ -82,10 +106,18 @@ def curve_item_at(view, scene_pos: QPointF, tol_px: int = _HIT_TOL_PX,
     candidates = [i for i in view.items(QRect(vp.x() - t, vp.y() - t, 2 * t, 2 * t))
                   if isinstance(i, CurveItem) and not curve_layer_locked(i)
                   and (accept is None or accept(i.curve))]
-    if len(candidates) < 2:
-        return candidates[0] if candidates else None
+    if not candidates:
+        return None
+    # A curve's hit stroke is 2 mm wide whatever the zoom, so the hit box
+    # alone let a click 27 px beside a line at 30 px/mm trim it, 60 px at
+    # 80 (Select has stopped at 7 px since the 2.3 hunt): the nearest
+    # curve, and only within the tolerance on screen.
     x, y = scene_pos.x(), scene_pos.y()
-    return min(candidates, key=lambda i: _curve_dist_mm(i.curve, x, y))
+    best = min(candidates, key=lambda i: _curve_dist_mm(i.curve, x, y))
+    scale = abs(view.transform().m11())
+    if _curve_dist_mm(best.curve, x, y) * scale > tol_px * _PICK_REACH:
+        return None
+    return best
 
 
 class TrimTool(QObject):
@@ -151,17 +183,22 @@ class TrimTool(QObject):
         target     = target_item.curve
         all_curves = _visible_curves(self._scene, self._curves_fn())
 
-        # Gather all intersection t-values on target with every other curve
-        raw_ts: list[float] = []
-        for other in all_curves:
-            if other is target:
-                continue
-            raw_ts.extend(intersect_curve_params(target, other))
-
-        ts = dedup_ts_mm(target, raw_ts)
+        # Gather all intersection t-values on target with every other curve,
+        # the target flattened once for them all (it was sampled twice per
+        # curve: 7 s a click on a 2000-node trace among 100 curves).
+        along: list = []
+        hits = target_crossings(target, all_curves, along=along)
+        ts = dedup_ts_mm(target, [t for t, _other in hits])
 
         is_closed = target.closed or target.kind == "circle"
         n_inter   = len(ts)
+
+        if along and (n_inter == 0 or (is_closed and n_inter < 2)):
+            self.status_message.emit(
+                "Trim: this curve lies on another along its whole length "
+                "(a copy?) — delete one of the two instead"
+            )
+            return True
 
         if n_inter == 0:
             self.status_message.emit(
@@ -218,12 +255,19 @@ class TrimTool(QObject):
             if t_lo is None:
                 t_lo, t_hi = 0.0, 1.0
 
-            if t_lo > 1e-3:
-                remaining.append(extract_open_segment(target, 0.0, t_lo))
-            if t_hi < 1 - 1e-3:
-                remaining.append(extract_open_segment(target, t_hi, 1.0))
+            # A piece is kept by its length, not its share of t: on a dense
+            # polyline a head 20 mm long held t < 1e-3 and went with the
+            # clicked piece (2.0.1).
+            for lo, hi in ((0.0, t_lo), (t_hi, 1.0)):
+                if hi > lo:
+                    piece = extract_open_segment(target, lo, hi)
+                    if _length_mm(piece) > _KEEP_MIN_MM:
+                        remaining.append(piece)
 
         self._clear_hover()
+        if target.group_id:
+            self.status_message.emit(f"Trim: {GROUPED_REFUSAL}")
+            return True
         self.trim_applied.emit(target, remaining)
 
         n = len(remaining)
@@ -252,7 +296,9 @@ class TrimTool(QObject):
     def handle_dbl_click(self, pos: QPointF,
                           use_snap: bool = True,
                           constrain: bool = False) -> bool:
-        return self.handle_press(pos, use_snap, constrain)
+        # The press already trimmed here. Taken as a second press, the
+        # double-click trimmed the piece left beside it too.
+        return True
 
     def handle_key(self, key, text: str = "") -> bool:
         if not self.active:

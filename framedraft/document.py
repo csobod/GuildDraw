@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List
 from enum import Enum
 
@@ -87,6 +87,10 @@ class FaceImage:
     # before 2.0 stored every photo, and reads so.
     stored: bool = False
     link_id: str = ""
+    # Its place in the file it was read from, so a save puts a photo this
+    # computer did not show back where it was among the others (2.0.1: it
+    # went on top of them). Session state, never written.
+    order: Optional[int] = field(default=None, compare=False, repr=False)
 
 
 @dataclass

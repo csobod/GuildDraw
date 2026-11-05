@@ -290,3 +290,29 @@ def test_the_command_line_takes_the_inlay_fill(tmp_path):
     assert cli.parse_args([str(tmp_path)]).inlay_color is None
     with pytest.raises(SystemExit):
         cli.parse_args([str(tmp_path), "--inlay-color", "teal"])
+
+
+def test_a_read_only_design_is_left_alone_and_a_private_one_stays_private(win, library):
+    """File ▸ Save refuses a read-only design; the batch replaced it all the
+    same, and it came out writable (the 2.3 sweep)."""
+    import os
+    import stat
+    import sys
+    a = library / "a.gdraw"
+    was = a.read_bytes()
+    os.chmod(a, stat.S_IREAD)
+    try:
+        report = win._run_catalog_batch(
+            str(library), BatchCatalogOptions(color="#112233", opacity=0.5))
+        assert a.read_bytes() == was and not os.access(a, os.W_OK)
+        assert report.updated == 0
+        assert any(p.startswith("a.gdraw:") and "read-only" in p for p in report.problems)
+        assert not (report.backup_dir / "a.gdraw").exists() if report.backup_dir else True
+    finally:
+        os.chmod(a, stat.S_IREAD | stat.S_IWRITE)
+    if sys.platform != "win32":                 # mode bits are POSIX's
+        os.chmod(a, 0o600)
+        report = win._run_catalog_batch(
+            str(library), BatchCatalogOptions(color="#112233", opacity=0.5))
+        assert report.updated == 1
+        assert stat.S_IMODE(a.stat().st_mode) == 0o600

@@ -94,6 +94,8 @@ def _empty_ws_data() -> dict:
         "inlay_fill": None,
         "texts": [],
         "bevel": None,
+        "thermoform": None,
+        "tip_bend": None,
     }
 
 
@@ -123,6 +125,11 @@ def _member_too_large(zf: zipfile.ZipFile, name: str, cap: int) -> bool:
 # Embedded images are bounded like the SVG members: a photo or swatch that
 # inflates beyond this is skipped (the design still loads).
 _MAX_IMAGE_BYTES = 64 * 1024 * 1024
+# A tab of GuildDraw's own: bookmarks each carry the design, so a dense
+# import with a few of them passed the 64 MB a loose SVG may be, saved without
+# a word, and the next open left the tab empty (2.0.1). Saving says so past
+# this.
+_MAX_TAB_BYTES = 256 * 1024 * 1024
 # The manifest names a version and the active tab; anything larger is not one.
 _MAX_MANIFEST_BYTES = 1024 * 1024
 
@@ -345,10 +352,13 @@ def _extract_fill_image(zf: zipfile.ZipFile, names: list, doc_path: str,
             out = _write_into(_content_dir(doc_path, data), base, data)
             fill["image"] = str(out) if out is not None else ""
         else:
-            doc_dir = os.path.dirname(os.path.abspath(doc_path))
-            cand = os.path.normpath(os.path.join(doc_dir, p))
-            fill["image"] = (cand if cand.startswith(doc_dir + os.sep)
-                             and os.path.isfile(cand) else "")
+            # Beside the document, or its name kept when it is not there (as
+            # an .svg design's is): the fill then shows its color and the
+            # Image style stands. Emptied, the next save wrote the style as
+            # Color and the name was gone (the 2.3 sweep).
+            from .svg import _beside_document
+            fill["image"] = _beside_document(
+                p, os.path.dirname(os.path.abspath(doc_path)))
     except Exception:
         # Unwritable cache, an unreadable or corrupt member: the color fill
         # only. A display value never fails the tab it decorates.
@@ -454,7 +464,8 @@ def _extract_face_images(zf: zipfile.ZipFile, names: list, doc_path: str,
                 # folder so a crafted file can't point at arbitrary local
                 # images.
                 cand = os.path.normpath(os.path.join(doc_dir, p))
-                if cand.startswith(doc_dir + os.sep) and os.path.isfile(cand):
+                if (cand.startswith(os.path.join(doc_dir, ""))
+                        and os.path.isfile(cand)):
                     fi.path = cand
         except Exception:
             continue    # unwritable cache, an unreadable or corrupt member
@@ -584,12 +595,26 @@ def _save_gdraw(workspace_data: dict, path: str, active_tab: str,
                     inlay_fill      = inlay_fill,
                     texts           = data.get("texts", []),
                     bevel           = data.get("bevel"),
+                    thermoform      = data.get("thermoform"),
+                    tip_bend        = data.get("tip_bend"),
                 )
                 with open(tmp_path, "rb") as f:
                     _member(zf, f"{tab}.svg", f.read())
             finally:
                 os.unlink(tmp_path)
     return notes
+
+
+def oversized_tabs(path: str) -> list[tuple[str, int]]:
+    """(tab, MB) for each tab of the saved .gdraw at *path* too large for
+    GuildDraw to open again; empty when every tab opens."""
+    out = []
+    with zipfile.ZipFile(path, "r") as zf:
+        for tab in _TAB_NAMES:
+            size = zf.getinfo(f"{tab}.svg").file_size if f"{tab}.svg" in zf.namelist() else 0
+            if size > _MAX_TAB_BYTES:
+                out.append((tab, size // (1024 * 1024)))
+    return out
 
 
 def load_gdraw(path: str) -> dict:
@@ -645,24 +670,34 @@ def load_gdraw(path: str) -> dict:
         if "component.svg" not in names and "hinge.svg" in names:
             _COMPAT_MAP["component"] = "hinge"
 
+        # The tabs the file says it holds: a member the manifest names but
+        # the archive lacks (or a directory entry by that name) is damage,
+        # not an empty tab, and opening it "ok" kept the path for the next
+        # Save to write an empty tab over the file (the 2.3 hunt). A file
+        # with no manifest, or whose manifest does not name the tab, opens
+        # as before.
+        declared = manifest.get("tabs") if isinstance(manifest.get("tabs"), list) else []
         for tab in load_targets:
             svg_stem = _COMPAT_MAP.get(tab, tab)
             svg_name = f"{svg_stem}.svg"
-            if svg_name not in names:
+            if svg_name not in names or zf.getinfo(svg_name).is_dir():
+                if tab in declared:
+                    result["errors"].append(
+                        f"{tab}: the file names {svg_name} but does not hold it.")
                 continue
-            if _member_too_large(zf, svg_name, _svg_mod._MAX_SVG_BYTES):
+            if _member_too_large(zf, svg_name, _MAX_TAB_BYTES):
                 # Same cap load_svg applies, enforced BEFORE decompression.
                 result["errors"].append(
                     f"{tab}: Refusing to open — {svg_name} inflates to "
                     f"{zf.getinfo(svg_name).file_size // (1024 * 1024)} MB "
-                    f"(limit {_svg_mod._MAX_SVG_BYTES // (1024 * 1024)} MB).")
+                    f"(limit {_MAX_TAB_BYTES // (1024 * 1024)} MB).")
                 continue
             fd, tmp_path = tempfile.mkstemp(suffix=".svg")
             os.close(fd)
             try:
                 with open(tmp_path, "wb") as f:
                     f.write(zf.read(svg_name))
-                result[tab] = _svg_mod.load_svg(tmp_path)
+                result[tab] = _svg_mod.load_svg(tmp_path, _MAX_TAB_BYTES)
                 result["left_out"] += [f"{tab}: {what}" for what in
                                        result[tab].get("left_out", [])]
                 _extract_face_images(zf, names, path,

@@ -105,3 +105,61 @@ def test_save_and_reload_keeps_every_curve_and_text(loaded, tmp_path):
         for tab in _TABS:
             for key in ("curves", "texts"):
                 assert len(back[tab].get(key) or []) == len(d[tab].get(key) or []), (p.name, tab, key)
+
+
+def test_every_outline_offsets_a_millimeter_without_crossing_itself(loaded):
+    """The Offset tool on the maker's own outlines, both ways (2.0.1: nearly
+    every one crossed itself at its inside corners)."""
+    from shapely.geometry import Polygon
+
+    from framedraft.geometry import flatten_curve, offset_curve
+
+    bad = []
+    for p, d in loaded:
+        for tab in _TABS:
+            for c in d[tab].get("curves") or []:
+                if c.kind != "spline" or not c.closed or c.layer.value != "OUTLINE":
+                    continue
+                for mm in (-1.0, 1.0):
+                    if not Polygon(flatten_curve(offset_curve(c, mm), 0.02)).is_valid:
+                        bad.append(f"{p.name} [{tab}] at {mm:+g} mm")
+    assert not bad, "offsets that cross themselves:\n  " + "\n  ".join(bad)
+
+
+def test_every_left_temple_is_the_right_s_mirror_and_bends_as_its_mirror(loaded):
+    """What `TipBend.down` rests on (2.3): the library draws the left temple
+    as the right's mirror about the core line, so the left tab's drop is
+    toward −y and the two tabs formed mirror each other."""
+    import numpy as np
+
+    from framedraft.forming import TipBend, TipBendParams
+    from framedraft.geometry import flatten_curve
+
+    def outline(ws):
+        pts = [q for c in ws.get("curves") or []
+               if c.layer.value == "OUTLINE" and c.nodes
+               for q in flatten_curve(c, 0.02)]
+        return np.asarray(pts, dtype=float) if pts else None
+
+    def box(P):
+        return np.array([P[:, 0].min(), P[:, 1].min(), P[:, 0].max(), P[:, 1].max()])
+
+    seen, bad = 0, []
+    for p, d in loaded:
+        R, L = outline(d["temple_r"]), outline(d["temple_l"])
+        if R is None or L is None:
+            continue
+        seen += 1
+        r, l = box(R), box(L)
+        if not np.allclose(l, [r[0], -r[3], r[2], -r[1]], atol=0.05):
+            bad.append(f"{p.name}: the left OUTLINE is not the right's mirror about y = 0")
+            continue
+        bent_r = box(TipBend.resolve(TipBendParams(), r[0], r[2] - r[0]).map_points(R))
+        bent_l = box(TipBend.resolve(TipBendParams(), l[0], l[2] - l[0],
+                                     down=-1.0).map_points(L))
+        if not np.allclose(bent_l, [bent_r[0], -bent_r[3], bent_r[2], -bent_r[1]], atol=0.05):
+            bad.append(f"{p.name}: the bent temples do not mirror each other")
+        if not (bent_r[3] > 20.0 and bent_l[1] < -20.0):
+            bad.append(f"{p.name}: a tip did not drop toward its own side")
+    assert seen, "no corpus design has both temples drawn"
+    assert not bad, "\n  ".join(bad)

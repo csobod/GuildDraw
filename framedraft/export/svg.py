@@ -69,7 +69,10 @@ def _beside_document(p: str, doc_dir: str) -> str:
             or re.match(r"^[A-Za-z]:", p)):
         p = re.split(r"[\\\\/]", p)[-1]
     cand = os.path.normpath(os.path.join(doc_dir, p))
-    if p and cand.startswith(doc_dir + os.sep) and os.path.isfile(cand):
+    # join(doc_dir, "") ends in exactly one separator: doc_dir + os.sep
+    # doubled it for a design at a drive or share root (E:\\), and nothing
+    # beside such a design was ever found.
+    if p and cand.startswith(os.path.join(doc_dir, "")) and os.path.isfile(cand):
         return cand
     return p
 
@@ -269,10 +272,15 @@ def save_svg(
     texts:            list | None = None,   # list[TextObject]
     bevel:            BevelSpec | None = None,
     text_outlines:    bool = False,
+    workspace:        str | None = None,
+    thermoform:       dict | None = None,   # the front's forming (2.3)
+    tip_bend:         dict | None = None,   # a temple's tip bend (2.3)
 ) -> None:
     """*text_outlines*: also draw each text as its letters' outlines, for an
     exported SVG another program shows (the native file keeps the text in
-    its metadata, which is all GuildDraw and GuildModel read)."""
+    its metadata, which is all GuildDraw and GuildModel read). *workspace*
+    names the tab an exported SVG came from, so opening it puts it back
+    there; a .gdraw member never carries it (the member's name says)."""
     ET.register_namespace("", _NS)
     root = ET.Element(f"{{{_NS}}}svg")
     root.set("version", "1.1")
@@ -313,6 +321,8 @@ def save_svg(
         ],
         "curves": [_curve_to_dict(c) for c in curves if not c.mirrored],
     }
+    if workspace:
+        state["workspace"] = workspace
     if bookmarks:
         state["bookmarks"] = [
             {
@@ -345,6 +355,10 @@ def save_svg(
         state["inlay_fill"] = inlay_fill
     if bevel:
         state["bevel"] = {"preset": bevel.preset, "depth_mm": bevel.depth_mm}
+    if thermoform:
+        state["thermoform"] = thermoform
+    if tip_bend:
+        state["tip_bend"] = tip_bend
     if texts:
         state["texts"] = [_text_to_dict(t) for t in texts]
     # allow_nan=False: a NaN written out read back as no number at all, and the
@@ -390,7 +404,7 @@ def save_svg(
 _MAX_SVG_BYTES = 64 * 1024 * 1024   # 64 MB
 
 
-def _read_checked_svg(path: str) -> bytes:
+def _read_checked_svg(path: str, max_bytes: int | None = None) -> bytes:
     """Read an SVG file, refusing inputs that could be used for a parser DoS.
 
     GuildDraw opens .svg/.gdraw files that are freely shared between makers, so
@@ -412,13 +426,17 @@ def _read_checked_svg(path: str) -> bytes:
         size = os.path.getsize(path)
     except OSError as exc:
         raise ValueError(str(exc)) from exc
-    if size > _MAX_SVG_BYTES:
+    if max_bytes is None:
+        max_bytes = _MAX_SVG_BYTES
+    if size > max_bytes:
         raise ValueError(
             f"Refusing to open: file is {size / 1_048_576:.0f} MB, larger than "
-            f"the {_MAX_SVG_BYTES // 1_048_576} MB limit for a GuildDraw SVG.")
+            f"the {max_bytes // 1_048_576} MB limit for a GuildDraw SVG.")
     with open(path, "rb") as f:
         data = f.read()
-    upper = data.upper()
+    # Without its NUL bytes: in a UTF-16 or UTF-32 file every ASCII character
+    # carries them, and the declaration passed the scan unseen (2.0.1).
+    upper = data.replace(b"\x00", b"").upper()
     if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
         raise ValueError(
             "Refusing to open: the file declares an XML DTD or entities, which "
@@ -601,7 +619,10 @@ def _left_out_text(left_out: list) -> list[str]:
 _CALIBRATION_RANGE = (1e-3, 1e5)
 
 
-def load_svg(path: str) -> dict:
+_WORKSPACE_TYPES = ("front", "temple_r", "temple_l", "component")
+
+
+def load_svg(path: str, max_bytes: int | None = None) -> dict:
     """
     Return a dict with keys: curves, dims, texts, calibration, mirror,
     forming, machined_bridge, face_images, bookmarks, layers, guides, fill,
@@ -609,9 +630,10 @@ def load_svg(path: str) -> dict:
     come back as their empty defaults.  A curve, dimension, text or bookmark
     that does not read is left out and said in ``left_out`` (a list of
     strings, empty when everything read). Raises when the file itself
-    cannot be read.
+    cannot be read. *max_bytes* caps the file (a .gdraw's own tab may be
+    larger than a loose SVG).
     """
-    root = ET.fromstring(_read_checked_svg(path))
+    root = ET.fromstring(_read_checked_svg(path, max_bytes))
 
     meta_el = root.find(f"{{{_NS}}}metadata")
     if meta_el is None or not meta_el.text:
@@ -669,7 +691,11 @@ def load_svg(path: str) -> dict:
         v = state.get(key)
         return v if isinstance(v, dict) else None
 
+    workspace = state.get("workspace")
     return {
+        # The tab an exported SVG came from (2.0.1); None for a front, a
+        # .gdraw member or an older file.
+        "workspace": workspace if workspace in _WORKSPACE_TYPES else None,
         "curves": curves,
         "dims":   dims,
         "calibration": Calibration(px_per_mm=px if px and px > 0 else None),
@@ -692,6 +718,8 @@ def load_svg(path: str) -> dict:
         "fill": block("fill"),   # None when absent (pre-0.9.8 files)
         "lens_fill": block("lens_fill"),   # None when absent (pre-1.2 files)
         "inlay_fill": block("inlay_fill"), # None when absent (pre-2.0 files)
+        "thermoform": block("thermoform"), # None when absent (pre-2.3 files)
+        "tip_bend": block("tip_bend"),     # None when absent (pre-2.3 files)
         "bevel": (
             BevelSpec(preset=(bev_d.get("preset") if isinstance(bev_d.get("preset"), str)
                               else "acetate"),

@@ -36,6 +36,14 @@ LAYER_NAMES    = {layer.value for layer in Layer}
 # Written for GuildModel to seed a new project's blank (Road to 2.0, item 3);
 # pinned here before its reader takes them, so the names are settled.
 GUIDE_KEYS     = {"width_mm", "height_mm"}
+# The front's forming and a temple's tip bend (Road to 2.3, research §7.2):
+# the first four forming keys are GuildModel's own `FormingMetadata` names,
+# so its reader takes them as the default for its forming; pinned here before
+# that reader exists, as the guide sizes were.
+THERMOFORM_KEYS = {"base_curve", "base_radius_mm", "face_form_wrap_deg",
+                   "bridge_projection_mm", "press_preset", "radius_rule",
+                   "sheet_thickness_mm", "neutral_fraction"}
+TIP_BEND_KEYS   = {"length_to_bend_mm", "drop_angle_deg", "bend_radius_mm"}
 
 
 def _state(zf: zipfile.ZipFile, member: str) -> dict:
@@ -132,6 +140,25 @@ def test_text_stays_text_with_the_fields_guildmodel_engraves_from(written):
     # filled shape to GuildModel.
     eng = [c for c in temple["curves"] if c["layer"] == "ENGRAVING"]
     assert len(eng) == 1 and eng[0]["closed"] is True
+
+
+def test_the_front_carries_its_forming_and_each_temple_its_tip_bend(written):
+    """The 2.3 blocks, under the names GuildModel's reader will take; the
+    component tab, cut flat, carries neither."""
+    with zipfile.ZipFile(written) as zf:
+        states = {tab: _state(zf, f"{tab}.svg") for tab in TABS}
+    assert set(states["front"]["thermoform"]) == THERMOFORM_KEYS
+    for tab in ("temple_r", "temple_l"):
+        assert set(states[tab]["tip_bend"]) == TIP_BEND_KEYS
+        assert "thermoform" not in states[tab]
+    assert "thermoform" not in states["component"]
+    assert "tip_bend" not in states["component"]
+    assert "tip_bend" not in states["front"]
+    # Flat by default: GuildModel's defaults, so a design that never set its
+    # forming seeds nothing there.
+    tf = states["front"]["thermoform"]
+    assert (tf["base_curve"], tf["base_radius_mm"], tf["face_form_wrap_deg"],
+            tf["bridge_projection_mm"], tf["press_preset"]) == (0.0, 0.0, 0.0, 0.0, "")
 
 
 def test_every_workspace_carries_its_guide_sizes(win, written):

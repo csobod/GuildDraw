@@ -6,11 +6,16 @@ from PySide6.QtWidgets import QLabel
 from ..document import Curve, Layer, MIRRORED_LAYERS, SplineNode
 from ..canvas.items import build_path
 from ..geometry import mirror_curve, compute_catmull_handles, drop_end_handles
-from ..typed import typed_char
+from ..typed import parse_typed, typed_char
 
 # Layers that show a live mirror ghost while drawing — the scene's set plus
 # OUTLINE (an open half being drawn against the axis ghosts its other half).
 _MIRROR_GHOST_LAYERS = MIRRORED_LAYERS | {Layer.OUTLINE}
+
+# The digits a typed length takes: str.isdigit() also says yes to "²" (a
+# plain key on an AZERTY keyboard) and to other scripts' digits, which went
+# into the buffer, did not parse, and Enter then ended the curve.
+_DIGITS = "0123456789"
 
 
 class _LengthHud(QLabel):
@@ -51,6 +56,7 @@ class DrawTool(QObject):
     status_message = Signal(str)
 
     _CLOSE_PX = 12  # screen-pixel radius to snap-close a path
+    _FOLD_PX = 5    # a double-click this near the last node is on it (Qt's own reach)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -134,6 +140,7 @@ class DrawTool(QObject):
                      constrain: bool = False) -> bool:
         if not self.active:
             return False
+        self._press_added = False
         if self._snap:
             pos = self._snap.snap(pos, self._nodes, self._view, use_snap)
         if constrain and self._nodes:
@@ -146,8 +153,15 @@ class DrawTool(QObject):
             # Two nodes enclose nothing: the closed result had no area.
             self.status_message.emit(
                 "A closed curve needs three nodes or more: place another first")
+        elif self._on_last_node(pos):
+            # A second node here is a zero-length segment. A double-click
+            # ends the curve (handle_dbl_click); two slow clicks are told how.
+            self.status_message.emit(
+                "A node is already here: double-click or press Enter to "
+                "finish the curve")
         else:
             self._nodes.append(SplineNode(x=pos.x(), y=pos.y()))
+            self._press_added = True
             self._clear_constraints()
             self._repaint(pos)
         return True
@@ -173,19 +187,38 @@ class DrawTool(QObject):
         # Qt delivers press, release, DOUBLE-CLICK: the press already placed
         # the node under the cursor, and that node is the intended end of the
         # curve. Only a double-click ON the previous node (its press added a
-        # duplicate) has one to fold away.
-        if len(self._nodes) >= 2 and self._same_screen_point(
-                self._nodes[-1], self._nodes[-2]):
+        # duplicate) has one to fold away; a press refused as a zero-length
+        # segment (2.0.1) added nothing, and popping then dropped a real
+        # node, or canceled a two-node curve (the 2.3 canvas review).
+        # "On" is a double-click's own reach, not the close-a-path radius:
+        # at 12 px a last node placed 9 px on (a millimeter at working zoom,
+        # 3 mm zoomed out) was dropped as a duplicate, unsaid (the 2.3 sweep).
+        if (getattr(self, "_press_added", False) and len(self._nodes) >= 2
+                and self._same_screen_point(self._nodes[-1], self._nodes[-2],
+                                            self._FOLD_PX)):
             self._nodes.pop()
+        self._press_added = False
         self._finish(closed=False)
         return True
 
-    def _same_screen_point(self, a: SplineNode, b: SplineNode) -> bool:
+    # Below any cutter's resolution: a node this close to the last one is a
+    # zero-length segment, which the validator passes and the DXF carries.
+    _MIN_SEGMENT_MM = 0.01
+
+    def _on_last_node(self, pos: QPointF) -> bool:
+        if not self._nodes:
+            return False
+        last = self._nodes[-1]
+        return math.hypot(pos.x() - last.x, pos.y() - last.y) < self._MIN_SEGMENT_MM
+
+    def _same_screen_point(self, a: SplineNode, b: SplineNode,
+                           within_px: float | None = None) -> bool:
         if not self._view:
             return abs(a.x - b.x) < 1e-6 and abs(a.y - b.y) < 1e-6
         pa = self._view.mapFromScene(QPointF(a.x, a.y))
         pb = self._view.mapFromScene(QPointF(b.x, b.y))
-        return math.hypot(pa.x() - pb.x(), pa.y() - pb.y()) < self._CLOSE_PX
+        return (math.hypot(pa.x() - pb.x(), pa.y() - pb.y())
+                < (self._CLOSE_PX if within_px is None else within_px))
 
     def handle_key(self, key, text: str = "") -> bool:
         if not self.active:
@@ -202,7 +235,7 @@ class DrawTool(QObject):
         # and the line went the mirrored way.
         ch = typed_char(text)
         if self._nodes and ch and (
-                ch.isdigit() or ch == '.'
+                ch in _DIGITS or ch == '.'
                 or (ch == '-' and self._active_field == "angle"
                     and not self._angle_input)):
             if self._active_field == "length":
@@ -236,6 +269,11 @@ class DrawTool(QObject):
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if self._nodes and (self._locked_len is not None or self._locked_angle is not None):
                 pos = self._apply_polar_constraints(self._last_cursor, self._nodes[-1])
+                if self._on_last_node(pos):
+                    self.status_message.emit(
+                        "That length puts the node on the last one: type a "
+                        "length above 0")
+                    return True
                 self._nodes.append(SplineNode(x=pos.x(), y=pos.y()))
                 self._clear_constraints()
                 self._repaint(self._last_cursor)
@@ -295,7 +333,7 @@ class DrawTool(QObject):
 
     def _update_locked_len(self):
         try:
-            v = float(self._len_input) if self._len_input else None
+            v = parse_typed(self._len_input) if self._len_input else None
             self._locked_len = v if (v is not None and v > 0) else None
         except ValueError:
             self._locked_len = None

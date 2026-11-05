@@ -9,10 +9,17 @@ Each curve is traced once per validate() call (a straight line at its
 vertices, anything else sampled), and cheap bounds tests come before every
 costly comparison: the Ghost checks compared every pair of curves at 16
 points a segment, and a dense drawing took seconds per edit (the 2.0 bug
-hunt).
+hunt). The bounds are searched, not scanned: each rule still compared every
+pair of curves or contours on a layer, and a large import froze the window
+for seconds to minutes after every edit (2.0.1; see _Boxes).
 """
 import contextvars
 import math
+
+import numpy as np
+import shapely
+from shapely.geometry import LineString, Polygon
+
 from ..document import Curve, Layer, MACHINED_LAYERS
 
 
@@ -46,6 +53,11 @@ _GHOST_CHECKED = {
 # so no id is reused while the call runs.
 _TRACES: contextvars.ContextVar = contextvars.ContextVar("_TRACES", default=None)
 
+# The rings of open pieces of one validate() call (_closed_chains), by the
+# ids of the pieces asked about: the check per layer and the OUTLINE's
+# contours ask for the OUTLINE's alike, two or three times a call.
+_CHAINS: contextvars.ContextVar = contextvars.ContextVar("_CHAINS", default=None)
+
 
 class _Trace:
     """One curve as drawn: its points, its bounds, and (lazily) its line and
@@ -68,7 +80,6 @@ class _Trace:
     @property
     def line(self):
         if self._line is None and len(self.pts) >= 2:
-            from shapely.geometry import LineString
             self._line = LineString(self.pts)
         return self._line
 
@@ -119,6 +130,43 @@ def _meet(a, b) -> bool:
     return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
 
 
+# Below this many bounds a scan costs less than building a tree.
+_TREE_MIN = 48
+
+
+class _Boxes:
+    """Bounds to search: which of them meet a box. Every rule compared each
+    curve or contour with every other on its layer, and an import of 2000
+    small closed curves onto OUTLINE froze the window for 21 s after every
+    edit (2.0.1). An STRtree finds the few that can meet; a handful are
+    scanned. Bounds that are None meet nothing, and ones that are not finite
+    are always looked at, as the scan looked at them."""
+    __slots__ = ("boxes", "tree", "where", "loose")
+
+    def __init__(self, boxes: list):
+        self.boxes = boxes
+        self.tree = None
+        if len(boxes) < _TREE_MIN:
+            return
+        where, self.loose = [], []
+        for i, b in enumerate(boxes):
+            if b is not None:
+                (where if all(map(math.isfinite, b)) else self.loose).append(i)
+        self.where = np.asarray(where, dtype=np.intp)
+        b = np.asarray([boxes[i] for i in where], dtype=float).reshape(-1, 4)
+        self.tree = shapely.STRtree(shapely.box(b[:, 0], b[:, 1], b[:, 2], b[:, 3]))
+
+    def meeting(self, box) -> list:
+        """The indices of the bounds that meet *box*, in order."""
+        if self.tree is None or not all(map(math.isfinite, box)):
+            hits = range(len(self.boxes))
+        else:
+            hits = self.where[self.tree.query(shapely.box(*box))].tolist()
+            hits = sorted(hits + self.loose)
+        return [i for i in hits
+                if self.boxes[i] is not None and _meet(box, self.boxes[i])]
+
+
 def _endpoint_gap_mm(curve: Curve) -> float:
     """Distance in mm between the ends of an open curve as drawn (an arc's
     from its angles; its single node is the center)."""
@@ -139,23 +187,37 @@ def _outline_bodies(polys: list, lenses: list = ()) -> tuple[list, list, list]:
     to 2.0, item 9). A contour inside a body is a decorative opening (Hole1…),
     cut through. Every other contour is a stray, which GuildModel ignores: one
     inside a stray was counted an opening here, and GuildModel never cut it.
-    Degenerate contours never get here (see _area_polys)."""
-    def inside_another(p) -> bool:
-        return any(q is not p and q.area > p.area
-                   and q.contains(p.representative_point()) for q in polys)
+    Degenerate contours never get here (see _area_polys).
 
-    tops = [p for p in polys if not inside_another(p)]
+    A contour is tested only against those whose bounds hold its point, with
+    the areas and the points worked out once: each was tested against every
+    other, its area recomputed each time (2.0.1, see _Boxes)."""
+    areas = [p.area for p in polys]
+    points = [p.representative_point() for p in polys]
+    spots = [(pt.x, pt.y) * 2 for pt in points]       # each point as bounds
+    boxes = _Boxes([p.bounds for p in polys])
+
+    def inside_another(i: int) -> bool:
+        p = polys[i]
+        return any(polys[j] is not p and areas[j] > areas[i]
+                   and polys[j].contains(points[i]) for j in boxes.meeting(spots[i]))
+
+    tops = [i for i in range(len(polys)) if not inside_another(i)]
     if not tops:
         return [], [], list(polys)
-    largest = max(tops, key=lambda p: p.area)
-    bodies = [t for t in tops if t is largest or any(
-        t.contains(lens.representative_point()) for lens in lenses)]
+    largest = polys[max(tops, key=areas.__getitem__)]
+    lens_spots = [(lp, (lp.x, lp.y) * 2)
+                  for lp in (lens.representative_point() for lens in lenses)]
+    held = [i for i in tops if polys[i] is largest or any(
+        _meet(boxes.boxes[i], s) and polys[i].contains(lp) for lp, s in lens_spots)]
+    bodies = [polys[i] for i in held]
     holes, strays = [], []
-    for p in polys:
+    for i, p in enumerate(polys):
         if any(p is b for b in bodies):
             continue
-        inside_body = any(b.contains(p.representative_point()) for b in bodies)
-        if inside_body and p.area >= _MIN_HOLE_MM2:
+        inside_body = any(_meet(boxes.boxes[k], spots[i])
+                          and polys[k].contains(points[i]) for k in held)
+        if inside_body and areas[i] >= _MIN_HOLE_MM2:
             holes.append(p)
         elif not inside_body:
             strays.append(p)
@@ -175,41 +237,122 @@ def _closed_chains(curves: list) -> list[list]:
     """Open curves that meet end to end, within the closure tolerance, into
     closed rings: a rim drawn as a spline and a straight line, say. Each ring
     is the list of its pieces (two or more), in order; a curve in no ring is
-    left out."""
-    ends = {}
+    left out.
+
+    A walk starts at each piece in turn and steps on to the lowest-numbered
+    piece with an end at its tip, until it comes back to its start or stops.
+    Every piece started a walk, and each step measured the tip against every
+    end: an outline exploded into 899 pieces with one deleted took 297 s a
+    check, rerun after every edit (2.0.1). Now each end is measured once
+    against the ends around it on a grid, and a piece no ring can pass
+    through starts no walk and ends any walk that steps onto it (_bridges):
+    every piece of an outline with a gap is one. The rings found are the
+    same, in the same order."""
+    cache = _CHAINS.get()
+    key = tuple(map(id, curves))
+    if cache is not None and key in cache:
+        return cache[key]
+    idx, pts = [], []           # piece k: curves[idx[k]], ends pts[2k], pts[2k + 1]
     for i, c in enumerate(curves):
         e = _curve_ends(c)
         if e is not None:
-            ends[i] = e
+            idx.append(i)
+            pts += e
 
     def near(a, b) -> bool:
         return math.hypot(a[0] - b[0], a[1] - b[1]) <= _CLOSURE_TOL_MM
 
+    # The ends within the tolerance of each end, in order: an end is an
+    # even number for a piece's first, odd for its last, so a piece's first
+    # comes before its last, as the walk tried them. In cells twice the
+    # tolerance wide, every such end is in the 3 × 3 cells around.
+    size = 2.0 * _CLOSURE_TOL_MM
+    cells: dict = {}
+    for e, (x, y) in enumerate(pts):
+        if math.isfinite(x) and math.isfinite(y):   # a NaN or an inf meets nothing
+            cells.setdefault((math.floor(x / size), math.floor(y / size)), []).append(e)
+    meets: list = [()] * len(pts)
+    for (cx, cy), here in cells.items():
+        around = [f for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                  for f in cells.get((cx + dx, cy + dy), ())]
+        for e in here:
+            meets[e] = sorted(f for f in around if f != e and near(pts[e], pts[f]))
+
+    # Ends that meet, directly or through others, are one place, and each
+    # piece runs between two places; a ring runs place to place and back.
+    place = list(range(len(pts)))
+
+    def find(e: int) -> int:
+        while place[e] != e:
+            place[e] = place[place[e]]
+            e = place[e]
+        return e
+
+    for e, fs in enumerate(meets):
+        for f in fs:
+            place[find(e)] = find(f)
+    bridges = _bridges([(find(2 * k), find(2 * k + 1)) for k in range(len(idx))])
+
     used: set = set()
     chains = []
-    for i in ends:
-        if i in used:
+    for k in range(len(idx)):
+        if k in used or k in bridges:
             continue
-        start, tip = ends[i]
-        chain = [i]
-        while not near(tip, start):
-            step = None
-            for j, (a, b) in ends.items():
-                if j in used or j in chain:
-                    continue
-                if near(tip, a):
-                    step, tip = j, b
-                elif near(tip, b):
-                    step, tip = j, a
-                if step is not None:
-                    break
-            if step is None:
-                break
-            chain.append(step)
-        if len(chain) >= 2 and near(tip, start):
+        start, tip = pts[2 * k], 2 * k + 1
+        chain, walked = [k], {k}
+        while not near(pts[tip], start):
+            step = next((f for f in meets[tip]
+                         if f >> 1 not in used and f >> 1 not in walked), None)
+            if step is None or step >> 1 in bridges:
+                break               # a dead end, or a bridge: no way back
+            tip = step ^ 1          # on to the piece's other end
+            chain.append(step >> 1)
+            walked.add(step >> 1)
+        if len(chain) >= 2 and near(pts[tip], start):
             used.update(chain)
-            chains.append([curves[k] for k in chain])
+            chains.append([curves[idx[j]] for j in chain])
+    if cache is not None:
+        cache[key] = chains
     return chains
+
+
+def _bridges(edges: list) -> set:
+    """The edges no cycle passes through (bridges), by index, of a graph
+    given as *edges*, pairs of vertices; two edges may join the same pair,
+    and an edge from a vertex to itself is a cycle of its own. A ring of
+    pieces is a cycle of places, so a piece that is a bridge lies on none.
+    Tarjan's bridge-finding, without recursion."""
+    adj: dict = {}
+    for k, (u, v) in enumerate(edges):
+        adj.setdefault(u, []).append((v, k))
+        adj.setdefault(v, []).append((u, k))
+    order: dict = {}
+    low: dict = {}
+    out = set()
+    for root in adj:
+        if root in order:
+            continue
+        order[root] = low[root] = len(order)
+        stack = [(root, -1, iter(adj[root]))]
+        while stack:
+            v, via, todo = stack[-1]
+            for w, k in todo:
+                if k == via:
+                    continue        # the edge in, not a way back
+                if w in order:
+                    low[v] = min(low[v], order[w])
+                else:
+                    order[w] = low[w] = len(order)
+                    stack.append((w, k, iter(adj[w])))
+                    break
+            else:
+                stack.pop()
+                if stack:
+                    u = stack[-1][0]
+                    low[u] = min(low[u], low[v])
+                    if low[v] > order[u]:
+                        out.add(via)
+    return out
 
 
 def _chain_points(chain: list) -> list:
@@ -244,14 +387,12 @@ def _ring_poly(pts: list):
     crosses itself is repaired to the largest piece of what it encloses
     (``normalize.points_to_polygon``). None for fewer than three points or no
     area."""
-    from shapely import make_valid
-    from shapely.geometry import Polygon
     if len(pts) < 3:
         return None
     try:
         poly = Polygon(pts)
         if not poly.is_valid:
-            fixed = make_valid(poly)
+            fixed = shapely.make_valid(poly)
             parts = [g for g in getattr(fixed, "geoms", [fixed])
                      for g in getattr(g, "geoms", [g])
                      if g.geom_type == "Polygon" and g.area > 0]
@@ -352,7 +493,10 @@ def _inlay_checks(drawn: list, errors: list) -> None:
     step in the component pocket's floor; and two inlays nest (a step) or
     stay apart,
     since a partial overlap has no cut order. Errors, since GuildModel cannot
-    cut them as drawn. Only the curves drawn count: the Ghost is never cut."""
+    cut them as drawn. Only the curves drawn count: the Ghost is never cut.
+    Areas share nothing where their bounds do not meet, so only those that
+    meet are intersected: every seat was intersected with every other, and
+    with every aperture (2.0.1, see _Boxes)."""
     inlays = [c for c in drawn if c.layer == Layer.INLAY]
     if not inlays:
         return
@@ -369,25 +513,32 @@ def _inlay_checks(drawn: list, errors: list) -> None:
     apertures += [("a decorative opening (a closed OUTLINE curve inside "
                    "the profile)", p) for p in holes]
     components = layer_polys(Layer.COMPONENT)
+    at_seats = _Boxes([p.bounds for p in seats])
+    at_bodies = [(b, b.bounds) for b in bodies]
+    at_cuts = _Boxes([cut.bounds for _what, cut in apertures])
+    at_components = _Boxes([p.bounds for p in components])
 
     for i, seat in enumerate(seats, 1):
-        if bodies and not any(seat.intersection(b).area > _AREA_TOL_MM2
-                              for b in bodies):
+        box = at_seats.boxes[i - 1]
+        if bodies and not any(_meet(box, bb)
+                              and seat.intersection(b).area > _AREA_TOL_MM2
+                              for b, bb in at_bodies):
             errors.append(
                 f"INLAY {i} lies off the part; a seat cuts only where it meets "
                 "an OUTLINE body.")
-        for what, cut in apertures:
+        for k in at_cuts.meeting(box):
+            what, cut = apertures[k]
             if seat.intersection(cut).area > _AREA_TOL_MM2:
                 errors.append(f"INLAY {i} crosses {what}.")
                 break
-        if any(_crosses(seat, h) for h in components):
+        if any(_crosses(seat, components[k]) for k in at_components.meeting(box)):
             errors.append(
                 f"INLAY {i} crosses a COMPONENT curve; draw it inside the "
                 "component's outline for a step in the pocket's floor, or "
                 "beside it.")
     for i in range(len(seats)):
-        for j in range(i + 1, len(seats)):
-            if _crosses(seats[i], seats[j]):
+        for j in at_seats.meeting(at_seats.boxes[i]):
+            if j > i and _crosses(seats[i], seats[j]):
                 errors.append(
                     f"INLAY {i + 1} and INLAY {j + 1} overlap without nesting; "
                     "nest one inside the other for a step, or move them apart.")
@@ -415,11 +566,14 @@ def _outline_layer_check(outlines: list, errors: list, warnings: list,
     return bodies, holes, strays
 
 
-def _half_drawn(bodies: list, lens) -> bool:
-    """One lens in an outline drawn for two, GuildModel's
+def _half_drawn(bodies: list, lens, others: list = ()) -> bool:
+    """A lens with no partner in an outline drawn for two, GuildModel's
     ``regions.half_drawn_front``: the lens mirrored across the body's vertical
-    center line lands inside the body and clear of the lens. A monocle's rim
-    surrounds its lens, and the mirror image falls on the lens itself."""
+    center line lands inside the body, clear of the lens and of every other
+    lens (*others*). A monocle's rim surrounds its lens, and the mirror image
+    falls on the lens itself; a pair's mirror images fall on each other. Two
+    lenses on one eye (a redrawn lens left behind) leave the other eye with
+    none, and GuildModel cuts it solid (2.0.1)."""
     from shapely.affinity import scale
     if len(bodies) != 1:
         return False                      # separated rims: each holds its own lens
@@ -427,18 +581,21 @@ def _half_drawn(bodies: list, lens) -> bool:
     twin = scale(lens, xfact=-1.0, yfact=1.0, origin=(0.5 * (x0 + x1), 0.0))
     if twin.intersection(lens).area > 0.5 * lens.area:
         return False
+    if any(twin.intersection(o).area > 0.1 * lens.area for o in others):
+        return False
     return twin.difference(bodies[0]).area < 0.1 * lens.area
 
 
 def _lens_checks(bodies: list, holes: list, lenses: list, ghost_lens: bool,
-                 errors: list) -> None:
+                 errors: list, strays: list = ()) -> None:
     """A front's lenses against its bodies, as GuildModel's intake reads them
     (the 2.0 bug hunt): two lenses, or one for a monocle; a third is refused,
     not guessed at. One lens in an outline drawn for two is refused, since
     the other eye would be cut solid; *ghost_lens* says the Ghost check has
-    already said so. And a lens lies whole in a body and clear of its
-    decorative openings (*holes*), since only a lens the frame holds is cut:
-    GuildModel tests the body with its openings punched out."""
+    already said so. A rim drawn without its lens is refused, whether it is
+    a body or one of the *strays*. And a lens lies whole in a body and clear
+    of its decorative openings (*holes*), since only a lens the frame holds
+    is cut: GuildModel tests the body with its openings punched out."""
     if len(lenses) > 2:
         errors.append(
             f"A front holds two lenses, or one for a monocle; found "
@@ -450,6 +607,30 @@ def _lens_checks(bodies: list, holes: list, lenses: list, ghost_lens: bool,
         errors.append(
             "One lens in an outline drawn for two: GuildModel would cut the "
             "other eye solid. Draw the second lens, or Mirror (bake) this one.")
+    elif len(lenses) == 2 and not ghost_lens and any(
+            _half_drawn(bodies, lens, [o for o in lenses if o is not lens])
+            for lens in lenses):
+        errors.append(
+            "Both lenses are on one eye: GuildModel would cut the other eye "
+            "solid. Delete the extra lens, then draw the other eye's or Mirror "
+            "(bake) it.")
+    held = [b for b in bodies
+            if any(b.contains(lens.representative_point()) for lens in lenses)]
+    if held and len(lenses) <= 2 and not ghost_lens:
+        # Separated rims: each holds its own lens. A rim drawn without one
+        # was read green (2.0.1). It is a body when it is the larger of the
+        # two, and a stray when the two tie and it comes second, so both are
+        # counted: any contour as large as half a rim with a lens.
+        least = min(b.area for b in held)
+        empty = sum(1 for p in list(bodies) + list(strays)
+                    if p.area >= 0.5 * least and not any(
+                        p.contains(lens.representative_point()) for lens in lenses))
+        if empty:
+            errors.append(
+                f"{empty} rim{'s hold' if empty > 1 else ' holds'} no lens: "
+                "GuildModel would build the front without "
+                f"{'them' if empty > 1 else 'it'}, or not at all. Draw the "
+                "lens, or Mirror (bake) the other rim's.")
     from shapely.ops import unary_union
     held = unary_union(bodies).buffer(_HELD_TOL_MM)
     for i, lens in enumerate(lenses, 1):
@@ -495,6 +676,23 @@ def _beside_axis(bounds, horizontal: bool) -> bool:
     return hi < -_CLOSURE_TOL_MM or lo > _CLOSURE_TOL_MM
 
 
+def _hull_beside_axis(curve: Curve) -> bool:
+    """The scene's test for a closed OUTLINE it ghosts
+    (``scene._rim_beside_axis``): its nodes and handles, or a circle's or an
+    arc's disc, wholly to one side of x = 0, clear of it by the closure
+    tolerance. The traced bounds disagreed when a handle reached past the
+    axis and the curve did not: the canvas cast no ghost, and the validator
+    asked for a twin to be baked (2.0.1)."""
+    if curve.kind in ("circle", "arc") and curve.radius and curve.nodes:
+        cx = curve.nodes[0].x
+        xs = [cx - curve.radius, cx + curve.radius]
+    else:
+        xs = [n.x for n in curve.nodes]
+        xs += [h.x for n in curve.nodes for h in (n.cp_in, n.cp_out)
+               if h is not None]
+    return bool(xs) and (max(xs) < -_CLOSURE_TOL_MM or min(xs) > _CLOSURE_TOL_MM)
+
+
 def _same_area(a, b) -> bool:
     """True when two areas are one shape near enough: sizes within a factor
     of two, sharing more than a quarter of the smaller. The size test makes
@@ -510,7 +708,6 @@ def _stands_for(twin_pts: list, twin_poly, trace: _Trace) -> bool:
     that are one shape near enough (_same_area), or two lines within
     _TWIN_TOL_MM of each other everywhere. Loose on purpose: a second lens
     drawn by hand is the maker's own, and GuildModel cuts it."""
-    from shapely.geometry import LineString
     poly = trace.poly if twin_poly is not None else None
     if twin_poly is not None and poly is not None:
         return _same_area(twin_poly, poly)
@@ -526,8 +723,6 @@ def _all_within(pts: list, line, tol: float) -> bool:
     measured at most 600 places along it, never more than a fifth of *tol*
     apart (an exact Hausdorff distance between two dense traces took a
     second and a half per pair, and the fill paid it on every edit)."""
-    import numpy as np
-    import shapely
     a = np.asarray(pts, dtype=float)
     if len(a) == 0:
         return True
@@ -563,18 +758,25 @@ def _ghost_checks(drawn: list, workspace_type: str, bodies: list, holes: list,
     twin is the other separated rim, previewed until it is baked, and a
     decorative opening's (*holes*) is the other opening, which the fill
     punches and GuildModel never cuts; a stray is neither. Returns True when
-    a lens was reported, so the half-drawn rule does not say it again."""
+    a lens was reported, so the half-drawn rule does not say it again.
+
+    Each twin is compared only with the curves within its reach, the
+    openings and the parts its bounds meet: every twin was compared with
+    every curve on its layer, and 1000 SCULPT lines took 1.4 s a check with
+    the Ghost on (2.0.1, see _Boxes)."""
     from shapely.affinity import scale
-    from shapely.geometry import LineString
     checked = _GHOST_CHECKED.get(workspace_type, set())
     horizontal = workspace_type in ("temple_r", "temple_l")
     by_layer: dict = {}
     for c in drawn:
         if c.layer in checked:
             by_layer.setdefault(c.layer, []).append(_trace(c))
+    at_holes = _Boxes([h.bounds for h in holes]) if Layer.OUTLINE in by_layer else None
+    at_parts = _Boxes([p.bounds for p in parts])
 
     lonely: dict[Layer, int] = {}
     for layer, traces in by_layer.items():
+        at_traces = _Boxes([d.bounds for d in traces])
         for t in traces:
             c = t.curve
             if t.bounds is None or len(t.pts) < 2:
@@ -582,8 +784,18 @@ def _ghost_checks(drawn: list, workspace_type: str, bodies: list, holes: list,
             kind = layer
             if layer == Layer.OUTLINE:
                 # The scene ghosts a closed OUTLINE beside a front's axis: a
-                # rim, or an opening; a stray is no part of the frame.
-                if horizontal or not c.closed or not _beside_axis(t.bounds, False):
+                # rim, or an opening; a stray is no part of the frame. A rim
+                # drawn open with its ends within the closure tolerance is
+                # closed as GuildModel reads it, and the canvas ghosts it as
+                # well: skipped here, it was green with one rim in the file.
+                closed = c.closed or _endpoint_gap_mm(c) <= _CLOSURE_TOL_MM
+                if horizontal or not closed:
+                    continue
+                # A closed one by the scene's own test, so this never asks to
+                # bake a twin the canvas does not show; an open one the scene
+                # ghosts whatever it is, and it is read as traced.
+                if not (_hull_beside_axis(c) if c.closed
+                        else _beside_axis(t.bounds, False)):
                     continue
 
                 def same(p, poly=t.poly):
@@ -591,9 +803,11 @@ def _ghost_checks(drawn: list, workspace_type: str, bodies: list, holes: list,
                             and p.contains(poly.representative_point()))
                 if t.poly is None:
                     continue
+                spot = t.poly.representative_point()
                 if any(same(b) for b in bodies):
                     kind = "rim"
-                elif any(same(h) for h in holes):
+                elif any(same(holes[k])
+                         for k in at_holes.meeting((spot.x, spot.y) * 2)):
                     kind = "opening"
                 else:
                     continue
@@ -604,13 +818,13 @@ def _ghost_checks(drawn: list, workspace_type: str, bodies: list, holes: list,
                              else scale(t.poly, -1.0, 1.0, origin=(0, 0)))
             twin_bounds = _mirror_bounds(t.bounds, horizontal)
             reach = _grown(twin_bounds, _TWIN_TOL_MM)
-            if any(_meet(reach, d.bounds) and _stands_for(twin_pts, twin_poly, d)
-                   for d in traces if d.bounds is not None):
+            if any(_stands_for(twin_pts, twin_poly, traces[k])
+                   for k in at_traces.meeting(reach)):
                 continue                  # drawn already (itself, when symmetric)
             if layer != Layer.OUTLINE and parts:
                 where = twin_poly if twin_poly is not None else LineString(twin_pts)
-                if not any(_meet(twin_bounds, p.bounds) and p.intersects(where)
-                           for p in parts):
+                if not any(parts[k].intersects(where)
+                           for k in at_parts.meeting(twin_bounds)):
                     continue
             lonely[kind] = lonely.get(kind, 0) + 1
 
@@ -647,14 +861,14 @@ def _ghost_checks(drawn: list, workspace_type: str, bodies: list, holes: list,
 
 def _traces_coincide(a: _Trace, b_pts: list, b_bounds) -> bool:
     """True when a trace and a point list lie one on the other, within
-    _COPY_TOL_MM everywhere: a copy, whichever way it runs."""
-    from shapely import hausdorff_distance
-    from shapely.geometry import LineString
+    _COPY_TOL_MM everywhere: a copy, whichever way it runs. Its imports were
+    made at each call, which PySide's import hook made a cost of its own
+    over the half million pairs of a dense layer (2.0.1)."""
     p, q = a.bounds, b_bounds
     if p is None or q is None or len(b_pts) < 2 or a.line is None:
         return False
     return (max(abs(p[k] - q[k]) for k in range(4)) <= _COPY_TOL_MM
-            and hausdorff_distance(a.line, LineString(b_pts), densify=0.25)
+            and shapely.hausdorff_distance(a.line, LineString(b_pts), densify=0.25)
             <= _COPY_TOL_MM)
 
 
@@ -694,9 +908,18 @@ def bake_skips(curve: Curve, twin: Curve, others: list,
 def _copy_checks(drawn: list, errors: list) -> None:
     """Two drawn curves of one layer that lie one on the other (a Mirror
     baked over a curve already there, a paste in place). GuildModel reads
-    each: two OUTLINEs read as separated rims, two pockets cut twice."""
+    each: two OUTLINEs read as separated rims, two pockets cut twice.
+
+    A copy's bounds lie within _COPY_TOL_MM of the curve's, so its center
+    does too, and the curves seen are kept by their centers on a grid of
+    cells twice that wide: each curve is compared with those in the 3 × 3
+    cells around its own. Every pair was compared, and 1000 SCULPT lines
+    took 1.3 s a check (2.0.1)."""
     layers = MACHINED_LAYERS | {Layer.SCULPT}
-    seen: dict[Layer, list] = {}
+    size = 2.0 * _COPY_TOL_MM
+    seen: dict[Layer, list] = {}        # every curve kept, by layer
+    cells: dict[Layer, dict] = {}       # the same, by the cell of its center
+    loose: dict[Layer, list] = {}       # those with bounds not finite
     copies: dict[Layer, int] = {}
     for c in drawn:
         if c.layer not in layers:
@@ -704,11 +927,25 @@ def _copy_checks(drawn: list, errors: list) -> None:
         t = _trace(c)
         if t.line is None:
             continue
-        if any(_traces_coincide(other, t.pts, t.bounds)
-               for other in seen.setdefault(c.layer, [])):
+        kept = seen.setdefault(c.layer, [])
+        grid = cells.setdefault(c.layer, {})
+        odd = loose.setdefault(c.layer, [])
+        x0, y0, x1, y1 = t.bounds
+        cx, cy = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+        if math.isfinite(cx) and math.isfinite(cy):
+            cell = (math.floor(cx / size), math.floor(cy / size))
+            near = [o for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                    for o in grid.get((cell[0] + dx, cell[1] + dy), ())] + odd
+        else:
+            cell, near = None, kept
+        if any(_traces_coincide(other, t.pts, t.bounds) for other in near):
             copies[c.layer] = copies.get(c.layer, 0) + 1
         else:
-            seen[c.layer].append(t)
+            kept.append(t)
+            if cell is None:
+                odd.append(t)
+            else:
+                grid.setdefault(cell, []).append(t)
     for layer, n in copies.items():
         errors.append(
             f"{n} {layer.value} curve{'s lie' if n > 1 else ' lies'} on top of "
@@ -723,7 +960,6 @@ def _shape_checks(drawn: list, errors: list) -> None:
     to the largest piece of what it encloses; one that encloses no area is
     dropped, and a lens, a pocket or a seat under GuildModel's least area
     with it."""
-    from shapely.geometry import Polygon
     layers = MACHINED_LAYERS | {Layer.SCULPT}
     for c in drawn:
         if c.layer not in layers:
@@ -794,9 +1030,11 @@ def validate(
       component — COMPONENT ≥1, no OUTLINE/LENS allowed
     """
     token = _TRACES.set({})
+    rings = _CHAINS.set({})
     try:
         return _validate(curves, mirror_on, workspace_type, stock_mm)
     finally:
+        _CHAINS.reset(rings)
         _TRACES.reset(token)
 
 
@@ -838,7 +1076,7 @@ def _validate(curves, mirror_on, workspace_type, stock_mm):
             errors.append(f"Need at least 1 LENS contour, found {len(lenses)}.")
         ghost_lens = (_ghost_checks(drawn, workspace_type, bodies, holes,
                                     bodies + strays, errors) if mirror_on else False)
-        _lens_checks(bodies, holes, lenses, ghost_lens, errors)
+        _lens_checks(bodies, holes, lenses, ghost_lens, errors, strays)
         _origin_checks(outlines, workspace_type, stock_mm, warnings)
         _inlay_checks(drawn, errors)
     elif workspace_type in ("temple_r", "temple_l"):
@@ -900,6 +1138,11 @@ def ghost_twins(drawn: list, candidates: list, axis_x: float = 0.0,
         by_layer: dict = {}
         for d in drawn:
             by_layer.setdefault(d.layer, []).append(_trace(d))
+        # The drawn curves a twin can meet, found by their bounds (_Boxes):
+        # every twin was tried against every drawn curve of its layer, and
+        # an outline of 20 000 pieces with the Ghost and the Frame Fill on
+        # took 21 s to reopen and as long after each edit (the 2.3 sweep).
+        at = {layer: _Boxes([d.bounds for d in ds]) for layer, ds in by_layer.items()}
         out = []
         for c in candidates:
             twin = mirror_curve(c, axis_x, horizontal=horizontal)
@@ -908,9 +1151,9 @@ def ghost_twins(drawn: list, candidates: list, axis_x: float = 0.0,
                 continue
             twin_poly = t.poly if _is_area(c) else None
             reach = _grown(t.bounds, _TWIN_TOL_MM)
-            if any(d.bounds is not None and _meet(reach, d.bounds)
-                   and _stands_for(t.pts, twin_poly, d)
-                   for d in by_layer.get(c.layer, [])):
+            ds = by_layer.get(c.layer, [])
+            if any(_stands_for(t.pts, twin_poly, ds[i])
+                   for i in (at[c.layer].meeting(reach) if ds else ())):
                 continue
             out.append(twin)
         return out

@@ -1,5 +1,6 @@
 import copy
 import dataclasses
+from dataclasses import fields, replace
 import datetime
 import json
 import math
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (
     QDialog, QCheckBox, QHBoxLayout, QInputDialog, QListWidget, QListWidgetItem,
     QScrollArea, QTabWidget, QLineEdit, QTreeWidget, QTreeWidgetItem,
     QColorDialog, QAbstractItemView, QRubberBand, QDialogButtonBox,
-    QSizePolicy,
+    QSizePolicy, QAbstractSpinBox,
 )
 from PySide6.QtCore import (
     Qt, QByteArray, QEvent, QObject, QPointF, QSize, QTimer, Signal, QRect, QRectF,
@@ -34,7 +35,7 @@ from . import theme
 from .canvas.items import CurveItem
 from .canvas.dim import DimItem
 from .canvas.measure_bar import MeasureBar
-from .canvas.obverse_badge import CanvasHint, ObverseBadge, QuietFaceLabel
+from .canvas.obverse_badge import CanvasHint, FormedBadge, ObverseBadge, QuietFaceLabel
 from .collapsible import CollapsibleBox
 from .canvas.readiness_dot import ReadinessDot, readiness_state
 from .canvas.scene import (FrameScene, TextItem, DEFAULT_LENS_FILL_TOP,
@@ -46,6 +47,8 @@ from .canvas.scene import (FrameScene, TextItem, DEFAULT_LENS_FILL_TOP,
 from .canvas.snapping import SnapEngine
 from .calibration import CalibTool
 from .construction import ConstructionGuides, BoxingGuide, RectGuide
+from .forming import (FormingSetup, NEUTRAL_RANGE, SHEET_THICKNESS_RANGE_MM,
+                      ThermoformParams, TipBendParams, TOOLING_INDEX_RANGE)
 from . import prefs as _prefs_mod
 from . import bpi_tints as _bpi_tints
 from . import image_links
@@ -60,7 +63,7 @@ from .tools.draw import DrawTool
 from .tools.edit import EditTool
 from .tools.dim import DimTool
 from .tools.circle import CircleTool
-from .tools.trim import TrimTool
+from .tools.trim import GROUPED_REFUSAL, TrimTool
 from .tools.fillet import FilletTool
 from .tools.split import SplitTool
 from .tools.offset import OffsetTool
@@ -74,6 +77,7 @@ from .icons import ICONS_DIR as _ICONS_DIR, make_icon as _make_icon
 
 # Color-bar size (px) inside the Lens Fill stop buttons.
 _LENS_SWATCH_PX = (64, 14)
+_MIN_LENS_MM = 10.0     # a locked lens is never resized below this A or B
 
 
 # Saved documents are ordinary files a maker can edit, share, or damage, and
@@ -95,6 +99,32 @@ def _num_or(value, fallback: float, lo: float, hi: float) -> float:
     if out != out or out in (float("inf"), float("-inf")):   # NaN / ±inf
         return fallback
     return max(lo, min(hi, out))
+
+
+def _restack_faces(shown: list, unshown: list) -> list:
+    """The photos a save writes, bottom first: the shown ones in the scene's
+    order, and each one not shown put back below the first shown one that
+    came after it in the file (FaceImage.order). A photo shown since the
+    file opened has no place in it and stays on top, as on the canvas."""
+    def place(fi):
+        return math.inf if fi.order is None else fi.order
+
+    rest = sorted(unshown, key=place)
+    out, j = [], 0
+    for fi in shown:
+        while j < len(rest) and place(rest[j]) < place(fi):
+            out.append(rest[j])
+            j += 1
+        out.append(fi)
+    return out + rest[j:]
+
+
+def _unfound_tip(path: str, what: str) -> str:
+    """The tooltip of a fill's image button while its file is not found on
+    this computer (WorkspaceState.fill_image_unfound)."""
+    return (f"{path}\nNot found on this computer, so the color shows. The "
+            f"design keeps its Image style: choose the {what} again, or clear "
+            "it to keep the color.")
 
 
 def _curves_bbox(curves, layers=None, x_lo=None, x_hi=None):
@@ -164,6 +194,7 @@ _TOOLBAR_SECTIONS = [
         ("stock",        "Stock Guide",             True),
         ("pad",          "Pad Guide",               True),
         ("obverse",      "View Obverse",            True),
+        ("formed",       "View Formed",             True),
     ]),
     ("Operations", [
         ("mirror",       "Mirror (Bake)",           True),
@@ -188,6 +219,8 @@ _WS_ONLY_ACTIONS = {
     # A front or a temple has two faces to see; a component is cut, and
     # drawn, from one side only.
     "obverse":     ("front", "temple_r", "temple_l"),
+    # A front is formed and a temple bent; a component is cut flat and stays so.
+    "formed":      ("front", "temple_r", "temple_l"),
     # ENGRAVING only exists in temple workspaces (WORKSPACE_LAYERS)
     "text":        ("temple_r", "temple_l"),
 }
@@ -239,6 +272,9 @@ _LAYER_TIPS = {
 # view is turned. A front is drawn facing the anterior, as its reference
 # photo is; a temple is drawn from the posterior, the skin side, so engraved
 # text reads naturally there.
+# View Formed (Road to 2.3): the tabs with something to form or bend.
+_FORMED_TABS = ("front", "temple_r", "temple_l")
+
 _OBVERSE_FACE = {"front": "posterior", "temple_r": "anterior",
                  "temple_l": "anterior"}
 # …and the face each tab is drawn from, for the quiet label of the default view.
@@ -249,6 +285,7 @@ _DEFAULT_FACE = {"front": "anterior", "temple_r": "posterior",
 # Preferences ▸ Hotkeys lists every one, and SettingsDialog._RESERVED_KEYS —
 # which refuses them as hotkeys — is built from this list.
 _FIXED_SHORTCUTS = [
+    ("Pan",         ("Space",)),
     ("New",         ("Ctrl+N",)),
     ("Open",        ("Ctrl+O",)),
     ("Save",        ("Ctrl+S",)),
@@ -275,7 +312,7 @@ _FIXED_SHORTCUTS = [
 # length, a Fillet radius): a hotkey on one fired mid-number — bound to "1",
 # typing a 15 mm length switched tools on the first digit.
 _TYPING_KEYS = frozenset([*"0123456789", ".", ",", "-", "Return", "Enter",
-                          "Tab", "Backtab"])
+                          "Tab", "Backtab", "Shift+Tab"])
 
 # Ordered hotkey action definitions used by SettingsDialog.
 # Tuple: (prefs_key, display_label)
@@ -297,6 +334,7 @@ _HOTKEY_ACTION_DEFS = [
     ("move_gizmo",   "Move gizmo"),
     ("join",         "Join curves"),
     ("obverse",      "View Obverse"),
+    ("formed",       "View Formed"),
     ("bookmark",     "Bookmark revision"),
     ("insert_square", "Insert □ (size notation)"),
 ]
@@ -379,7 +417,12 @@ def _is_guilddraw_svg(path: str) -> bool:
             head = f.read(1 << 16)
     except OSError:
         return False
-    return b"<metadata" in head and b'"curves"' in head
+    # GuildDraw's metadata is a JSON object, as svg_import.read_svg tests it.
+    # Inkscape writes a <metadata> of its own (RDF) into every file, and a
+    # layer named "curves" made a drawing to import read as a design that
+    # then failed to open (2.0.1).
+    return (re.search(rb"<metadata[^>]*>\s*\{", head) is not None
+            and b'"curves"' in head)
 
 
 def _sibling_tmp(path: str) -> str:
@@ -504,6 +547,31 @@ def _matches_key_event(seq, event) -> bool:
             == QKeySequence.SequenceMatch.ExactMatch)
 
 
+
+def _ys_left_of(curve, x_max: float, n_per_seg: int) -> list:
+    """The y of each sample_curve(curve, n_per_seg) point with x <= x_max,
+    sampling only the segments that can reach it: a Bézier lies inside its
+    control points. The temple's endpiece reading sampled every segment of
+    the outline on each drag tick, 129 ms for a 3000-node import."""
+    from .geometry import _bezier_eval, _n_segs, _seg_nodes, _seg_pts, sample_curve
+    if curve.kind not in ("spline", "line") or len(curve.nodes) < 2:
+        return [y for x, y, _t in sample_curve(curve, n_per_seg) if x <= x_max]
+    ys = []
+    for i in range(_n_segs(curve)):
+        a, b = _seg_nodes(curve, i)
+        pts = _seg_pts(a, b) if curve.kind == "spline" else ((a.x, a.y), (b.x, b.y))
+        if min(p[0] for p in pts) > x_max:
+            continue
+        for j in range(n_per_seg + 1):
+            t = j / n_per_seg
+            if curve.kind == "spline":
+                x, y = _bezier_eval(*pts, t)
+            else:
+                x, y = a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t
+            if x <= x_max:
+                ys.append(y)
+    return ys
+
 class CanvasView(QGraphicsView):
     """QGraphicsView: wheel-zoom, pan (middle- or right-drag, or Space with
     the left button), tool event routing."""
@@ -517,6 +585,11 @@ class CanvasView(QGraphicsView):
     def __init__(self, scene: FrameScene, status_bar: QStatusBar):
         super().__init__(scene)
         self._status_bar = status_bar
+        # A QGraphicsView takes drops by default, and nothing in the scene
+        # accepts one, so a file dropped on the drawing was refused before
+        # it reached the window's drop-to-open (B29) (2.0.1).
+        self.setAcceptDrops(False)
+        self.viewport().setAcceptDrops(False)
         # The pointer's coordinates have a field of their own (MainWindow's
         # "coordsLabel"): written as the bar's message they replaced every
         # tool's prompt on the first mouse move.
@@ -581,6 +654,8 @@ class CanvasView(QGraphicsView):
         # quiet label names the face in the default view, in the same corner.
         self.obverse_badge = ObverseBadge(self)
         self.face_label = QuietFaceLabel(self)
+        # View Formed's chip, right of the face word (Road to 2.3).
+        self.formed_badge = FormedBadge(self)
         self.empty_hint = CanvasHint(self)
         self._default_face = ""
 
@@ -771,6 +846,7 @@ class CanvasView(QGraphicsView):
         self._reposition_measure_bar()
         self.obverse_badge.reposition()
         self.face_label.reposition()
+        self.formed_badge.reposition()
         self.empty_hint.reposition()
         self._ensure_scroll_room()
 
@@ -856,11 +932,23 @@ class CanvasView(QGraphicsView):
         self.face_label.setVisible(show)
         if show:
             self.face_label.reposition()
+        if self.formed_badge.isVisible():
+            self.formed_badge.reposition()      # the face word's width changed
+
+    def set_formed(self, on: bool):
+        """View Formed's chip (Road to 2.3); the scene paints the overlay."""
+        self.formed_badge.setVisible(on)
+        if on:
+            self.formed_badge.reposition()
+
+    def is_formed(self) -> bool:
+        return self.formed_badge.isVisible()
 
     def refresh_face_marks(self):
         """The badge's and the quiet label's colors, after a theme change."""
         self.obverse_badge.refresh_theme()
         self.face_label.refresh_theme()
+        self.formed_badge.refresh_theme()
         self.empty_hint.refresh_theme()
 
     def set_empty_hint(self, text: str | None):
@@ -1020,7 +1108,15 @@ class CanvasView(QGraphicsView):
                         if isinstance(it, (CurveItem, DimItem, TextItem))
                     ]
                     self._drag_move_start = scene_pos
-                    super().mousePressEvent(event)
+                    # Qt's own hit test wants the pointer on the stroke. A
+                    # press within the pick box but off it read as empty
+                    # space and cleared the selection, so at low zoom every
+                    # second click beside a selected curve deselected it.
+                    if any(isinstance(it, (CurveItem, TextItem))
+                           and it.isSelected() for it in self.items(vp_pos)):
+                        super().mousePressEvent(event)
+                    else:
+                        event.accept()
                 elif top_item is None or isinstance(top_item, (CurveItem, TextItem)):
                     # Empty space or an UNSELECTED curve/text → manual
                     # rubber-band (drag) or click-select (no drag). We take
@@ -1255,19 +1351,51 @@ class CanvasView(QGraphicsView):
                 miss_px = (it.hit_distance(self.mapToScene(vp_pos))
                            * self.zoom())
                 if miss_px > self._PICK_PX:
-                    for near in self._items_near(vp_pos):
-                        if isinstance(near, (CurveItem, TextItem)):
-                            return near
+                    near = self._near_pick(vp_pos)
+                    if near is not None:
+                        return near
                 return it
             if (flags & it.GraphicsItemFlag.ItemIgnoresTransformations
                     or flags & it.GraphicsItemFlag.ItemIsMovable):
                 # Screen-sized chrome (node/handle dots, gizmo arrows) or an
                 # unlocked face photo: each runs its own press handling.
                 return it
-        for it in self._items_near(vp_pos):
-            if isinstance(it, (CurveItem, TextItem)):
-                return it
-        return None
+        return self._near_pick(vp_pos)
+
+    # The farthest a curve may miss the cursor and still be picked, screen
+    # px: the pick box's half-diagonal and a little. A curve's own hit stroke
+    # is 2 mm, which at 30 px/mm let a click 27 px beside it select it.
+    _PICK_MISS_PX = 7.0
+
+    def _curve_miss_px(self, it, scene_pos) -> float:
+        """How far the cursor misses *it*, screen px: along a curve, or 0
+        inside a text's box."""
+        if isinstance(it, CurveItem):
+            from .geometry import point_at_t, t_nearest
+            try:
+                x, y = point_at_t(it.curve, t_nearest(it.curve, scene_pos.x(), scene_pos.y()))
+            except Exception:                       # noqa: BLE001 (a degenerate curve)
+                return 0.0
+            return math.hypot(x - scene_pos.x(), y - scene_pos.y()) * self.zoom()
+        return 0.0 if it.sceneBoundingRect().contains(scene_pos) else self._PICK_MISS_PX
+
+    def _near_pick(self, vp_pos):
+        """The curve or text nearest the cursor, in screen pixels, among
+        those in the pick box that can be selected, else among all of them.
+        The topmost in the box was taken before, so beside two close lines
+        the later-drawn one took every click (the 2.3 canvas review); a
+        curve on a locked layer drawn later sat on top likewise (2.0.1)."""
+        near = [it for it in self._items_near(vp_pos)
+                if isinstance(it, (CurveItem, TextItem))]
+        if not near:
+            return None
+        sp = self.mapToScene(vp_pos)
+        misses = {id(it): self._curve_miss_px(it, sp) for it in near}
+        within = [it for it in near if misses[id(it)] <= self._PICK_MISS_PX]
+        if not within:
+            return None
+        pool = [it for it in within if self._rb_selectable(it)] or within
+        return min(pool, key=lambda it: misses[id(it)])     # ties keep the topmost
 
     def _finish_rubber_band(self):
         """Resolve a manual rubber-band press: box-select on drag, click-select
@@ -1471,10 +1599,18 @@ class WorkspaceState:
         self.fill_style:     str   = "color"      # "color" | "image" (v1.2)
         self.fill_image:     str   = ""           # material swatch, kept even
                                                   # while the color is showing
+        # The Image style asked for while its swatch is not found on this
+        # computer: the combo and the canvas show the color, and a save keeps
+        # Image (2.0.1: it saved Color, and the swatch never came back).
+        self.fill_image_unfound: bool = False
         self.lens_fill_visible: bool  = False     # lens tint overlay (v1.2)
         self.lens_fill_top:     str   = DEFAULT_LENS_FILL_TOP
         self.lens_fill_bottom:  str   = DEFAULT_LENS_FILL_BOTTOM
         self.lens_fill_linked:  bool  = False     # both stops held equal (flat tint)
+        # The bottom stop a link set aside, given back on unlink. Session
+        # state: reset_session_state drops it, or a later document's unlink
+        # took the earlier one's color.
+        self.lens_fill_bottom_kept: str | None = None
         self.lens_fill_opacity: float = DEFAULT_LENS_FILL_OPACITY
         self.lens_fill_intensity: float = DEFAULT_LENS_FILL_INTENSITY
         # Inlay fill overlay (2.0): the front's and each temple's own.
@@ -1483,8 +1619,14 @@ class WorkspaceState:
         self.inlay_fill_opacity: float = DEFAULT_INLAY_FILL_OPACITY
         self.inlay_fill_style:   str   = "color"   # "color" | "image"
         self.inlay_fill_image:   str   = ""        # kept while the color shows
+        self.inlay_fill_image_unfound: bool = False   # see fill_image_unfound
         self.inlay_fill_tumble:  bool  = False     # turn each body's copy
         self.obverse:        bool  = False       # View Obverse: the view only
+        self.formed_view:    bool  = False       # View Formed: the view only
+        # The front's forming and a temple's tip bend (Road to 2.3), saved
+        # with the design; each tab's Forming group writes them at once.
+        self.thermoform = ThermoformParams()
+        self.tip_bend = TipBendParams()
         # The Canvas tab's selected row: a shown photo's scene index, or past
         # them one of unshown_faces.
         self.selected_face_idx: int       = -1
@@ -1549,6 +1691,16 @@ class WorkspaceState:
     def face_image_paths(self) -> list[str]:
         """The shown photos' files, in the scene's order."""
         return [self.scene.face_path(i) for i in range(self.scene.face_count())]
+
+    @property
+    def fill_style_saved(self) -> str:
+        """The Frame Fill style a save writes (see fill_image_unfound)."""
+        return "image" if self.fill_image_unfound else self.fill_style
+
+    @property
+    def inlay_fill_style_saved(self) -> str:
+        """The Inlay Fill style a save writes."""
+        return "image" if self.inlay_fill_image_unfound else self.inlay_fill_style
 
     def add_curve(self, curve):
         """Append to the document and the scene; returns the CurveItem."""
@@ -1633,11 +1785,14 @@ class WorkspaceState:
         self.outline_locked = False
         self.boxing_chain   = False
         self.boxing_visible_pre_snap = None
+        self.lens_fill_bottom_kept = None
         self.boxing_guide.set_locked(False)
         self.bevel_preset = "acetate"
         self.bevel_depth  = BEVEL_PRESETS["acetate"]
         self.bridge_angle  = ConstructionGuides.DEFAULT_BRIDGE_ANGLE_DEG
         self.apical_radius = ConstructionGuides.DEFAULT_APICAL_RADIUS_MM
+        self.thermoform = ThermoformParams()        # flat, as a file without the block
+        self.tip_bend = TipBendParams()
         self.active_layer  = WORKSPACE_LAYERS[self.workspace_type][0]
 
     def restore_snapshot(self, snapshot: dict):
@@ -2034,6 +2189,39 @@ class SettingsDialog(QDialog):
         size_grid.setColumnStretch(3, 1)
         gen_lay.addWidget(size_box)
 
+        # The shop's press and sheet, which no design has a field for.
+        setup = FormingSetup.from_prefs(prefs.get("forming"))
+        forming_box  = QGroupBox("Forming")
+        forming_form = QFormLayout(forming_box)
+        self._tooling_index_spin = _spinbox(
+            *TOOLING_INDEX_RANGE, 0.01, setup.tooling_index, suffix="", decimals=3)
+        self._tooling_index_spin.setToolTip(
+            "The index that turns a base curve in diopters into a radius: the "
+            "radius in mm is (index − 1) × 1000 ÷ the base curve. 1.53 is the "
+            "historical standard, 530 ÷ the base curve, and GuildModel and lab "
+            "data use it. Older European lens clocks read 1.523. A preset "
+            "keeps its die's own radius.")
+        forming_form.addRow("Tooling index:", self._tooling_index_spin)
+        self._sheet_spin = _spinbox(
+            *SHEET_THICKNESS_RANGE_MM, 0.5, setup.sheet_thickness_mm)
+        self._sheet_spin.setToolTip(
+            "How thick the sheet is before it is pressed. It places the "
+            "neutral surface, below, and sets when a bend is too tight for "
+            "the sheet.")
+        forming_form.addRow("Sheet thickness:", self._sheet_spin)
+        self._neutral_spin = _spinbox(
+            *NEUTRAL_RANGE, 0.05, setup.neutral_fraction, suffix="", decimals=2)
+        self._neutral_spin.setToolTip(
+            "When a sheet bends, one face stretches and the other compresses. "
+            "Between them is a layer that keeps its length: the neutral "
+            "surface. This says where it lies: 0 is the front face, 0.5 the "
+            "middle of the sheet, 1 the back face.")
+        forming_form.addRow("Neutral surface:", self._neutral_spin)
+        forming_form.addRow(self._hint(
+            "Every design uses these. Saving a design writes them into it for "
+            "GuildModel."))
+        gen_lay.addWidget(forming_box)
+
         lens_box  = QGroupBox("Lens Fill")
         lens_form = QFormLayout(lens_box)
         self._lens_opacity_spin = _spinbox(
@@ -2083,6 +2271,12 @@ class SettingsDialog(QDialog):
             "Asked when the paperclip on the Canvas tab stores an image: the "
             "design file then carries it to every computer that opens it.")
         prompt_form.addRow(self._prompt_store_chk)
+        self._prompt_flatten_chk = QCheckBox("Explain Flatten Lens Shape")
+        self._prompt_flatten_chk.setChecked(bool(prefs.get("prompt_flatten_lens", True)))
+        self._prompt_flatten_chk.setToolTip(
+            "Asked when the Forming group's button replaces the drawn lenses "
+            "with their flattened shapes.")
+        prompt_form.addRow(self._prompt_flatten_chk)
         gen_lay.addWidget(prompt_box)
 
         # The copies of stored images unpacked from opened designs. Cleared
@@ -2179,7 +2373,9 @@ class SettingsDialog(QDialog):
         vig_lay.setSpacing(8)
         self._vignette_slider = QSlider(Qt.Orientation.Horizontal)
         self._vignette_slider.setRange(0, 100)
-        self._vignette_slider.setValue(int(vp.get("vignette", 0)))
+        # Held to the slider's range before it is set: a hand-edited 1e15
+        # overflowed setValue and Preferences did not open.
+        self._vignette_slider.setValue(int(max(0, min(100, vp.get("vignette", 0)))))
         self._vignette_slider.setToolTip(
             "Darkens the edges of the canvas to focus the eye. Display only; "
             "never printed or exported.")
@@ -2270,10 +2466,14 @@ class SettingsDialog(QDialog):
 
         # Only layer.* overrides are edited here; _collect_theme preserves
         # any other tokens already present in the prefs["theme"] dicts.
-        base_theme = prefs.get("theme") or {}
+        base_theme = prefs.get("theme")
+        base_theme = base_theme if isinstance(base_theme, dict) else {}
+        # As theme.set_overrides tolerates: a mode that is not a mapping in a
+        # hand-edited file read as an int, and Preferences could not open.
         self._base_theme = {
-            "light": dict(base_theme.get("light") or {}),
-            "dark":  dict(base_theme.get("dark") or {}),
+            mode: dict(base_theme.get(mode))
+            if isinstance(base_theme.get(mode), dict) else {}
+            for mode in ("light", "dark")
         }
         self._layer_over = {
             mode: {tok: v for tok, v in self._base_theme[mode].items()
@@ -2869,6 +3069,12 @@ class SettingsDialog(QDialog):
             "inlay_fill_color":       self._inlay_default_color,
             "inlay_fill_opacity_pct": int(self._inlay_opacity_spin.value()),
             "prompt_store_image":   self._prompt_store_chk.isChecked(),
+            "prompt_flatten_lens":  self._prompt_flatten_chk.isChecked(),
+            "forming": {
+                "tooling_index":      self._tooling_index_spin.value(),
+                "sheet_thickness_mm": self._sheet_spin.value(),
+                "neutral_fraction":   self._neutral_spin.value(),
+            },
             "toolbar":              toolbar,
             "hotkeys":              hotkeys,
             "catalog_pdf": {
@@ -3171,7 +3377,7 @@ class MainWindow(QMainWindow):
         # resolve to _workspaces[0] (Frame Front) since the tab widget starts at 0.
 
         # Connect the calib tool for each workspace
-        _vign = int(_vp_prefs.get("vignette", 0))
+        _vign = int(max(0, min(100, _vp_prefs.get("vignette", 0))))
         for ws in self._workspaces:
             ws.view.set_vignette(_vign)
             ws.view.set_calib_tool(ws.calib_tool)
@@ -3246,6 +3452,7 @@ class MainWindow(QMainWindow):
             "move_gizmo":   self._toggle_move_gizmo,
             "join":         self._act_join.trigger,
             "obverse":      self._act_obverse.trigger,
+            "formed":       self._act_formed.trigger,
             "bookmark":     self._add_bookmark,
             "insert_square": self._insert_square_char,
         }
@@ -3280,6 +3487,7 @@ class MainWindow(QMainWindow):
         self._act_snap_palette.toggled.connect(self._toggle_snap_palette)
 
         self._act_obverse.toggled.connect(self._on_obverse_toggled)
+        self._act_formed.toggled.connect(self._on_formed_toggled)
 
         # ── Grid overlay (global) ─────────────────────────────────────────
         self._act_grid.blockSignals(True)
@@ -3457,13 +3665,15 @@ class MainWindow(QMainWindow):
         # Undo/redo keyboard shortcuts (window-scope)
         from PySide6.QtGui import QShortcut, QKeySequence
         QShortcut(QKeySequence("Ctrl+Z"), self).activated.connect(self._handle_undo)
-        QShortcut(QKeySequence("Ctrl+Y"), self).activated.connect(self._redo)
-        QShortcut(QKeySequence("Ctrl+Shift+Z"), self).activated.connect(self._redo)
-        QShortcut(QKeySequence("Ctrl+G"), self).activated.connect(self._group_selected)
-        QShortcut(QKeySequence("Ctrl+Shift+G"), self).activated.connect(self._ungroup_selected)
-        # Clipboard/select/transform shortcuts go through the focus guard so
-        # they stay inert while a HUD text field has focus.
-        for seq, target in [("Ctrl+C", self._copy_selected),
+        # Redo, group, clipboard, select and transform go through the focus
+        # guard so they stay inert while a text field has focus. Ctrl+Y is a
+        # line edit's own Redo only on Windows: elsewhere it redid the
+        # drawing mid-typing, and Ctrl+G grouped the selection (2.0.1).
+        for seq, target in [("Ctrl+Y", self._redo),
+                            ("Ctrl+Shift+Z", self._redo),
+                            ("Ctrl+G", self._group_selected),
+                            ("Ctrl+Shift+G", self._ungroup_selected),
+                            ("Ctrl+C", self._copy_selected),
                             ("Ctrl+V", self._paste),
                             ("Ctrl+D", self._duplicate_selected),
                             ("Ctrl+A", self._select_all),
@@ -3706,6 +3916,16 @@ class MainWindow(QMainWindow):
             "temple from the posterior, the skin side, so engraved text reads.\n"
             "The badge in the canvas corner names the face toward you. A view\n"
             "only: snapping, the file and every export keep the drawing as drawn.")
+        self._act_formed = QAction("View\nFormed", self, checkable=True,
+                                   checked=False)
+        self._act_formed.setToolTip(
+            "View Formed: see the front head-on as it will look after the press\n"
+            "(the Forming group on the Guides tab sets the base curve, the face\n"
+            "form and the bridge projection), or a temple with its tip bend (the\n"
+            "same group on a temple's tab). The flat drawing shows faintly\n"
+            "underneath. A view only: every tool, the file and every export keep\n"
+            "the drawing as drawn, but for the PNG, which is the canvas as seen,\n"
+            "and the OMA trace, which describes the formed lens.")
         tb.addAction(self._act_mirror)
         tb.addAction(self._act_guides)
         tb.addAction(self._act_snap)
@@ -3716,6 +3936,7 @@ class MainWindow(QMainWindow):
         tb.addAction(self._act_stock)
         tb.addAction(self._act_pad)
         tb.addAction(self._act_obverse)
+        tb.addAction(self._act_formed)
 
         tb.addSeparator()
 
@@ -3830,6 +4051,7 @@ class MainWindow(QMainWindow):
             "stock":        self._act_stock,
             "pad":          self._act_pad,
             "obverse":      self._act_obverse,
+            "formed":       self._act_formed,
             "mirror":       self._act_dup_mirror,
             "mirror_close": self._act_mirror_close,
             "copy_temple":  self._act_copy_temple,
@@ -3980,6 +4202,103 @@ class MainWindow(QMainWindow):
         curve_lay.addWidget(meas_temple_box)
         self._meas_temple_box = meas_temple_box
 
+        # ── Measurements: Formed (Road to 2.3) ───────────────────────────
+        meas_formed_box = self._fold_box("Formed Measurements",
+                                         key="Measurements · formed")
+        meas_formed_lay = QVBoxLayout(meas_formed_box.body)
+        meas_formed_lay.setSpacing(6)       # the style's margins, as the forms have
+        # A table, flat against formed: one column per way of measuring.
+        # Head-on is what the maker asked to see; the lens plane is where
+        # ISO 8624 measures and what a drawing carries; 3D is the groove
+        # length labs size by; flat is the drawing, as cut. The finished
+        # lens at the groove line, 1.5 mm behind the front (GuildModel's
+        # groove), is what is measured.
+        grid_w = QWidget()
+        grid = QGridLayout(grid_w)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(4)
+        self._fm_cols = ("head_on", "plane", "d3", "flat")
+        self._fm_headers: list[QLabel] = []
+        for col, (word, tip) in enumerate((
+                ("head-on", "As the front is seen after the press."),
+                ("lens plane", "In each lens's own plane, where ISO 8624 measures "
+                               "A and B and a drawing carries them."),
+                ("3D", "Along the formed groove: the length labs size a lens by."),
+                ("flat", "As drawn and cut."))):
+            h = QLabel(word)
+            h.setToolTip(tip)
+            h.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(h, 0, col + 1)
+            self._fm_headers.append(h)
+        self._fm: dict[str, dict[str, QLabel]] = {}
+        for row, (key, title, tip) in enumerate((
+                ("a_od", "OD A", "The finished lens's width, at the groove line."),
+                ("b_od", "OD B", "The finished lens's height."),
+                ("a_os", "OS A", "The finished lens's width, at the groove line."),
+                ("b_os", "OS B", "The finished lens's height."),
+                ("dbl", "DBL", "Between the finished boxes' nasal sides."),
+                ("centers", "Centers", "Between the two boxes' centers (the boxed-"
+                                       "center distance)."),
+                ("width", "Width", "The outline's overall width."),
+                ("circ_od", "OD circ.", "The lens's circumference: in its plane, "
+                                        "along the formed groove, and flat."),
+                ("circ_os", "OS circ.", "The lens's circumference: in its plane, "
+                                        "along the formed groove, and flat."),
+        ), start=1):
+            name = QLabel(title)
+            name.setToolTip(tip)
+            grid.addWidget(name, row, 0)
+            cells = {}
+            for col, ckey in enumerate(self._fm_cols):
+                cell = QLabel("—")
+                cell.setAlignment(Qt.AlignmentFlag.AlignRight
+                                  | Qt.AlignmentFlag.AlignVCenter)
+                grid.addWidget(cell, row, col + 1)
+                cells[ckey] = cell
+            self._fm[key] = cells
+        grid.setColumnStretch(0, 1)
+        meas_formed_lay.addWidget(grid_w)
+        self._fm_table = grid_w
+        singles_w = QWidget()
+        singles = QFormLayout(singles_w)
+        singles.setContentsMargins(0, 0, 0, 0)
+        singles.setSpacing(4)
+        self._fm_singles = singles_w
+        self._fm_single: dict[str, QLabel] = {}
+        for key, title, tip in (
+                ("sag", "Edge sag:", "How far the lens edge sits behind the lens "
+                                     "center along its plane's normal: the depth of "
+                                     "the formed lens, OD then OS."),
+                ("tilt", "Per-eye tilt:", "Each lens plane's angle to the frontal plane "
+                                          "(ZTILT): the face form per side, plus the "
+                                          "rim's own curve at the lens center."),
+                ("curve", "Frame curve:", "FCRV, the base curve in diopters, and the "
+                                          "radius in use."),
+                ("face", "Face form:", "Each lens plane's angle to the front's, then the "
+                                       "included angle between the two lens planes."),
+                ("set", "Endpiece set:", "How far the endpieces sit behind the bridge, "
+                                         "toward the face."),
+                ("depth", "Front depth:", "The formed outline's whole depth, front to "
+                                          "back."),
+        ):
+            lbl = QLabel("—")
+            lbl.setToolTip(tip)
+            singles.addRow(title, lbl)
+            self._fm_single[key] = lbl
+        meas_formed_lay.addWidget(singles_w)
+        self._fm_flags = QLabel("")
+        self._fm_flags.setWordWrap(True)
+        meas_formed_lay.addWidget(self._fm_flags)
+        # A flat front has nothing formed to read: the table and the singles
+        # hide, the one sentence stays (the maker's rule: hide, not gray).
+        self._fm_table.setVisible(False)
+        self._fm_singles.setVisible(False)
+        for h in self._fm_headers:
+            h.setStyleSheet(f"color: {theme.color('chrome.muted')};")
+        curve_lay.addWidget(meas_formed_box)
+        self._meas_formed_box = meas_formed_box
+
         curve_lay.addStretch()
         # Scrolled like Guides and Canvas: unscrolled, this tab and Library
         # held the window at 619 px or taller, and on a short laptop panel the
@@ -3992,7 +4311,9 @@ class MainWindow(QMainWindow):
         guides_lay.setContentsMargins(8, 8, 8, 8)
         guides_lay.setSpacing(12)
 
-        guide_box = self._fold_box("Construction (Forming)")
+        # "Construction (Forming)" until 2.3: these are the customer's nose
+        # measurements, and the forming of the front is its own group now.
+        guide_box = self._fold_box("Nose Fit")
         guide_lay = QFormLayout(guide_box.body)
         guide_lay.setSpacing(6)
 
@@ -4002,6 +4323,10 @@ class MainWindow(QMainWindow):
         self._bridge_angle_spin.setSuffix("°")
         self._bridge_angle_spin.setSingleStep(0.5)
         self._bridge_angle_spin.setValue(_CG.DEFAULT_BRIDGE_ANGLE_DEG)
+        self._bridge_angle_spin.setKeyboardTracking(False)
+        self._bridge_angle_spin.setToolTip(
+            "The customer's frontal angle: the pads' angle from the frontal "
+            "plane, drawn as the two lines off the apical arc.")
         # lambdas so each call dispatches to the CURRENT active workspace's guides
         self._bridge_angle_spin.valueChanged.connect(
             lambda v: self._guides.set_bridge_angle(v))
@@ -4015,10 +4340,14 @@ class MainWindow(QMainWindow):
         self._apical_spin.setSuffix(" mm")
         self._apical_spin.setSingleStep(0.5)
         self._apical_spin.setValue(_CG.DEFAULT_APICAL_RADIUS_MM)
+        self._apical_spin.setKeyboardTracking(False)
+        self._apical_spin.setToolTip(
+            "The customer's apical radius: the arc over the nose, the crest "
+            "of the bridge in the frontal plane. Not the base curve; that is "
+            "the Forming group's.")
         self._apical_spin.valueChanged.connect(
             lambda v: self._guides.set_apical_radius(v))
-        self._apical_spin.valueChanged.connect(
-            lambda _: self._mark_dirty())
+        self._apical_spin.valueChanged.connect(self._on_apical_edited)
         guide_lay.addRow("Apical radius:", self._apical_spin)
 
         self._guide_crest_height_spin = QDoubleSpinBox()
@@ -4083,7 +4412,7 @@ class MainWindow(QMainWindow):
         self._boxing_a_spin.valueChanged.connect(self._on_boxing_a_value)
 
         self._boxing_b_spin = QDoubleSpinBox()
-        self._boxing_b_spin.setRange(0.0, 100.0)
+        self._boxing_b_spin.setRange(0.0, 120.0)   # as A: the chain scales B past 100
         self._boxing_b_spin.setSuffix(" mm")
         self._boxing_b_spin.setSingleStep(0.5)
         self._boxing_b_spin.setDecimals(1)
@@ -4125,6 +4454,16 @@ class MainWindow(QMainWindow):
         self._boxing_dbl_spin.setKeyboardTracking(False)
         self._boxing_dbl_spin.setValue(18.0)
         self._boxing_dbl_spin.valueChanged.connect(self._on_boxing_dbl_value)
+        self._boxing_a_spin.setToolTip(
+            "A, the boxed lens width. Free: the guide's size. Snapped: the "
+            "finished lens's width, read live; with the lens locked, typing "
+            "resizes the lens to it.")
+        self._boxing_b_spin.setToolTip(
+            "B, the boxed lens height. Free: the guide's size. Snapped: the "
+            "finished lens's height; with the lens locked, typing resizes it.")
+        self._boxing_dbl_spin.setToolTip(
+            "DBL, the distance between the lenses' nasal sides. With the lens "
+            "locked, typing slides the lenses apart or together.")
         boxing_lay.addRow("DBL:", self._boxing_dbl_spin)
 
         # ── Snap / Lock to lens + bevel (M11/M12) ───────────────────────
@@ -4165,6 +4504,10 @@ class MainWindow(QMainWindow):
         for label, _key in self._bevel_choices:
             self._bevel_combo.addItem(label)
         self._bevel_combo.setCurrentIndex(2)   # Acetate
+        self._bevel_combo.setToolTip(
+            "How far the finished lens's bevel reaches past the drawn lens "
+            "opening, into the groove: none for a rimless, 0.5 mm for horn or "
+            "metal, 1 mm for acetate, or your own depth.")
         self._bevel_combo.currentIndexChanged.connect(self._on_bevel_preset_changed)
         boxing_lay.addRow("Bevel:", self._bevel_combo)
 
@@ -4183,6 +4526,181 @@ class MainWindow(QMainWindow):
         guides_lay.addWidget(boxing_box)
         self._boxing_guide_box = boxing_box   # ref for section show/hide
 
+        # ── Forming (Road to 2.3): the front after the press ──────────────
+        from .forming import PRESS_ROWS
+        forming_box = self._fold_box("Forming")
+        forming_lay = QFormLayout(forming_box.body)
+        forming_lay.setSpacing(6)
+
+        # The toolbar's View Formed by another name: the two move together,
+        # so the toolbar button lights for a maker who starts here.
+        self._forming_preview_chk = QCheckBox("Show forming preview")
+        self._forming_preview_chk.setToolTip(
+            "Draw the front head-on as it will look after the press, over the "
+            "flat drawing. The same switch as View Formed on the toolbar. A "
+            "view only: every tool still works on the flat drawing.")
+        self._forming_preview_chk.toggled.connect(self._act_formed.setChecked)
+        forming_lay.addRow(self._forming_preview_chk)
+
+        self._press_combo = QComboBox()
+        self._press_combo.addItem("Custom", "")
+        for row in PRESS_ROWS:
+            self._press_combo.addItem(row.label, row.label)
+        self._press_combo.setToolTip(
+            "A base-curve press's die: it sets the base curve, the die's own "
+            "radius and the face form the frame comes off it with. Change the "
+            "base curve or the face form and the preset reads Custom.")
+        self._press_combo.currentIndexChanged.connect(self._on_press_row_changed)
+        forming_lay.addRow("Preset:", self._press_combo)
+
+        self._base_curve_spin = QDoubleSpinBox()
+        self._base_curve_spin.setRange(0.0, 16.0)
+        self._base_curve_spin.setSingleStep(0.25)
+        self._base_curve_spin.setDecimals(2)
+        self._base_curve_spin.setSuffix(" D")
+        self._base_curve_spin.setSpecialValueText("Flat")
+        self._base_curve_spin.setKeyboardTracking(False)
+        self._base_curve_spin.setToolTip(
+            "The lens base curve the front is pressed to, in diopters, in the "
+            "quarter steps a frame is ordered in; 0 is flat. Base 4 suits most "
+            "optical frames, 6 sun, 8 and more sport and wrap.")
+        self._base_curve_spin.valueChanged.connect(self._on_thermoform_edited)
+        forming_lay.addRow("Base curve:", self._base_curve_spin)
+
+        self._radius_lbl = QLabel("flat")
+        self._radius_lbl.setToolTip(
+            "The radius the sheet bends to: the preset's die, or the radius the "
+            "tooling index names for the base curve (Preferences ▸ General).")
+        forming_lay.addRow("Radius:", self._radius_lbl)
+
+        self._face_form_spin = QDoubleSpinBox()
+        self._face_form_spin.setRange(0.0, 15.0)
+        self._face_form_spin.setSingleStep(0.5)
+        self._face_form_spin.setDecimals(2)
+        self._face_form_spin.setSuffix("°")
+        self._face_form_spin.setKeyboardTracking(False)
+        self._face_form_spin.setToolTip(
+            "How far each lens plane turns back from the plane of the front, "
+            "measured per side from the center of the bridge; 0° is flat. The "
+            "average frame has 5 to 7°.")
+        self._face_form_spin.valueChanged.connect(self._on_thermoform_edited)
+        forming_lay.addRow("Face form:", self._face_form_spin)
+
+        self._projection_spin = QDoubleSpinBox()
+        self._projection_spin.setRange(0.0, 8.0)
+        self._projection_spin.setSingleStep(0.5)
+        self._projection_spin.setDecimals(1)
+        self._projection_spin.setSuffix(" mm")
+        self._projection_spin.setKeyboardTracking(False)
+        self._projection_spin.setToolTip(
+            "How far the bridge is set forward, away from the face, between "
+            "the V plate's two creases. It mostly moves the bridge in depth; "
+            "head-on it changes little.")
+        self._projection_spin.valueChanged.connect(self._on_thermoform_edited)
+        forming_lay.addRow("Bridge projection:", self._projection_spin)
+
+        self._flatten_btn = QPushButton("Flatten Lens Shape")
+        self._flatten_btn.setToolTip(
+            "Replace the drawn lens shape with the flat shape that forms back "
+            "to it under the settings above. The selected lens, or both when "
+            "none is selected.")
+        self._flatten_btn.clicked.connect(self._flatten_lens_shape)
+        forming_lay.addRow("", self._flatten_btn)
+
+        guides_lay.addWidget(forming_box)
+        self._forming_box = forming_box
+
+        # ── Forming on a temple (Road to 2.3): its tip bend ───────────────
+        # Titled as the front's, so the section reads the same from tab to
+        # tab; its own key keeps the two tabs' folds apart.
+        bend_box = self._fold_box("Forming", key="Tip Bend")
+        bend_lay = QFormLayout(bend_box.body)
+        bend_lay.setSpacing(6)
+
+        # View Formed by another name, as on the front.
+        self._tip_bend_preview_chk = QCheckBox("Show temple tip bend")
+        self._tip_bend_preview_chk.setToolTip(
+            "Draw the temple with its tip bend, over the flat drawing. The same "
+            "switch as View Formed on the toolbar. A view only: every tool still "
+            "works on the flat drawing.")
+        self._tip_bend_preview_chk.toggled.connect(self._act_formed.setChecked)
+        bend_lay.addRow(self._tip_bend_preview_chk)
+
+        self._bend_length_spin = QDoubleSpinBox()
+        self._bend_length_spin.setRange(0.0, 300.0)
+        self._bend_length_spin.setSingleStep(1.0)
+        self._bend_length_spin.setDecimals(1)
+        self._bend_length_spin.setSuffix(" mm")
+        self._bend_length_spin.setSpecialValueText("Auto")
+        self._bend_length_spin.setKeyboardTracking(False)
+        self._bend_length_spin.setToolTip(
+            "ISO's length to bend: from the hinge end of the outline (the "
+            "dowel point is the screw's axis, which the drawing has not got) "
+            "to the ear point, the middle of the bend. Auto leaves 37 mm of "
+            "drop, the trade's 35 to 40.")
+        self._bend_length_spin.valueChanged.connect(self._on_tip_bend_edited)
+        bend_lay.addRow("Length to bend:", self._bend_length_spin)
+
+        self._bend_angle_spin = QDoubleSpinBox()
+        self._bend_angle_spin.setRange(0.0, 90.0)
+        self._bend_angle_spin.setSingleStep(1.0)
+        self._bend_angle_spin.setDecimals(0)
+        self._bend_angle_spin.setSuffix("°")
+        self._bend_angle_spin.setSpecialValueText("Straight")
+        self._bend_angle_spin.setKeyboardTracking(False)
+        self._bend_angle_spin.setValue(TipBendParams().drop_angle_deg)
+        self._bend_angle_spin.setToolTip(
+            "The downward angle of the drop, the tail's tilt from the line of "
+            "the temple: 45 to 55° is usual; 0 is a library temple, straight.")
+        self._bend_angle_spin.valueChanged.connect(self._on_tip_bend_edited)
+        bend_lay.addRow("Downward angle:", self._bend_angle_spin)
+
+        self._bend_radius_spin = QDoubleSpinBox()
+        self._bend_radius_spin.setRange(0.5, 100.0)
+        self._bend_radius_spin.setSingleStep(1.0)
+        self._bend_radius_spin.setDecimals(1)
+        self._bend_radius_spin.setSuffix(" mm")
+        self._bend_radius_spin.setKeyboardTracking(False)
+        self._bend_radius_spin.setValue(TipBendParams().bend_radius_mm)
+        self._bend_radius_spin.setToolTip(
+            "The radius of the bend at the core; nothing in the trade "
+            "publishes one, so it is yours to set. The core keeps its length "
+            "through the bend, as the wire does.")
+        self._bend_radius_spin.valueChanged.connect(self._on_tip_bend_edited)
+        bend_lay.addRow("Bend radius:", self._bend_radius_spin)
+
+        self._bend_ltb_lbl = QLabel("—")
+        self._bend_drop_lbl = QLabel("—")
+        self._bend_overall_lbl = QLabel("—")
+        self._bend_reach_lbl = QLabel("—")
+        bend_lay.addRow("Ear point:", self._bend_ltb_lbl)
+        bend_lay.addRow("Drop:", self._bend_drop_lbl)
+        bend_lay.addRow("Overall length:", self._bend_overall_lbl)
+        bend_lay.addRow("Reach:", self._bend_reach_lbl)
+        self._bend_ltb_lbl.setToolTip(
+            "Where the bend's middle lands: the length to bend in use, the "
+            "drawn length less 37 mm when the field says Auto.")
+        self._bend_drop_lbl.setToolTip(
+            "ISO's length of drop: from the ear point to the tip, straightened; "
+            "the overall length less the length to bend.")
+        self._bend_overall_lbl.setToolTip(
+            "ISO's overall length: length to bend plus drop, measured "
+            "straightened; the number in the marking (52□18-140). The drawn "
+            "temple's length.")
+        self._bend_reach_lbl.setToolTip(
+            "The bent temple's projected length, hinge end to tip, and how far "
+            "the tip sits below the core.")
+        # Only when the bend does not fit: the temple then shows straight, and
+        # nothing else would say why.
+        self._bend_note = QLabel("")
+        self._bend_note.setWordWrap(True)
+        bend_lay.addRow(self._bend_note)
+        bend_lay.setRowVisible(self._bend_note, False)
+        self._bend_lay = bend_lay
+
+        guides_lay.addWidget(bend_box)
+        self._tip_bend_box = bend_box
+
         stock_box = self._fold_box("Stock Blank")
         stock_lay = QFormLayout(stock_box.body)
         stock_lay.setSpacing(6)
@@ -4195,6 +4713,10 @@ class MainWindow(QMainWindow):
         self._stock_w_spin.setToolTip(
             "Width of raw stock blank (mm). Toggle visibility with the Stock button.\n"
             "The readiness dot warns when the OUTLINE leaves the guide.")
+        # Committed on Enter or leaving the field, as the boxing fields are:
+        # each keystroke ran the readiness check, and on an exploded
+        # outline "175" cost two seconds.
+        self._stock_w_spin.setKeyboardTracking(False)
         self._stock_w_spin.valueChanged.connect(self._on_stock_width_changed)
         stock_lay.addRow("Width:", self._stock_w_spin)
 
@@ -4204,6 +4726,7 @@ class MainWindow(QMainWindow):
         self._stock_h_spin.setSingleStep(1.0)
         self._stock_h_spin.setValue(85.0)
         self._stock_h_spin.setToolTip("Height of raw stock blank (mm).")
+        self._stock_h_spin.setKeyboardTracking(False)
         self._stock_h_spin.valueChanged.connect(self._on_stock_height_changed)
         stock_lay.addRow("Height:", self._stock_h_spin)
 
@@ -4267,6 +4790,7 @@ class MainWindow(QMainWindow):
         fill_lay.addRow("Style:", self._fill_style_combo)
 
         self._fill_color_btn = QPushButton("Color…")
+        self._fill_color_btn.setToolTip("The fill's color, shown in the button.")
         self._fill_color_btn.clicked.connect(self._on_fill_color_clicked)
         self._update_fill_swatch("#2a6099")
         fill_lay.addRow("Color:", self._fill_color_btn)
@@ -4319,6 +4843,7 @@ class MainWindow(QMainWindow):
         inlay_lay.addRow("Style:", self._inlay_fill_style_combo)
 
         self._inlay_fill_color_btn = QPushButton("Color…")
+        self._inlay_fill_color_btn.setToolTip("The inlay fill's color, shown in the button.")
         self._inlay_fill_color_btn.clicked.connect(
             self._on_inlay_fill_color_clicked)
         self._update_inlay_fill_swatch(DEFAULT_INLAY_FILL_COLOR)
@@ -4625,6 +5150,8 @@ class MainWindow(QMainWindow):
         for btn in (self._btn_bm_restore, self._btn_bm_rename, self._btn_bm_delete):
             btn.setEnabled(False)
             btn_row.addWidget(btn)
+        self._btn_bm_rename.setToolTip("Rename the selected bookmark.")
+        self._btn_bm_delete.setToolTip("Delete the selected bookmark; the drawing is untouched.")
         self._btn_bm_restore.setToolTip("Restore the selected bookmark (adds an undo step)")
         self._btn_bm_restore.clicked.connect(self._restore_bookmark)
         self._btn_bm_rename.clicked.connect(self._rename_bookmark)
@@ -4689,9 +5216,12 @@ class MainWindow(QMainWindow):
             "any other as a mount.")
         self._btn_lib_new_folder.clicked.connect(self._new_library_folder)
         self._btn_lib_rename = QPushButton("Rename…")
+        self._btn_lib_rename.setToolTip("Rename the selected entry or folder.")
         self._btn_lib_rename.setEnabled(False)
         self._btn_lib_rename.clicked.connect(self._rename_library_entry)
         self._btn_lib_delete = QPushButton("Delete")
+        self._btn_lib_delete.setToolTip(
+            "Delete the selected entry, or an empty folder, from the library.")
         self._btn_lib_delete.setEnabled(False)
         self._btn_lib_delete.clicked.connect(self._delete_library_entry)
         comp_mgmt_row.addWidget(self._btn_lib_new_folder)
@@ -4968,6 +5498,7 @@ class MainWindow(QMainWindow):
                 item.setIcon(1, self._layer_icon(
                     "layer-show" if vis else "layer-hide"))
                 self._mark_dirty()
+                self._refresh_formed()
             elif column == 2:
                 locked = not self.scene.is_layer_locked(layer)
                 self.scene.set_layer_locked(layer, locked)
@@ -5238,6 +5769,8 @@ class MainWindow(QMainWindow):
         self._update_split_enabled()
         self._update_explode_enabled()
         self._act_snap_ep.setEnabled(self._edit_tool.has_selected_node())
+        self._sync_weight_spin([i for i in self.scene.selectedItems()
+                                if isinstance(i, CurveItem)])
 
         self._sync_empty_hint(ws)
         # Fit the view the first time this workspace is shown — to the
@@ -5263,7 +5796,12 @@ class MainWindow(QMainWindow):
         ws.stock_visible  = self._act_stock.isChecked()
         ws.pad_visible    = self._act_pad.isChecked()
         ws.bridge_angle   = self._bridge_angle_spin.value()
-        ws.apical_radius  = self._apical_spin.value()
+        # The field holds 2–24 mm; a file can hold less (0.0 when it has no
+        # forming block, which GuildModel reads as its own default), so the
+        # value is written by the field's own handler when the maker edits
+        # it (_on_apical_edited), never read back from the clamped field:
+        # typing the field's minimum over a file's 0.0 read as no change
+        # and the 0.0 was saved (the 2.3 hunt).
         ws.crest_height   = self._guide_crest_height_spin.value()
         ws.arm_spread     = self._guide_spread_spin.value()
         ws.arm_drop       = self._guide_drop_spin.value()
@@ -5315,10 +5853,14 @@ class MainWindow(QMainWindow):
             (self._act_stock,   ws.stock_visible),
             (self._act_pad,     ws.pad_visible),
             (self._act_obverse, ws.obverse),
+            (self._act_formed,  ws.formed_view),
         ]:
             act.blockSignals(True)
             act.setChecked(val)
             act.blockSignals(False)
+        self._sync_forming_widgets(ws)
+        self._sync_tip_bend_widgets(ws)
+        self._sync_preview_checks(ws.formed_view)
 
         # Apply guide object states directly
         ws.const_guides.set_visible(ws.guides_visible)
@@ -5471,14 +6013,14 @@ class MainWindow(QMainWindow):
         ws.stock_guide.set_width(mm)
         ws.scene.set_fill_blank_width(mm)
         self._update_readiness()   # the fit warning follows the guide
-        self._mark_dirty()         # the guide sizes are saved with the design
+        self._guide_edited()       # saved with the design; not from Preferences
 
     def _on_stock_height_changed(self, mm: float):
         ws = self._active_ws
         ws.stock_h = mm
         ws.stock_guide.set_height(mm)
         self._update_readiness()
-        self._mark_dirty()
+        self._guide_edited()
 
     def _on_pad_size_changed(self, width: float | None = None,
                              height: float | None = None):
@@ -5489,7 +6031,7 @@ class MainWindow(QMainWindow):
         if height is not None:
             ws.pad_h = height
             ws.pad_guide.set_height(height)
-        self._mark_dirty()
+        self._guide_edited()
 
     # ── Frame fill controls ─────────────────────────────────────────────
 
@@ -5565,7 +6107,8 @@ class MainWindow(QMainWindow):
         ws.fill_style is left on "color" either way."""
         ws.scene.set_fill_blank_width(ws.stock_w)
         if ws.fill_style == "image" and ws.fill_image:
-            if ws.scene.set_fill_image(ws.fill_image):
+            ws.fill_image_unfound = not ws.scene.set_fill_image(ws.fill_image)
+            if not ws.fill_image_unfound:
                 return True
             ws.fill_style = "color"      # unreadable — show the color instead
             ws.scene.clear_fill_image()
@@ -5573,6 +6116,7 @@ class MainWindow(QMainWindow):
         # An Image style with nothing behind it is not a state worth keeping —
         # it would show the color under a combo that claims otherwise.
         ws.fill_style = "color"
+        ws.fill_image_unfound = ws.fill_image_unfound and bool(ws.fill_image)
         ws.scene.clear_fill_image()
         return True
 
@@ -5583,13 +6127,18 @@ class MainWindow(QMainWindow):
         self._fill_style_combo.setCurrentIndex(max(0, idx))
         self._fill_style_combo.blockSignals(False)
         is_image = (ws.fill_style == "image")
+        # A swatch not found here can be chosen again, or cleared to keep
+        # the color, while the combo shows the color.
         self._fill_color_btn.setEnabled(not is_image)
-        self._fill_image_btn.setEnabled(is_image)
-        self._fill_image_clear_btn.setEnabled(is_image and bool(ws.fill_image))
+        self._fill_image_btn.setEnabled(is_image or ws.fill_image_unfound)
+        self._fill_image_clear_btn.setEnabled(
+            (is_image or ws.fill_image_unfound) and bool(ws.fill_image))
         if ws.fill_image:
             self._set_swatch_btn_text(self._fill_image_btn,
                                       os.path.basename(ws.fill_image))
-            self._fill_image_btn.setToolTip(ws.fill_image)
+            self._fill_image_btn.setToolTip(
+                _unfound_tip(ws.fill_image, "swatch") if ws.fill_image_unfound
+                else ws.fill_image)
         else:
             self._set_swatch_btn_text(self._fill_image_btn, "Choose…")
             self._fill_image_btn.setToolTip(
@@ -5649,6 +6198,7 @@ class MainWindow(QMainWindow):
     def _on_fill_style_changed(self, _index: int):
         ws = self._active_ws
         ws.fill_style = self._fill_style_combo.currentData() or "color"
+        ws.fill_image_unfound = False    # the maker's own choice, from here
         # Switching to Image with nothing chosen yet: open the picker rather
         # than leaving the maker on a style that shows the color anyway.
         if ws.fill_style == "image" and not ws.fill_image:
@@ -5686,6 +6236,7 @@ class MainWindow(QMainWindow):
             return
         ws.fill_image = path
         ws.fill_style = "image"
+        ws.fill_image_unfound = False
         self._sync_fill_style_widgets(ws)
         self._mark_dirty()
         self._status.showMessage(
@@ -5696,6 +6247,7 @@ class MainWindow(QMainWindow):
         ws = self._active_ws
         ws.fill_image = ""
         ws.fill_style = "color"
+        ws.fill_image_unfound = False
         self._apply_fill_material(ws)
         self._sync_fill_style_widgets(ws)
         self._mark_dirty()
@@ -5705,7 +6257,8 @@ class MainWindow(QMainWindow):
         travel with it). Say so once and leave the color showing."""
         self._status.showMessage(
             f"Frame Fill: {os.path.basename(ws.fill_image) or 'the material swatch'}"
-            " couldn't be read — showing the color instead.", 6000)
+            " couldn't be read — showing the color; the design keeps its Image"
+            " style.", 6000)
 
     # ── Inlay fill controls (Road to 2.0, item 7) ───────────────────────
 
@@ -5794,12 +6347,16 @@ class MainWindow(QMainWindow):
         is left on "color" either way (see _apply_fill_material)."""
         ws.scene.set_inlay_fill_tumble(ws.inlay_fill_tumble)
         if ws.inlay_fill_style == "image" and ws.inlay_fill_image:
-            if ws.scene.set_inlay_fill_image(ws.inlay_fill_image):
+            ws.inlay_fill_image_unfound = not ws.scene.set_inlay_fill_image(
+                ws.inlay_fill_image)
+            if not ws.inlay_fill_image_unfound:
                 return True
             ws.inlay_fill_style = "color"
             ws.scene.clear_inlay_fill_image()
             return False
         ws.inlay_fill_style = "color"
+        ws.inlay_fill_image_unfound = (ws.inlay_fill_image_unfound
+                                       and bool(ws.inlay_fill_image))
         ws.scene.clear_inlay_fill_image()
         return True
 
@@ -5810,14 +6367,17 @@ class MainWindow(QMainWindow):
         self._inlay_fill_style_combo.setCurrentIndex(max(0, idx))
         self._inlay_fill_style_combo.blockSignals(False)
         is_image = (ws.inlay_fill_style == "image")
+        unfound = ws.inlay_fill_image_unfound
         self._inlay_fill_color_btn.setEnabled(not is_image)
-        self._inlay_fill_image_btn.setEnabled(is_image)
+        self._inlay_fill_image_btn.setEnabled(is_image or unfound)
         self._inlay_fill_image_clear_btn.setEnabled(
-            is_image and bool(ws.inlay_fill_image))
+            (is_image or unfound) and bool(ws.inlay_fill_image))
         if ws.inlay_fill_image:
             self._set_swatch_btn_text(self._inlay_fill_image_btn,
                                       os.path.basename(ws.inlay_fill_image))
-            self._inlay_fill_image_btn.setToolTip(ws.inlay_fill_image)
+            self._inlay_fill_image_btn.setToolTip(
+                _unfound_tip(ws.inlay_fill_image, "image") if unfound
+                else ws.inlay_fill_image)
         else:
             self._set_swatch_btn_text(self._inlay_fill_image_btn, "Choose…")
             self._inlay_fill_image_btn.setToolTip(
@@ -5837,6 +6397,7 @@ class MainWindow(QMainWindow):
     def _on_inlay_fill_style_changed(self, _index: int):
         ws = self._active_ws
         ws.inlay_fill_style = self._inlay_fill_style_combo.currentData() or "color"
+        ws.inlay_fill_image_unfound = False
         # Switching to Image with nothing chosen yet: open the picker (see
         # _on_fill_style_changed).
         if ws.inlay_fill_style == "image" and not ws.inlay_fill_image:
@@ -5872,6 +6433,7 @@ class MainWindow(QMainWindow):
             return
         ws.inlay_fill_image = path
         ws.inlay_fill_style = "image"
+        ws.inlay_fill_image_unfound = False
         self._sync_inlay_fill_style_widgets(ws)
         self._mark_dirty()
         self._status.showMessage(
@@ -5881,6 +6443,7 @@ class MainWindow(QMainWindow):
         ws = self._active_ws
         ws.inlay_fill_image = ""
         ws.inlay_fill_style = "color"
+        ws.inlay_fill_image_unfound = False
         self._apply_inlay_fill_material(ws)
         self._sync_inlay_fill_style_widgets(ws)
         self._mark_dirty()
@@ -5889,7 +6452,8 @@ class MainWindow(QMainWindow):
         """The saved image is gone; say so once and leave the color showing."""
         self._status.showMessage(
             f"Inlay Fill: {os.path.basename(ws.inlay_fill_image) or 'the image'}"
-            " couldn't be read — showing the color instead.", 6000)
+            " couldn't be read — showing the color; the design keeps its Image"
+            " style.", 6000)
 
     # ── Lens fill controls ──────────────────────────────────────────────
 
@@ -6016,7 +6580,7 @@ class MainWindow(QMainWindow):
             self._set_lens_fill_color("top", ws.lens_fill_top)
         else:
             ws.lens_fill_linked = False
-            kept = getattr(ws, "lens_fill_bottom_kept", None)
+            kept = ws.lens_fill_bottom_kept
             if kept:
                 self._set_lens_fill_color("bottom", kept)
             ws.lens_fill_bottom_kept = None
@@ -6043,6 +6607,9 @@ class MainWindow(QMainWindow):
         is_component = (ws_type == "component")
         self._construction_guide_box.setVisible(is_front)
         self._boxing_guide_box.setVisible(is_front)
+        self._forming_box.setVisible(is_front)
+        self._tip_bend_box.setVisible(is_temple)
+        self._meas_formed_box.setVisible(is_front)
         self._stock_guide_box.setVisible(True)   # all workspaces have a stock rect
         self._pad_guide_box.setVisible(is_front) # pad block only meaningful for front
         self._fill_box.setVisible(is_front or is_temple)  # fill needs an OUTLINE
@@ -6069,6 +6636,12 @@ class MainWindow(QMainWindow):
             else QAbstractItemView.DragDropMode.NoDragDrop)
 
     def _refresh_measurements(self):
+        """Recompute and display workspace measurements in the Properties tab,
+        then the formed ones and the View Formed overlay (Road to 2.3)."""
+        self._refresh_flat_measurements()
+        self._refresh_formed()
+
+    def _refresh_flat_measurements(self):
         """Recompute and display workspace measurements in the Properties tab.
         Also stashes the representative finished A/B/DBL for the snapped boxing
         read-outs (_snap_a/_snap_b/_snap_dbl)."""
@@ -6143,7 +6716,8 @@ class MainWindow(QMainWindow):
                     boxes.append(box)
                     if outline is None:
                         poly = lens_polygon(c)
-                        outline = list(poly.exterior.coords) if not poly.is_empty else []
+                        outline = [xy for g in getattr(poly, "geoms", [poly])
+                                   if not g.is_empty for xy in g.exterior.coords]
                     pts += outline
                 if not boxes:
                     return None, None, None, None
@@ -6221,11 +6795,10 @@ class MainWindow(QMainWindow):
             # Filtering whole curves by where their nodes cluster left a
             # normal one-piece temple reading "—", and doubled it with the
             # ghost on even when both halves were drawn.
-            from .geometry import sample_curve
             ep_threshold = min_x + max(x_span * 0.1, 2.0)
             # 64 samples a segment: 16 read up to 0.3 mm short at a corner.
             ys = [y for c in curves if c.layer in _TEMPLE_LAYERS and c.nodes
-                  for x, y, _t in sample_curve(c, 64) if x <= ep_threshold]
+                  for y in _ys_left_of(c, ep_threshold, 64)]
             if ys and ws.mirror_enabled and ws.scene.mirror is not None:
                 axis = ws.scene.mirror.x         # a temple's axis is horizontal
                 if all(y <= axis + 1e-6 for y in ys) or all(y >= axis - 1e-6 for y in ys):
@@ -6268,6 +6841,11 @@ class MainWindow(QMainWindow):
 
     # A/B fields: drive the free box when not snapped; live-resize the locked
     # lens when locked (read-outs while snapped-but-unlocked never user-fire).
+    def _on_apical_edited(self, v: float):
+        """The apical radius, stored as typed (see _save_ws_sidebar_state)."""
+        self._active_ws.apical_radius = v
+        self._mark_dirty()
+
     def _guide_edited(self, *_args):
         """A guide value saved with the design changed: star it. Not while
         Preferences pushes its values in (_apply_settings stars a drawn
@@ -6278,6 +6856,10 @@ class MainWindow(QMainWindow):
     def _on_boxing_a_value(self, v: float):
         ws = self._active_ws
         if not ws.boxing_snapped:
+            # Stored at once, not only on the next tab switch: un-snapping
+            # restores ws.boxing_a and a save while snapped writes it, so a
+            # value typed just before Snap was lost to both (2.0.1).
+            ws.boxing_a = v
             self._boxing_guide.set_a(v)
             self._guide_edited()
         elif ws.shape_locked:
@@ -6286,6 +6868,7 @@ class MainWindow(QMainWindow):
     def _on_boxing_b_value(self, v: float):
         ws = self._active_ws
         if not ws.boxing_snapped:
+            ws.boxing_b = v
             self._boxing_guide.set_b(v)
             self._guide_edited()
         elif ws.shape_locked:
@@ -6294,6 +6877,7 @@ class MainWindow(QMainWindow):
     def _on_boxing_dbl_value(self, v: float):
         ws = self._active_ws
         if not ws.boxing_snapped:
+            ws.boxing_dbl = v
             self._boxing_guide.set_dbl(v)
             self._guide_edited()
         elif ws.shape_locked:
@@ -6409,6 +6993,20 @@ class MainWindow(QMainWindow):
                 return
             target_b = v
             target_a = cur_a * (v / cur_b) if (chained and cur_b) else None
+        # A 0, or a partial entry ("5" for "52") committed by leaving the
+        # field, shrank the lenses to the 0.5 mm floor while the outline
+        # followed the unclamped size (164 to 40 mm wide), and the readiness
+        # dot stayed green. Past the field's top, the read-out showed the top
+        # (B 100.0 for 102.6).
+        for name, t, spin in (("A", target_a, self._boxing_a_spin),
+                              ("B", target_b, self._boxing_b_spin)):
+            if t is not None and not _MIN_LENS_MM <= t <= spin.maximum():
+                self._status.showMessage(
+                    f"Lens {name} of {t:.1f} mm is out of range: a lens is "
+                    f"{_MIN_LENS_MM:g} to {spin.maximum():g} mm. The lenses are unchanged.")
+                self._refresh_measurements()
+                self._sync_boxing_readouts()
+                return
         self._resize_locked_lens(target_a, target_b)
 
     def _on_boxing_visible_toggled(self, on: bool):
@@ -6673,6 +7271,10 @@ class MainWindow(QMainWindow):
             t.anchor_x += dx
             t.anchor_y += dy
             self.scene.move_text(t)      # translation only — no glyph rebuild
+        # A text tells no one it moved (a curve's refresh does): under View
+        # Formed the bent text stayed behind while the faded flat one went.
+        if self._drag_moving_texts and self._active_ws.formed_view:
+            self._refresh_formed()
         # Keep the gizmo centered on the moving geometry
         if self._move_gizmo is not None:
             new_c = QPointF(self._move_gizmo_center.x() + dx,
@@ -6855,7 +7457,8 @@ class MainWindow(QMainWindow):
                          ("offset", self._act_offset), ("rebuild", self._act_rebuild),
                          ("point_move", self._act_point_move), ("text", self._act_text),
                          ("snap_node_ep", self._act_snap_ep), ("join", self._act_join),
-                         ("obverse", self._act_obverse)):
+                         ("obverse", self._act_obverse),
+                         ("formed", self._act_formed)):
             key_str = hotkey_prefs.get(key, "").strip()
             if key_str in SettingsDialog._RESERVED_KEYS or key_str in _TYPING_KEYS:
                 key_str = ""                      # not bound (see _apply_hotkeys)
@@ -6891,7 +7494,39 @@ class MainWindow(QMainWindow):
         elif (etype == QEvent.Type.Resize
                 and obj in getattr(self, "_swatch_btn_texts", ())):
             self._elide_swatch_btn(obj)
+        elif etype == QEvent.Type.MouseButtonPress:
+            self._commit_pending_field(obj)
+        elif etype == QEvent.Type.Shortcut:
+            self._commit_pending_field()
         return super().eventFilter(obj, event)
+
+    def _commit_pending_field(self, pressed=None):
+        """Enter the value typed into a panel field and not yet entered.
+
+        The panel's number fields take a value on Enter or on leaving the
+        field, so typing 160 does not pass through 1 and 16. But a click on
+        a workspace tab, a toolbar button or the menu bar does not take the
+        focus, and neither does a shortcut: a value typed and then Ctrl+S
+        was left out of the file with no star, the same value was dropped at
+        a tab switch, and closing lost it without a prompt (the 2.3 sweep;
+        2.0.0 saved the Nose Fit and Stock fields as typed). So the field
+        is entered before a shortcut runs, on a press anywhere outside it
+        (*pressed*: the object pressed), and before a save or the unsaved-
+        changes question. Called from the app-wide event filter: one
+        focusWidget() and out, unless a number field has the focus."""
+        fw = QApplication.focusWidget()
+        if not isinstance(fw, QAbstractSpinBox):
+            return
+        if pressed is not None and (not pressed.isWidgetType() or pressed is fw
+                                    or fw.isAncestorOf(pressed)):
+            return              # the window's own event, or a press on the field itself
+        p = fw.parent()
+        while p is not None and p is not self:
+            if isinstance(p, QDialog):
+                return          # a dialog's field is the dialog's to enter
+            p = p.parent()
+        if p is self:
+            fw.interpretText()
 
     def _insert_square_char(self) -> bool:
         """Type "□" (U+25A1) into the focused text field — the boxing square
@@ -6929,6 +7564,7 @@ class MainWindow(QMainWindow):
             (self._act_stock,        "toggle-stock"),
             (self._act_pad,          "toggle-pad"),
             (self._act_obverse,      "view-obverse"),
+            (self._act_formed,       "view-formed"),
             (self._act_mirror_close, "op-mirror-close"),
             (self._act_dup_mirror,   "op-dup-mirror"),
             (self._act_copy_temple,  "op-copy-temple"),
@@ -7084,6 +7720,7 @@ class MainWindow(QMainWindow):
         for key, label, act in (
                 ("ghost",        "Ghost",               self._act_mirror),
                 ("obverse",      "View Obverse",        self._act_obverse),
+                ("formed",       "View Formed",         self._act_formed),
                 (None, None, None),
                 ("guides",       "Construction Guides", self._act_guides),
                 ("boxing",       "Boxing Guide",        self._act_boxing),
@@ -7148,7 +7785,7 @@ class MainWindow(QMainWindow):
             "GPLv3 — see LICENSE for details.")
 
     # The hotkey a menu entry shows, by its key in prefs["hotkeys"].
-    _MENU_HOTKEYS = {"obverse": "obverse", "join": "join",
+    _MENU_HOTKEYS = {"obverse": "obverse", "formed": "formed", "join": "join",
                      "snap_node": "snap_node_ep"}
 
     def _menu_label(self, proxy: QAction, key: str) -> None:
@@ -7181,6 +7818,482 @@ class MainWindow(QMainWindow):
             return
         ws.obverse = on
         ws.view.set_obverse(on, face)
+
+    # ------------------------------------------------------------------
+    # View Formed (Road to 2.3): the front after the press, the temple bent
+    # ------------------------------------------------------------------
+
+    def _on_formed_toggled(self, on: bool):
+        """View Formed turns the active tab's view only; a tab keeps its own
+        state, as View Obverse does."""
+        ws = self._active_ws
+        if ws.workspace_type not in _FORMED_TABS:
+            # The Component tab's button is hidden, but its hotkey still
+            # triggers the action: a component is cut flat and stays so.
+            self._act_formed.blockSignals(True)
+            self._act_formed.setChecked(False)
+            self._act_formed.blockSignals(False)
+            if on:
+                self._status.showMessage(
+                    "View Formed: a component is cut flat and stays so.", 3000)
+            return
+        ws.formed_view = on
+        ws.scene.set_formed_fade(on)
+        ws.view.set_formed(on)
+        self._refresh_formed()
+        self._sync_preview_checks(on)
+        if on and ws.workspace_type == "front" and ws.thermoform.is_flat:
+            self._status.showMessage(
+                "View Formed: the front is flat. Set a base curve or a preset "
+                "in the Forming group (Guides tab) to see it formed.", 6000)
+        elif on and ws.workspace_type != "front" and self._tip_bend(ws) is None:
+            self._status.showMessage(
+                "View Formed: the temple has no outline yet. Draw its OUTLINE "
+                "to see it bent.", 6000)
+
+    def _sync_preview_checks(self, on: bool):
+        """The Forming groups' checkboxes are View Formed by other names. Set
+        directly, as the action is set with its signals blocked at a tab switch
+        and a new document."""
+        for chk in (self._forming_preview_chk, self._tip_bend_preview_chk):
+            chk.blockSignals(True)
+            chk.setChecked(on)
+            chk.blockSignals(False)
+
+    def _lens_point_lists(self, ws: "WorkspaceState") -> list:
+        """Every lens as the canvas shows it (drawn, plus the Ghost's twin),
+        as closed point lists in scene coordinates."""
+        from .forming import flatten_for_view, is_lens_shape
+        drawn = [c for c in ws.doc_curves if is_lens_shape(c) and not c.mirrored]
+        return [flatten_for_view(c) for c in drawn + self._ghost_twins(ws, drawn)]
+
+    def _front_forming(self, ws: "WorkspaceState"):
+        """The forming map of the front as drawn, or None on another tab."""
+        from .forming import FrontForming
+        if ws.workspace_type != "front":
+            return None
+        return FrontForming.build(ws.thermoform, self._lens_point_lists(ws))
+
+    def _tip_bend(self, ws: "WorkspaceState"):
+        """The temple's bend resolved against its drawn length, or None when
+        the tab is not a temple or has no outline yet."""
+        from .forming import TipBend
+        if ws.workspace_type not in ("temple_r", "temple_l"):
+            return None
+        bbox = _curves_bbox(ws.doc_curves, layers={Layer.OUTLINE})
+        if bbox is None:
+            return None
+        core_y = 0.0        # the temple's mirror axis: the core line
+        # The left tab is the right's mirror about the core line (Temple Copy
+        # reflects through y = 0), so its drop is drawn toward −y.
+        down = -1.0 if ws.workspace_type == "temple_l" else 1.0
+        return TipBend.resolve(ws.tip_bend, bbox[0], bbox[2] - bbox[0], core_y, down)
+
+    def _formed_entries(self, ws: "WorkspaceState") -> list:
+        """What the overlay paints: every visible curve, Ghost twin and text,
+        through the front's map or the temple's bend."""
+        from .forming import flatten_for_view
+        if ws.workspace_type == "front":
+            ff = self._front_forming(ws)
+            mapper = (lambda pts: ff.head_on(pts, 0.0)) if ff is not None else None
+        else:
+            tb = self._tip_bend(ws)
+            mapper = tb.map_points if tb is not None else None
+        if mapper is None:
+            return []
+        scene = ws.scene
+        drawn = [c for c in ws.doc_curves if c.nodes and not c.mirrored
+                 and scene.is_layer_visible(c.layer)]
+        entries = []
+        for c in drawn:
+            entries.append(([mapper(flatten_for_view(c))], c.layer, c.line_weight,
+                            False, False))
+        for c in self._ghost_twins(ws, drawn):
+            entries.append(([mapper(flatten_for_view(c))], c.layer, c.line_weight,
+                            True, False))
+        if ws.doc_texts:
+            from .textpath import text_outline_path
+            for t in ws.doc_texts:
+                if not scene.is_layer_visible(t.layer):
+                    continue
+                from .forming import densify
+                polys = [[(p.x(), p.y()) for p in poly]
+                         for poly in text_outline_path(t).toSubpathPolygons()]
+                # A letter's straight stroke bends with the temple too.
+                polys = [mapper(densify(poly)) for poly in polys if len(poly) >= 2]
+                if polys:
+                    entries.append((polys, t.layer, t.line_weight, False, True))
+        return entries
+
+    def _refresh_formed(self):
+        """The formed readouts of the active tab, and its overlay while View
+        Formed is on. Runs with every measurement refresh (each edit and
+        drag tick): the map costs under a millisecond a curve."""
+        ws = self._active_ws
+        if ws.workspace_type == "front":
+            self._update_formed_readouts(ws)
+        elif ws.workspace_type in ("temple_r", "temple_l"):
+            self._update_tip_bend_readouts(ws)
+        if ws.formed_view and ws.workspace_type in _FORMED_TABS:
+            entries = self._formed_entries(ws)
+            ws.scene.formed.set_entries(entries)
+            # A temple with no outline yet has nothing to bend: the drawing
+            # is not faded under an empty overlay.
+            ws.scene.set_formed_fade(bool(entries))
+        elif len(ws.scene.formed):
+            ws.scene.formed.clear()
+
+    def _schedule_formed_refresh(self):
+        """The Forming groups' fields preview after a pause in the
+        typing, as the Offset tool does."""
+        timer = getattr(self, "_formed_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(150)
+            timer.timeout.connect(self._refresh_formed)
+            self._formed_timer = timer
+        timer.start()
+
+    # ── the Forming group ─────────────────────────────────────────────
+
+    def _forming_setup(self) -> FormingSetup:
+        """Preferences ▸ General ▸ Forming: every design uses these."""
+        return FormingSetup.from_prefs(self._prefs.get("forming"))
+
+    def _thermoform_from_widgets(self) -> ThermoformParams:
+        """The Forming group's values under the shop's setup. The face form
+        stays as stored while its field still shows it: the field rounds to
+        0.01°, so an SBT row's 8.015° would read back as 8.02° and fall off
+        the row at any other edit."""
+        stored = self._active_ws.thermoform
+        spin = self._face_form_spin
+        shown = spin.textFromValue(spin.value())
+        wrap = (stored.face_form_wrap_deg
+                if shown == spin.textFromValue(stored.face_form_per_side_deg)
+                else 2.0 * spin.value())
+        setup = self._forming_setup()
+        p = ThermoformParams(
+            base_curve=self._base_curve_spin.value(),
+            face_form_wrap_deg=wrap,
+            bridge_projection_mm=self._projection_spin.value(),
+            press_preset=self._press_combo.currentData() or "",
+            radius_rule=setup.radius_rule,
+            sheet_thickness_mm=setup.sheet_thickness_mm,
+            neutral_fraction=setup.neutral_fraction,
+        )
+        return p.with_base_curve(p.base_curve)
+
+    @staticmethod
+    def _set_note(label: QLabel, text: str, warning: bool = False) -> None:
+        """A wrapped note's text and color. A word-wrapped label in a form
+        keeps its one-line height after setText until the next resize, so
+        the layout is activated for it."""
+        label.setText(text)
+        label.setStyleSheet(
+            f"color: {theme.color('chrome.warning')};" if warning else "")
+        lay = label.parentWidget().layout() if label.parentWidget() else None
+        if lay is not None:
+            lay.activate()
+
+    def _sync_forming_widgets(self, ws: "WorkspaceState"):
+        """Push *ws*'s forming into the Forming group, signals blocked."""
+        from .forming import press_row
+        p = ws.thermoform
+        widgets = (self._press_combo, self._base_curve_spin, self._face_form_spin,
+                   self._projection_spin)
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            idx = self._press_combo.findData(p.press_preset) if p.press_preset else 0
+            self._press_combo.setCurrentIndex(max(idx, 0))
+            self._base_curve_spin.setValue(p.base_curve)
+            self._face_form_spin.setValue(p.face_form_per_side_deg)
+            self._projection_spin.setValue(p.bridge_projection_mm)
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
+        on_row = press_row(p.press_preset) is not None
+        if p.base_radius_mm > 0.0:
+            self._radius_lbl.setText(f"R {p.base_radius_mm:.1f} mm"
+                                     + (" (the die)" if on_row else ""))
+        else:
+            self._radius_lbl.setText("flat")
+
+    def _on_press_row_changed(self, _idx: int):
+        """A press row sets the base curve, the die's radius and the face
+        form; Custom keeps the values as they are."""
+        from .forming import press_row
+        ws = self._active_ws
+        row = press_row(self._press_combo.currentData() or "")
+        if row is None:
+            ws.thermoform = replace(self._thermoform_from_widgets(), press_preset="")
+            ws.thermoform = ws.thermoform.with_base_curve(ws.thermoform.base_curve)
+        else:
+            ws.thermoform = ThermoformParams.from_row(row, self._thermoform_from_widgets())
+        self._sync_forming_widgets(ws)
+        self._guide_edited()
+        self._schedule_formed_refresh()
+
+    def _on_thermoform_edited(self, *_args):
+        """A forming field changed: stored at once (a tab switch is not the
+        save), the row read Custom when it no longer matches, the readouts
+        after a pause."""
+        from .forming import press_row
+        ws = self._active_ws
+        if ws.workspace_type != "front":
+            return
+        p = self._thermoform_from_widgets()
+        row = press_row(p.press_preset) if p.press_preset else None
+        if row is not None and (abs(row.base_curve - p.base_curve) > 1e-9
+                                or abs(row.face_form_deg - p.face_form_deg) > 1e-9):
+            p = replace(p, press_preset="").with_base_curve(p.base_curve)
+        ws.thermoform = p
+        self._sync_forming_widgets(ws)
+        self._guide_edited()
+        self._schedule_formed_refresh()
+
+    def _update_formed_readouts(self, ws: "WorkspaceState"):
+        """The Formed Measurements group: flat → formed, from the finished
+        lenses at the groove line and the outline, head-on."""
+        from .boxing import finished_geometry, lens_polygon
+        from .forming import flatten_for_view, front_readout, is_lens_shape
+        dash = "—"
+
+        def put(key, **cols):
+            for ckey, cell in self._fm[key].items():
+                v = cols.get(ckey)
+                cell.setText(dash if v is None else f"{v:.2f}")
+
+        flat = ws.thermoform.is_flat
+        self._fm_table.setVisible(not flat)
+        self._fm_singles.setVisible(not flat)
+        if flat:
+            for key in self._fm:
+                put(key)
+            for lbl in self._fm_single.values():
+                lbl.setText(dash)
+            self._set_note(self._fm_flags,
+                           "Flat: no forming is set (Guides tab ▸ Forming).")
+            return
+        ff = self._front_forming(ws)
+        drawn = [c for c in ws.doc_curves if is_lens_shape(c) and not c.mirrored]
+        lenses = drawn + self._ghost_twins(ws, drawn)
+        bevel_d = max(0.0, ws.bevel_depth)
+        finished = []
+        for c in lenses:
+            box, outline = finished_geometry(c, bevel_d)
+            if box is None:
+                continue
+            if outline is None:
+                poly = lens_polygon(c)
+                outline = [xy for g in getattr(poly, "geoms", [poly])
+                           if not g.is_empty for xy in g.exterior.coords]
+            finished.append((0.5 * (box[0] + box[2]), outline))
+        finished.sort(key=lambda t: t[0])
+        od_pts = finished[0][1] if finished else None
+        os_pts = finished[-1][1] if len(finished) > 1 else None
+        drawn_out = [c for c in ws.doc_curves if c.layer == Layer.OUTLINE
+                     and c.nodes and not c.mirrored]
+        outlines = [flatten_for_view(c)
+                    for c in drawn_out + self._ghost_twins(ws, drawn_out)]
+        r = front_readout(ff, od_pts, os_pts, outlines, outset_mm=bevel_d)
+
+        for key_a, key_b, key_c, L in (("a_od", "b_od", "circ_od", r.od),
+                                       ("a_os", "b_os", "circ_os", r.os)):
+            if L is None:
+                put(key_a), put(key_b), put(key_c)
+                continue
+            put(key_a, head_on=L.a_head_on, plane=L.a_lens_plane, flat=L.a_flat)
+            put(key_b, head_on=L.b_head_on, plane=L.b_lens_plane, flat=L.b_flat)
+            put(key_c, plane=L.circ_lens_plane, d3=L.circ_3d, flat=L.circ_flat)
+        put("dbl", head_on=r.dbl_head_on, flat=r.dbl_flat)
+        put("centers", head_on=r.centers_head_on, flat=r.centers_flat)
+        put("width", head_on=r.width_head_on, flat=r.width_flat)
+        sags = [L.edge_sag_mm for L in (r.od, r.os) if L is not None]
+        self._fm_single["sag"].setText(" · ".join(f"{v:.2f} mm" for v in sags) or dash)
+        tilts = [L.tilt_deg for L in (r.od, r.os) if L is not None]
+        self._fm_single["tilt"].setText(" · ".join(f"{v:.2f}°" for v in tilts) or dash)
+        p = ws.thermoform
+        self._fm_single["curve"].setText(
+            f"{p.base_curve:.2f} D · R {p.base_radius_mm:.1f} mm"
+            if p.base_radius_mm > 0.0 else "Flat")
+        self._fm_single["face"].setText(
+            f"{p.face_form_per_side_deg:.2f}° per side · {p.face_form_deg:.2f}° included")
+        self._fm_single["set"].setText(
+            dash if r.endpiece_set_mm is None else f"{r.endpiece_set_mm:.2f} mm")
+        self._fm_single["depth"].setText(
+            dash if r.depth_mm is None else f"{r.depth_mm:.2f} mm")
+        if r.flags:
+            self._set_note(self._fm_flags, "\n".join(r.flags), warning=True)
+        else:
+            self._set_note(self._fm_flags,
+                           "Within ISO's ±0.5 mm on A." if (r.od or r.os) else
+                           "Draw the lenses to read their formed measurements.")
+
+    def _confirm_flatten_lens_shape(self) -> bool:
+        """Say what Flatten Lens Shape does before it is done, unless the
+        maker has said not to ask (Preferences ▸ General ▸ Prompts turns it
+        back on)."""
+        if not self._prefs.get("prompt_flatten_lens", True):
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Flatten Lens Shape")
+        box.setText(
+            "This will recursively flatten the present lens shape based on the "
+            "Forming settings as marked; this will replace the existing lens "
+            "shape with its flattened version, which when formed to these "
+            "parameters, will produce the lens shape as it was previously "
+            "viewed. This can be undone by Ctrl+Z. Do you wish to continue?")
+        yes = box.addButton(QMessageBox.StandardButton.Yes)
+        box.addButton(QMessageBox.StandardButton.No)
+        box.setDefaultButton(yes)
+        # The box's own child, and the box gone once it is answered: a
+        # checkbox with no parent died with this call while a box that
+        # outlived it still pointed at it, and the next restyle (Dark Mode)
+        # crashed there.
+        cb = QCheckBox("Don't ask again", box)
+        box.setCheckBox(cb)
+        box.exec()
+        agreed, silenced = box.clickedButton() is yes, cb.isChecked()
+        box.deleteLater()
+        if not agreed:
+            return False
+        if silenced:
+            self._prefs["prompt_flatten_lens"] = False
+            _prefs_mod.save(self._prefs)
+        return True
+
+    def _flatten_lens_shape(self):
+        """Flatten Lens Shape (research §4.4, "unform"): the drawn lenses
+        become the flat shapes that form to them in the lens plane. The
+        selected lenses, or every lens drawn; undoable."""
+        from .forming import (UnformDiverged, flatten_for_view, is_lens_shape, lens_readout,
+                              unform_curve)
+        ws = self._active_ws
+        if ws.workspace_type != "front":
+            return
+        if ws.thermoform.is_flat:
+            self._status.showMessage(
+                "Flatten Lens Shape: the front is flat; set a base curve first.", 5000)
+            return
+        if ws.shape_locked:
+            self._status.showMessage(
+                "Flatten Lens Shape: the lens shape is locked (Boxing System ▸ "
+                "Lock lens shape); unlock it first.", 6000)
+            return
+        if ws.scene.is_layer_locked(Layer.LENS):
+            # As every tool: a locked layer is not edited (it replaced both
+            # lenses, and a hidden layer's unseen).
+            self._status.showMessage(
+                "Flatten Lens Shape: the LENS layer is locked (Layers panel); "
+                "unlock it first.", 6000)
+            return
+        if not ws.scene.is_layer_visible(Layer.LENS):
+            self._status.showMessage(
+                "Flatten Lens Shape: the LENS layer is hidden (Layers panel); "
+                "show it first.", 6000)
+            return
+        # A lens is a shape: a stray line or a dot on LENS has nothing to
+        # flatten (it gave "Flattened 1 lens: ;" and an undo step).
+        selected = [i.curve for i in self.scene.selectedItems()
+                    if isinstance(i, CurveItem) and is_lens_shape(i.curve)
+                    and not i.curve.mirrored]
+        targets = selected or [c for c in ws.doc_curves
+                               if is_lens_shape(c) and not c.mirrored]
+        ff = self._front_forming(ws)
+        before = {id(c): lens_readout(ff, flatten_for_view(c), 0.0) for c in targets}
+        targets = [c for c in targets if before[id(c)] is not None]
+        if not targets:
+            self._status.showMessage("Flatten Lens Shape: no lens is drawn.", 5000)
+            return
+        if not self._confirm_flatten_lens_shape():
+            return
+        try:
+            flattened = [unform_curve(c, ff) for c in targets]
+        except UnformDiverged as e:
+            # Nothing is changed: the search's last guess was taken as the
+            # flat shape (tens of millimeters off at the fields' extremes).
+            self._status.showMessage(f"Flatten Lens Shape: {e}. Nothing was changed.", 10000)
+            return
+        # A tool mid-operation holds these curves (an Offset preview, a
+        # Rebuild), and the node dots sit on the nodes about to move.
+        self._end_operations_holding_curves()
+        self._push_undo_snapshot()
+        for c, new in zip(targets, flattened, strict=True):
+            for f in fields(Curve):
+                setattr(c, f.name, getattr(new, f.name))
+            ws.scene.refresh_curve(c)
+        ws._notify()
+        self._edit_tool._on_selection()     # the dots, on the new nodes
+        self._refresh_measurements()
+        self._update_readiness()
+        after = [lens_readout(ff, flatten_for_view(c), 0.0) for c in targets]
+        order = sorted(range(len(targets)), key=lambda i: before[id(targets[i])].box_flat[0])
+        eye = {i: ("OD" if k == 0 else "OS") for k, i in enumerate(order)} \
+            if len(targets) == 2 else {}
+        changes = [f"{eye.get(i, 'A')} {'A ' if i in eye else ''}"
+                   f"{before[id(c)].a_flat:.2f} → {a.a_flat:.2f} mm flat"
+                   for i, (c, a) in enumerate(zip(targets, after, strict=True)) if a]
+        self._status.showMessage(
+            f"Flattened {len(targets)} lens{'es' if len(targets) > 1 else ''}: "
+            + ", ".join(changes) + "; Undo takes it back.", 10000)
+
+    # ── the Forming group on a temple: its tip bend ───────────────────
+
+    def _tip_bend_from_widgets(self) -> TipBendParams:
+        return TipBendParams(length_to_bend_mm=self._bend_length_spin.value(),
+                             drop_angle_deg=self._bend_angle_spin.value(),
+                             bend_radius_mm=self._bend_radius_spin.value())
+
+    def _sync_tip_bend_widgets(self, ws: "WorkspaceState"):
+        p = ws.tip_bend
+        widgets = (self._bend_length_spin, self._bend_angle_spin, self._bend_radius_spin)
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            self._bend_length_spin.setValue(p.length_to_bend_mm)
+            self._bend_angle_spin.setValue(p.drop_angle_deg)
+            self._bend_radius_spin.setValue(p.bend_radius_mm)
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
+
+    def _on_tip_bend_edited(self, *_args):
+        ws = self._active_ws
+        if ws.workspace_type not in ("temple_r", "temple_l"):
+            return
+        ws.tip_bend = self._tip_bend_from_widgets()
+        self._guide_edited()
+        self._schedule_formed_refresh()
+
+    def _update_tip_bend_readouts(self, ws: "WorkspaceState"):
+        tb = self._tip_bend(ws)
+        dash = "—"
+        why = tb.out_of_range() if tb is not None else None
+        self._set_note(self._bend_note, f"Out of range: {why}." if why else "",
+                       warning=bool(why))
+        self._bend_lay.setRowVisible(self._bend_note, bool(why))
+        if tb is None:
+            for lbl in (self._bend_ltb_lbl, self._bend_drop_lbl,
+                        self._bend_overall_lbl, self._bend_reach_lbl):
+                lbl.setText(dash)
+            return
+        self._bend_ltb_lbl.setText(
+            f"{tb.length_to_bend_mm:.1f} mm"
+            + (" (auto)" if ws.tip_bend.length_to_bend_mm <= 0.0 else ""))
+        # No drop to read when the length to bend is the whole temple or
+        # more (it read "-10.0 mm" beside the note).
+        self._bend_drop_lbl.setText(f"{tb.drop_mm:.1f} mm" if tb.drop_mm > 0.0 else dash)
+        self._bend_overall_lbl.setText(f"{tb.overall_mm:.1f} mm")
+        if why:
+            self._bend_reach_lbl.setText(dash)
+        elif tb.is_straight:
+            self._bend_reach_lbl.setText(f"{tb.overall_mm:.1f} mm (straight)")
+        else:
+            self._bend_reach_lbl.setText(
+                f"{tb.reach_mm:.1f} mm · tip {tb.tip_drop_mm:.1f} mm down")
 
     def _sync_view_menu_toggles(self):
         ws_type = self._active_ws.workspace_type
@@ -7225,6 +8338,12 @@ class MainWindow(QMainWindow):
         selection (Select keeps it for inspection; Offset/Point Move
         consume it).
         """
+        # A drag-to-move in progress ends here as its release would. A tool
+        # picked by hotkey mid-drag left the release to re-add node dots to
+        # a curve the new tool had deselected, and dragging one moved it.
+        if self.view._drag_moving:
+            self.view.abandon_drag()
+            self._end_move_selected()
         self._draw_tool.deactivate()
         self.view.set_draw_tool(None)
         self._circle_tool.deactivate()
@@ -7290,6 +8409,7 @@ class MainWindow(QMainWindow):
             self.scene.set_layer_locked(layer, False)
         self._mark_dirty()                 # the layer flags are saved
         self._refresh_layer_panel()
+        self._refresh_formed()
         return True
 
     def _set_tool_line(self):
@@ -7421,6 +8541,7 @@ class MainWindow(QMainWindow):
             setattr(text_obj, k, val)
         self.scene.refresh_text(text_obj)
         self._refresh_layer_panel()   # label shows the (now-changed) string
+        self._refresh_formed()        # View Formed kept the old glyphs
         self._status.showMessage("Text updated.")
 
     def _set_tool_trim(self):
@@ -7436,8 +8557,7 @@ class MainWindow(QMainWindow):
     # Why a shape tool leaves a placed component alone, as Insert Node does: a
     # group is one rigid part, and Trim, Split and Rebuild broke its members
     # out of it, dropping the group and the kind.
-    _GROUPED_REFUSAL = ("the curve belongs to a group (a placed component); "
-                        "ungroup it first (Ctrl+Shift+G)")
+    _GROUPED_REFUSAL = GROUPED_REFUSAL
 
     def _on_trim_applied(self, original, remaining: list):
         if original.group_id:
@@ -7545,6 +8665,11 @@ class MainWindow(QMainWindow):
         # Rebuild REPLACES the source: the whole point is to swap a dense/heavy
         # curve for the clean one at the same place. Undoable, so Ctrl+Z brings
         # the original back.
+        if source_curve.group_id:
+            # Picked in the tool, a group member gets here without the
+            # refusal _set_tool_rebuild gives a selected one.
+            self._back_to_select(f"Rebuild: {self._GROUPED_REFUSAL}")
+            return
         rebuilt_curve.component_kind = source_curve.component_kind
         self._push_undo_snapshot()
         self._edit_tool.clear()
@@ -7861,6 +8986,7 @@ class MainWindow(QMainWindow):
         for item in targets:
             item.curve.line_weight = value
             item.refresh()
+        self._refresh_formed()        # View Formed's copy kept the old pen
         # Every step stars the design, not only the one that pushed: a weight
         # set right after a save left it clean, and closing lost it unasked.
         self._mark_dirty()
@@ -7949,6 +9075,15 @@ class MainWindow(QMainWindow):
     def _delete_selected(self):
         # If a node is selected, delete the node (not the whole curve)
         if self._edit_tool.has_selected_node():
+            sel_curve, _ = self._edit_tool.selected_node_info()
+            if (sel_curve is not None and sel_curve.kind == "line"
+                    and sel_curve.closed and len(sel_curve.nodes) <= 3):
+                # Two nodes of a closed line enclose nothing: the Line tool
+                # and Join refuse that shape, and Delete made it.
+                self._status.showMessage(
+                    "Node delete: a closed line needs three nodes. Delete "
+                    "the curve, or insert a node first", 6000)
+                return
             self._push_undo_snapshot()
             curve = self._edit_tool.delete_selected_node()
             if curve is None:
@@ -8125,19 +9260,26 @@ class MainWindow(QMainWindow):
         msg = self._payload_summary("Pasted", curves, dims, texts)
         if remapped:
             msg += f"  ({remapped} moved to REF — layer not in this workspace)"
-        layers = {c.layer for c in curves} | {t.layer for t in texts}
+        msg += self._layer_note({c.layer for c in curves}
+                                | {t.layer for t in texts}, "paste")
+        self._status.showMessage(msg)
+
+    def _layer_note(self, layers, what: str) -> str:
+        """What a paste or an import landed on that hides it or holds it
+        still, for the end of its status message ("" when nothing does)."""
         hidden = sorted(lay.value for lay in layers
                         if not self.scene.is_layer_visible(lay))
         locked = sorted(lay.value for lay in layers
                         if self.scene.is_layer_visible(lay)
                         and self.scene.is_layer_locked(lay))
+        note = ""
         if hidden:
-            msg += (f"  ({_and_list(hidden)} hidden: show "
-                    f"{'it' if len(hidden) == 1 else 'them'} to see the paste)")
+            note += (f"  ({_and_list(hidden)} hidden: show "
+                     f"{'it' if len(hidden) == 1 else 'them'} to see the {what})")
         if locked:
-            msg += (f"  ({_and_list(locked)} locked: unlock "
-                    f"{'it' if len(locked) == 1 else 'them'} to move the paste)")
-        self._status.showMessage(msg)
+            note += (f"  ({_and_list(locked)} locked: unlock "
+                     f"{'it' if len(locked) == 1 else 'them'} to move the {what})")
+        return note
 
     def _select_all(self):
         """Select every visible, unlocked curve and dim (Ctrl+A)."""
@@ -8171,6 +9313,7 @@ class MainWindow(QMainWindow):
         if _run_modal(dlg) != QDialog.DialogCode.Accepted:
             return
         sx, sy, rot, pivot_origin = dlg.values()
+        rot = math.fmod(rot, 360.0)             # ±360 is no turn, and no undo step
         if sx == 1.0 and sy == 1.0 and rot == 0.0:
             return
         if obverse:
@@ -8298,6 +9441,15 @@ class MainWindow(QMainWindow):
         if len(curves) < 2:
             self._status.showMessage("Group: select 2 or more curves first")
             return
+        # Whole groups, as every other group operation takes them (the 2.0.1
+        # rule): a placed hinge's REF guide on a hidden layer was left with
+        # the old id, alone (the 2.3 hunt). And a selection that is already
+        # one group is left as it is, with no undo step.
+        curves = self._with_group_members(curves)
+        ids = {c.group_id for c in curves}
+        if len(ids) == 1 and None not in ids:
+            self._status.showMessage("Group: the selection is already one group")
+            return
         self._push_undo_snapshot()
         gid = uuid.uuid4().hex[:8]
         for c in curves:
@@ -8317,6 +9469,9 @@ class MainWindow(QMainWindow):
         if not curves:
             self._status.showMessage("Ungroup: no grouped curves selected")
             return
+        # Members on a hidden or locked layer too, as every group operation
+        # takes them: left out, they stayed a one-member "group" (2.0.1).
+        curves = self._with_group_members(curves)
         self._push_undo_snapshot()
         for c in curves:
             c.group_id = None
@@ -8432,6 +9587,7 @@ class MainWindow(QMainWindow):
             closed      = True,
             line_weight = curve.line_weight,
             component_kind = curve.component_kind,
+            group_id    = curve.group_id,     # a group member stays one
         )
 
         # Replace the open half with the new closed shape
@@ -8579,6 +9735,12 @@ class MainWindow(QMainWindow):
         from .textpath import mirror_text
         for t in src_ws.doc_texts:
             tgt_ws.add_text(mirror_text(t, 0.0, horizontal=True))
+        # The pair bends alike: the copy kept the other tab's own tip bend,
+        # so a right temple set to 100 mm sat beside a left on Auto, in View
+        # Formed and in the file GuildModel draws the frame from. (A guide
+        # value, as the bend is, is no undo step on either tab.)
+        bend_copied = tgt_ws.tip_bend != src_ws.tip_bend
+        tgt_ws.tip_bend = dataclasses.replace(src_ws.tip_bend)
 
         # Switch to target tab
         self._ws_tab_widget.setCurrentIndex(tab_names.index(target_type))
@@ -8587,7 +9749,7 @@ class MainWindow(QMainWindow):
         self._status.showMessage(
             self._payload_summary("Temple Copy:", tgt_ws.doc_curves,
                                   tgt_ws.doc_dims, tgt_ws.doc_texts)
-            + f" copied to {label}.")
+            + f" copied to {label}" + (", with its tip bend." if bend_copied else "."))
 
     # ------------------------------------------------------------------
     # Join curves
@@ -8788,6 +9950,13 @@ class MainWindow(QMainWindow):
         # Check if chain forms a closed loop
         close_gap = ep_dist(result_nodes[0], result_nodes[-1])
         is_closed = close_gap < self._JOIN_TOL
+        # Closing folds the tail onto the head. A chain of straight runs
+        # needs three nodes left to be a shape: a V of two lines with its
+        # free ends 1.5 mm apart came back one line there and back, a leg
+        # gone (the 2.3 sweep). It stays open, as one-curve Join leaves it.
+        if (is_closed and close_gap > 1e-9 and len(result_nodes) < 4
+                and all(n.cp_in is None and n.cp_out is None for n in result_nodes)):
+            is_closed = False
         if is_closed:
             max_gap = max(max_gap, close_gap)
             # Merge tail into head: head takes cp_in from tail
@@ -9020,6 +10189,11 @@ class MainWindow(QMainWindow):
         if not selected_items:
             self._status.showMessage(
                 "Explode: each selected curve is a single segment already")
+            return
+        # As Trim, Split, Fillet and Rebuild: the segments left the group,
+        # and a placed component came apart.
+        if any(i.curve.group_id for i in selected_items):
+            self._status.showMessage(f"Explode: {self._GROUPED_REFUSAL}", 6000)
             return
 
         self._push_undo_snapshot()
@@ -9285,6 +10459,15 @@ class MainWindow(QMainWindow):
             self._inlay_fill_opacity_slider.setValue(
                 round(self._active_ws.inlay_fill_opacity * 100))
             self._inlay_fill_opacity_slider.blockSignals(False)
+        # Forming: the open front follows at once; the file holds a copy, so a
+        # front that has forming set is marked unsaved.
+        if p.get("forming") != old_prefs.get("forming"):
+            front_setup = front.thermoform.with_setup(self._forming_setup())
+            moved_a_design |= (front_setup != front.thermoform
+                               and not front_setup.is_flat)
+            front.thermoform = front_setup
+            self._sync_forming_widgets(self._active_ws)
+            self._refresh_formed()
         if moved_a_design:
             self._mark_dirty()
 
@@ -9758,6 +10941,7 @@ class MainWindow(QMainWindow):
         self._drill_dia.setRange(0.5, 6.0); self._drill_dia.setSuffix(" mm")
         self._drill_dia.setDecimals(2); self._drill_dia.setSingleStep(0.1)
         self._drill_dia.setValue(1.4)
+        self._drill_dia.setToolTip("The hole's diameter; 1.4 mm fits an M1.4 screw.")
         self._drill_x.setToolTip("Toward the nose is positive, on either lens.")
         self._drill_y.setToolTip("Above the lens center is positive, as in an "
                                  "OMA trace.")
@@ -9779,11 +10963,17 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._drill_list)
 
         self._btn_drill_import = QPushButton("Import Pattern onto Lens")
+        self._btn_drill_import.setToolTip(
+            "Place the selected pattern's holes on each lens, about its boxing "
+            "center, on the DRILL layer.")
         self._btn_drill_import.setEnabled(False)
         self._btn_drill_import.clicked.connect(self._import_drill_pattern)
         lay.addWidget(self._btn_drill_import)
 
         self._btn_drill_save = QPushButton("Save Current Holes as Pattern…")
+        self._btn_drill_save.setToolTip(
+            "Save the front's DRILL holes, relative to their lens's boxing "
+            "center, as a named pattern in the library.")
         self._btn_drill_save.clicked.connect(self._save_drill_pattern)
         lay.addWidget(self._btn_drill_save)
 
@@ -9850,12 +11040,13 @@ class MainWindow(QMainWindow):
             sx = 1.0
         self._ws_tab_widget.setCurrentIndex(0)   # holes live on the front
         self._push_undo_snapshot()
-        self.scene.clearSelection()
+        items = []
         for dx, dy, dia in holes:
             c = Curve(kind="circle", layer=Layer.DRILL,
                       nodes=[SplineNode(cx + sx * dx, cy + dy)],
                       radius=max(0.05, dia / 2.0), closed=True)
-            self._active_ws.add_curve(c).setSelected(True)
+            items.append(self._active_ws.add_curve(c))
+        self.scene.select_items(items)
         return True
 
     def _add_drill_hole_from_fields(self):
@@ -10022,7 +11213,11 @@ class MainWindow(QMainWindow):
         # leaving an uncalibrated photo's untouched 1.0 placeholder applied
         # 1 px/mm — a 3000 px photo became 3 m wide — and marked the design
         # changed.
-        if v <= 0 or (current and abs(v - current) < 1e-9) \
+        # The field shows the calibration rounded to its decimals, so an
+        # untouched field is compared as shown: against the exact value, a
+        # click in and out replaced a 2-point calibration with its rounding.
+        if v <= 0 or (current and abs(
+                    v - round(current, self._pxmm_spin.decimals())) < 1e-9) \
                 or (not current and v == 1.0):
             return
         self._apply_calibration(v, index)
@@ -10054,6 +11249,7 @@ class MainWindow(QMainWindow):
 
         Returns True when it is safe to proceed (saved, discarded, or clean).
         """
+        self._commit_pending_field()    # a value typed and not entered is a change
         if not self._dirty:
             return True
         name = (os.path.basename(self._current_path) if self._current_path
@@ -10422,7 +11618,9 @@ class MainWindow(QMainWindow):
             empty.setEnabled(False)
             return
         for p in self._recent_files:
-            act = m.addAction(os.path.basename(p),
+            # "&" doubled: Qt reads one as a mnemonic, so "R&D.gdraw" showed
+            # as "RD.gdraw" with the D underlined.
+            act = m.addAction(os.path.basename(p).replace("&", "&&"),
                               lambda checked=False, p=p: self._open_recent(p))
             act.setToolTip(p)
         m.addSeparator()
@@ -10685,12 +11883,14 @@ class MainWindow(QMainWindow):
         store = box.addButton("Store in Design", QMessageBox.ButtonRole.AcceptRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
         box.setDefaultButton(store)
-        cb = QCheckBox("Don't ask again")
+        cb = QCheckBox("Don't ask again", box)     # as _confirm_flatten_lens_shape
         box.setCheckBox(cb)
         box.exec()
-        if box.clickedButton() is not store:
+        agreed, silenced = box.clickedButton() is store, cb.isChecked()
+        box.deleteLater()
+        if not agreed:
             return False
-        if cb.isChecked():
+        if silenced:
             self._prefs["prompt_store_image"] = False
             _prefs_mod.save(self._prefs)
         return True
@@ -10871,10 +12071,16 @@ class MainWindow(QMainWindow):
         for ws in self._workspaces:
             ws.obverse = False
             ws.view.set_obverse(False)
+            ws.formed_view = False
+            ws.view.set_formed(False)
+            ws.scene.set_formed_fade(False)
+            ws.scene.formed.clear()
             ws.fitted = False
-        self._act_obverse.blockSignals(True)
-        self._act_obverse.setChecked(False)
-        self._act_obverse.blockSignals(False)
+        for act in (self._act_obverse, self._act_formed):
+            act.blockSignals(True)
+            act.setChecked(False)
+            act.blockSignals(False)
+        self._sync_preview_checks(False)
 
     def _guide_defaults(self, ws: "WorkspaceState") -> tuple:
         """``(stock_w, stock_h, pad_w, pad_h)`` a workspace starts at: the
@@ -10946,6 +12152,7 @@ class MainWindow(QMainWindow):
         ws.fill_opacity = 0.50
         ws.fill_style   = "color"
         ws.fill_image   = ""
+        ws.fill_image_unfound = False
         ws.scene.set_fill_color(QColor(ws.fill_color))
         ws.scene.set_fill_opacity(ws.fill_opacity)
         ws.scene.clear_fill_image()
@@ -10955,6 +12162,7 @@ class MainWindow(QMainWindow):
         ws.inlay_fill_opacity = self._default_inlay_fill_opacity()
         ws.inlay_fill_style   = "color"
         ws.inlay_fill_image   = ""
+        ws.inlay_fill_image_unfound = False
         ws.inlay_fill_tumble  = False
         ws.scene.set_inlay_fill_color(QColor(ws.inlay_fill_color))
         ws.scene.set_inlay_fill_opacity(ws.inlay_fill_opacity)
@@ -11065,6 +12273,7 @@ class MainWindow(QMainWindow):
 
     def _open_path(self, path: str):
         """Dispatch an open by extension. Caller handles the discard prompt."""
+        path = os.path.abspath(path)        # a relative command-line path stayed relative
         if path.lower().endswith(".gdraw"):
             self._open_gdraw(path)
         else:
@@ -11084,17 +12293,21 @@ class MainWindow(QMainWindow):
                                  _open_error_text(path, e))
             return
         self._settle_before_replacing_document()
-        # A plain .svg is a single-workspace document: the temples and component
-        # start empty, or the previous project's would ride along into the
-        # next save.
-        for ws in self._workspaces[1:]:
-            self._reset_workspace(ws)
+        # An SVG exported from a temple or the component tab says so, and goes
+        # back to that tab: it opened into the Frame Front, and Ctrl+S then
+        # wrote it back as a front (2.0.1). Anything else is the front.
+        target = next((i for i, w in enumerate(self._workspaces)
+                       if w.workspace_type == data.get("workspace")), 0)
+        # A plain .svg is a single-workspace document: the other tabs start
+        # empty, or the previous project's would ride along into the next save.
+        for i, ws in enumerate(self._workspaces):
+            if i != target:
+                self._reset_workspace(ws)
         try:
-            self._load_ws_data(self._workspaces[0], data)
-            # Switch to Front tab
+            self._load_ws_data(self._workspaces[target], data)
             self._loading = True
             try:
-                self._ws_tab_widget.setCurrentIndex(0)
+                self._ws_tab_widget.setCurrentIndex(target)
             finally:
                 self._loading = False
             # Pull the loaded state into the sidebar. The tab change above does
@@ -11115,14 +12328,20 @@ class MainWindow(QMainWindow):
             self._update_title()
             self._status.showMessage(f"Opened with errors: {os.path.basename(path)}")
             return
-        self._current_path = path
-        self._remember_disk_state(path)
+        # A .svg document is saved as the front (_do_save_svg), so a temple's
+        # or the component's keeps no path: Save asks for a name, a .gdraw.
+        self._current_path = path if target == 0 else None
+        if target == 0:
+            self._remember_disk_state(path)
         self._clear_dirty()
         self._clear_autosave()      # the recovery slot held the previous document
         self._add_recent(path)
-        bm = self._workspaces[0].bookmarks
+        bm = self._workspaces[target].bookmarks
         self._status.showMessage(
             f"Opened: {os.path.basename(path)}"
+            + ("" if target == 0 else
+               f" into {self._ws_tab_widget.tabText(target)}: Save keeps it "
+               "as a new design")
             + (f"  ·  {len(bm)} bookmark(s)" if bm else "")
         )
 
@@ -11313,6 +12532,12 @@ class MainWindow(QMainWindow):
         frm = data.get("forming", FormingMetadata())
         ws.bridge_angle  = frm.bridge_angle_deg
         ws.apical_radius = frm.apical_radius_mm
+        # Absent in every file before 2.3: flat, and the default bend. The
+        # shop's setup replaces the copy the file carries (FormingSetup); the
+        # file changes at the next save, as an opened design is not an edit.
+        ws.thermoform = ThermoformParams.from_dict(data.get("thermoform")).with_setup(
+            self._forming_setup())
+        ws.tip_bend = TipBendParams.from_dict(data.get("tip_bend"))
 
         bevel = data.get("bevel")
         if bevel is not None:
@@ -11325,20 +12550,26 @@ class MainWindow(QMainWindow):
         ws.selected_face_idx = -1
         face_images_data = data.get("face_images", [])
         placed = []                 # (scene index, record) of the photos loaded
-        for fi in face_images_data:
+        for k, fi in enumerate(face_images_data):
             if not fi.stored:
                 # Found by its id on this computer, never by a path in the file.
                 fi = dataclasses.replace(fi, path=image_links.find(fi.link_id) or "")
             idx = self._place_face(ws, fi)
             if idx is not None:
+                ws.scene.set_face_order(idx, k)
                 placed.append((idx, fi))
             elif fi.path or fi.link_id:
-                ws.unshown_faces.append(fi)
+                ws.unshown_faces.append(dataclasses.replace(fi, order=k))
 
         cal = data.get("calibration", Calibration())
         if cal.is_set:
             ws.image_px_per_mm = cal.px_per_mm
-            ws.scene.set_face_calibration(cal.px_per_mm)   # every photo, as before 2.0
+            # A file before 2.0 kept one calibration for every photo. A 2.0
+            # file keeps each photo's own, and its design-wide value is only
+            # the first calibrated photo's: given to every photo, it resized
+            # one never calibrated to another's scale on each reopen (2.0.1).
+            if not any(fi.px_per_mm for fi in face_images_data):
+                ws.scene.set_face_calibration(cal.px_per_mm)
         for idx, fi in placed:                             # then each its own
             if fi.px_per_mm:
                 ws.scene.set_face_calibration(fi.px_per_mm, idx)
@@ -11467,11 +12698,13 @@ class MainWindow(QMainWindow):
     def _save(self) -> bool:
         """Save to the document's path, or ask for one. True when a file was
         written."""
+        self._commit_pending_field()    # the Save button takes no focus
         if not getattr(self, "_current_path", None):
             return self._save_as()
         return self._do_save(self._current_path)
 
     def _save_as(self, start: str | None = None) -> bool:
+        self._commit_pending_field()
         # Untitled project: suggest the frame-size notation (49□27.gdraw) so
         # the □ is in the filename without typing it — the native Windows
         # dialog can't receive the insert-□ application shortcut.
@@ -11645,7 +12878,14 @@ class MainWindow(QMainWindow):
         try:
             tmp = _sibling_tmp(target)
             if path.lower().endswith(".gdraw"):
-                notes = self._do_save_gdraw(tmp, carry_from=target) or []
+                # Images that cannot be read now come from the design's own
+                # file, as the autosave takes them. From the target, a Save As
+                # over another design took its same-named photo, and one to a
+                # new name dropped a photo the open had left in the file.
+                own = self._current_path
+                own = (os.path.realpath(own) if own and own.lower()
+                       .endswith(".gdraw") and os.path.isfile(own) else None)
+                notes = self._do_save_gdraw(tmp, carry_from=own) or []
             else:
                 self._do_save_svg(tmp)
             # On disk before it replaces anything: a crash or a power cut
@@ -11680,6 +12920,17 @@ class MainWindow(QMainWindow):
                                  _write_error_text("save the design", path, e))
             return False
         self._remember_disk_state(target)
+        if target.lower().endswith(".gdraw"):
+            from .export.gdraw import _MAX_TAB_BYTES, oversized_tabs
+            big = oversized_tabs(target)
+            if big:
+                QMessageBox.warning(
+                    self, "Too Large to Open Again",
+                    f"{os.path.basename(path)} was saved, but GuildDraw opens a tab "
+                    f"of at most {_MAX_TAB_BYTES // (1024 * 1024)} MB:\n"
+                    + "\n".join(f"• {_TAB_TITLES.get(t, t)}: {mb} MB" for t, mb in big)
+                    + "\n\nEach bookmark stores the whole drawing. Delete bookmarks "
+                    "you no longer need, then save again.")
         if notes:
             QMessageBox.warning(
                 self, "Some Images Were Not Carried",
@@ -11745,7 +12996,15 @@ class MainWindow(QMainWindow):
                            ),
             "machined_bridge": MachinedBridge(),
             "bevel": BevelSpec(preset=ws.bevel_preset, depth_mm=ws.bevel_depth),
-            "face_images": [
+            # The front's forming and a temple's tip bend (2.3); the component
+            # tab carries neither.
+            "thermoform": (ws.thermoform.with_setup(self._forming_setup()).to_dict()
+                           if ws.workspace_type == "front" else None),
+            "tip_bend": (ws.tip_bend.to_dict()
+                         if ws.workspace_type in ("temple_r", "temple_l") else None),
+            # Carried as they came (see WorkspaceState.unshown_faces), each
+            # back in its place in the stack.
+            "face_images": _restack_faces([
                 FaceImage(
                     path     = ws.scene.face_path(i),
                     tx       = ws.scene.face_scene_pos(i)[0],
@@ -11757,12 +13016,10 @@ class MainWindow(QMainWindow):
                     locked   = ws.scene.face_is_locked(i),
                     stored   = ws.scene.face_stored(i),
                     link_id  = ws.scene.face_link(i),
+                    order    = ws.scene.face_order(i),
                 )
                 for i in range(ws.scene.face_count())
-            ] + [
-                # Carried as they came (see WorkspaceState.unshown_faces).
-                fi for fi in getattr(ws, "unshown_faces", [])
-            ],
+            ], getattr(ws, "unshown_faces", [])),
             "bookmarks": ws.bookmarks,
             # The blank and the pad block the design is drawn against (2.0):
             # read back on open, and the seed GuildModel takes for a new
@@ -11785,7 +13042,7 @@ class MainWindow(QMainWindow):
                 "visible": ws.fill_visible,
                 "color":   ws.fill_color,
                 "opacity": ws.fill_opacity,
-                "style":   ws.fill_style,
+                "style":   ws.fill_style_saved,
                 # Saved even while the color is showing, so switching back to
                 # Image after a reload finds the swatch still attached.
                 "image":   ws.fill_image,
@@ -11794,7 +13051,7 @@ class MainWindow(QMainWindow):
                 "visible": ws.inlay_fill_visible,
                 "color":   ws.inlay_fill_color,
                 "opacity": ws.inlay_fill_opacity,
-                "style":   ws.inlay_fill_style,
+                "style":   ws.inlay_fill_style_saved,
                 "image":   ws.inlay_fill_image,   # kept while the color shows
                 "tumble":  ws.inlay_fill_tumble,
             },
@@ -11839,6 +13096,9 @@ class MainWindow(QMainWindow):
             texts           = d["texts"],
             bevel           = d["bevel"],
             text_outlines   = export,
+            workspace       = ws.workspace_type if export else None,
+            thermoform      = d["thermoform"],
+            tip_bend        = d["tip_bend"],
         )
 
     def _do_save_gdraw(self, path: str, carry_from: str | None = None) -> list[str]:
@@ -12058,6 +13318,10 @@ class MainWindow(QMainWindow):
         for t in ws.doc_texts:
             if t.text.strip() and self.scene.is_layer_visible(t.layer):
                 rect = rect.united(text_outline_path(t).boundingRect())
+        # The PNG is the canvas as seen, View Formed included: a bent
+        # temple's tail reaches past the flat drawing.
+        for path in self.scene.formed.paths():
+            rect = rect.united(path.boundingRect())
         for i in range(self.scene.face_count()):
             item = self.scene.get_face_item(i)
             if item is not None and item.isVisible():
@@ -12065,7 +13329,9 @@ class MainWindow(QMainWindow):
         return rect if not rect.isEmpty() else None
 
     def _export_png(self):
-        if self._tab_is_empty("Export PNG") and not self.scene.face_count():
+        # The photo first: asked first, the empty-tab box said "nothing to
+        # export" for a tab holding only a photo, then the PNG was written.
+        if not self.scene.face_count() and self._tab_is_empty("Export PNG"):
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Export PNG", self._suggested(".png", per_tab=True),
@@ -12113,8 +13379,9 @@ class MainWindow(QMainWindow):
                       "8192 px a side" if written and written < dpi - 0.5 else "")
             self._status.showMessage(
                 f"PNG exported: {os.path.basename(path)}" + capped
-                + (f"  ·  the {_OBVERSE_FACE[self._active_ws.workspace_type]}, "
-                   "as View Obverse shows it" if obverse else ""))
+                + self._obverse_note(obverse)
+                + ("  ·  formed, as View Formed shows it"
+                   if self._active_ws.formed_view and len(self.scene.formed) else ""))
         except Exception as e:
             QMessageBox.critical(self, "Could Not Export the PNG",
                                  _write_error_text("export the PNG", path, e))
@@ -12153,14 +13420,19 @@ class MainWindow(QMainWindow):
             return
 
         self._push_undo_snapshot()
-        self.scene.clearSelection()
+        # Selected in one pass: one at a time, each selection change rescanned
+        # the selection, and 20 000 lines took 163 s.
+        items = []
         for c in curves:
             c.mirrored = False
-            self._active_ws.add_curve(c).setSelected(True)
+            items.append(self._active_ws.add_curve(c))
+        self.scene.select_items(items)
 
         msg = f"Imported {len(curves)} curve(s) from {os.path.basename(path)}."
         if notes:
             msg += "  " + "  ".join(notes)
+        # Onto a hidden layer the curves were added unseen, with no word.
+        msg += self._layer_note({c.layer for c in curves}, "import")
         self._status.showMessage(msg)
 
     def _import_svg(self, path: str | None = None):
@@ -12200,18 +13472,21 @@ class MainWindow(QMainWindow):
         if center_on_view:
             r = self._view_source_rect()
             center = (r.center().x(), r.center().y())
-        curves = place_curves(doc.curves, scale=scale, center=center)
+        curves = place_curves(doc.curves, scale=scale, center=center,
+                              notes=doc.notes)
 
         self._push_undo_snapshot()
-        self.scene.clearSelection()
+        items = []
         for c in curves:
             c.mirrored = False
-            ws.add_curve(c).setSelected(True)
+            items.append(ws.add_curve(c))
+        self.scene.select_items(items)
 
         msg = (f"Imported {len(curves)} curve(s) from {os.path.basename(path)} at "
                f"{doc.width_mm * scale:.2f} × {doc.height_mm * scale:.2f} mm.")
         if doc.notes:
             msg += "  " + "  ".join(doc.notes)
+        msg += self._layer_note({c.layer for c in curves}, "import")
         self._status.showMessage(msg)
 
     def _ask_svg_import(self, doc, filename: str) -> tuple[float, bool] | None:
@@ -12279,21 +13554,32 @@ class MainWindow(QMainWindow):
         scale = (spin.value() / ref) if ref > 1e-9 else 1.0
         return scale, center_cb.isChecked()
 
-    def _ask_oma_import_bevel(self, default_depth: float) -> float | None:
+    def _ask_oma_import_bevel(self, default_depth: float,
+                              declared: str = "") -> float | None:
         """Ask whether to shrink an imported OMA trace by the bevel depth.
+
+        *declared* is what the file says the trace is (oma.trace_origin),
+        shown as information only: an eyewire's bevel, a demo lens and a
+        drill-mount shape trace differently, and only the user knows the
+        trace's origin and what the shape is for (2.0.1; the dialog said
+        every trace followed a bevel groove).
 
         Returns the depth to shrink by (0.0 = import at traced size), or
         None if the user canceled the import. Split out so tests can
         monkeypatch the answer without driving a modal dialog."""
+        said = f"This file declares {declared}.<br><br>" if declared else ""
         return self._ask_oma_bevel(
             "Import OMA Lens Trace",
-            "A tracer follows the bevel groove of the <b>finished</b> lens — "
-            "the drawn lens shape grown outward by the bevel depth (this is "
-            "also what OMA export writes).<br><br>"
-            "Shrink the imported shape by the bevel depth to recover the "
-            "drawn lens? Importing at the same depth the file was exported "
-            "with round-trips exactly.",
-            default_depth, "Shrink to the Drawn Lens", "Import As Traced")
+            "Whether to shrink a trace depends on what was traced and what "
+            "the shape is for. A trace of an eyewire's bevel groove is the "
+            "<b>finished</b> lens: the lens opening grown outward by the "
+            "bevel depth, which is also what OMA export writes. A demo lens "
+            "or a drill-mount shape is traced at its edge.<br><br>"
+            + said +
+            "Shrink the imported shape by the bevel depth? A file exported "
+            "from GuildDraw round-trips exactly at the depth it was exported "
+            "with.",
+            default_depth, "Shrink by the Bevel Depth", "Import As Traced")
 
     def _ask_oma_export_bevel(self, default_depth: float) -> float | None:
         """Ask whether to grow the exported OMA trace by the bevel depth.
@@ -12374,32 +13660,45 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could Not Import the OMA Trace", str(e))
             return
 
-        # DBL from the file when present, else the boxing-guide setting.
+        # DBL from the file when it states one, else the boxing-guide setting.
+        # A pattern file writes DBL=0 for "not stated" (a rimless mount's has
+        # no bridge to measure), and taken at its word the lenses came in
+        # touching; a negative one overlapped them, 99999 set them 100 m apart.
         front = self._workspaces[0]
-        dbl_vals = job.floats("DBL")
+        dbl_vals = [v for v in (job.floats("DBL") or []) if 0.0 < v <= 60.0]
         dbl = dbl_vals[0] if dbl_vals else front.boxing_dbl
 
-        # A tracer follows the bevel groove of the FINISHED lens — the drawn
-        # lens grown outward by the bevel depth (exactly what OMA export
-        # writes). Ask whether to shrink back to the drawn lens shape.
-        shrink = self._ask_oma_import_bevel(front.bevel_depth)
+        # A trace of an eyewire's bevel groove is the FINISHED lens, the
+        # drawn lens grown outward by the bevel depth (exactly what OMA
+        # export writes); a demo lens or drill-mount shape is traced at its
+        # edge. Only the user knows which, so ask, showing what the file says.
+        from .export.oma import trace_origin
+        shrink = self._ask_oma_import_bevel(front.bevel_depth,
+                                            declared=trace_origin(job))
         if shrink is None:
             return                              # canceled
+        # Each lens is shrunk on its own: one that failed took the other down
+        # with it, and both came in at traced size.
+        shrunk = dict.fromkeys(lenses, 0.0)
         if shrink > 0.0:
-            try:
-                from .geometry import offset_curve as _offset
-                lenses = {side: _offset(c, -shrink)
-                          for side, c in lenses.items()}
-            except Exception as e:
+            from .geometry import offset_curve as _offset
+            failed = []
+            for side, c in lenses.items():
+                try:
+                    lenses[side] = _offset(c, -shrink)
+                    shrunk[side] = shrink
+                except Exception as e:
+                    failed.append(f"{side}: {e}")
+            if failed:
                 QMessageBox.warning(
                     self, "Bevel Reduction Failed",
                     f"Could not shrink the trace by {shrink:.2f} mm "
-                    f"({e}).\nImporting at traced (finished) size instead.")
-                shrink = 0.0
-        # The file's DBL describes the finished lenses; after shrinking, the
-        # drawn nasal edges sit a bevel depth further apart on each side so
-        # the finished edges still land DBL apart.
-        dbl_place = dbl + 2.0 * shrink
+                    f"({'; '.join(failed)}).\n"
+                    f"{'That lens is' if len(failed) == 1 else 'Those lenses are'} "
+                    "imported at traced (finished) size.")
+        # The file's DBL describes the finished lenses; after shrinking, a
+        # drawn nasal edge sits a bevel depth further out, so the finished
+        # edges still land DBL apart.
 
         # Place each lens: boxing centers on y = 0, nasal edges DBL apart.
         # Side R (OD) sits at negative x — viewer's left, same convention as
@@ -12412,8 +13711,8 @@ class MainWindow(QMainWindow):
             if bb is None:
                 continue
             w  = bb[2] - bb[0]
-            tx = (-(dbl_place / 2 + w / 2) if side == "R"
-                  else (dbl_place / 2 + w / 2)) \
+            edge = dbl / 2 + shrunk[side]
+            tx = (-(edge + w / 2) if side == "R" else (edge + w / 2)) \
                  - (bb[0] + bb[2]) / 2
             ty = -(bb[1] + bb[3]) / 2
             for nd in c.nodes:
@@ -12440,22 +13739,59 @@ class MainWindow(QMainWindow):
         for c in lenses.values():
             self._active_ws.add_curve(c)
 
-        # DRILLE holes → DRILL circles. OMA is y-up from the binocular frame
-        # center, which the import places at the scene origin (0, 0).
-        for d in job.drills:
+        # DRILLE holes → DRILL circles, each from its own lens's box center
+        # (oma.place_drills; an export of GuildDraw's from before 2.3 is told
+        # apart and read from the frame's center, as it was written).
+        from .export.oma import place_drills
+        from .forming import flatten_for_view
+        centers, outlines = {}, {}
+        for side, c in lenses.items():
+            bb = lens_bbox(c)
+            if bb is not None:
+                centers[side] = (0.5 * (bb[0] + bb[2]), 0.5 * (bb[1] + bb[3]))
+                # the traced edge, where a hole near it is judged: the drawn
+                # lens grown back by the bevel it was shrunk by
+                outlines[side] = flatten_for_view(c)
+                if shrunk[side] > 0.0:
+                    from shapely.geometry import Polygon
+                    grown = Polygon(outlines[side]).buffer(shrunk[side])
+                    if not grown.is_empty and grown.geom_type == "Polygon":
+                        outlines[side] = list(grown.exterior.coords)
+        layout = place_drills(job.drills, centers, outlines)
+        for hx, hy, dia in layout.holes:
             self._active_ws.add_curve(Curve(
                 kind="circle", layer=Layer.DRILL,
-                nodes=[SplineNode(d.x, -d.y)],
-                radius=max(0.05, d.dia / 2.0), closed=True))
+                nodes=[SplineNode(hx, hy)],
+                radius=max(0.05, dia / 2.0), closed=True))
 
         src = "file DBL" if dbl_vals else "boxing-guide DBL"
         msg = (f"Imported {len(lenses)} traced lens shape"
                f"{'s' if len(lenses) != 1 else ''} onto LENS "
                f"({src} {dbl:.1f} mm).")
-        if shrink > 0.0:
-            msg += f"  Bevel reduction −{shrink:.2f} mm applied."
-        if job.drills:
-            msg += f"  +{len(job.drills)} drill hole(s) on DRILL."
+        done = [side for side, mm in shrunk.items() if mm > 0.0]
+        if done:
+            msg += (f"  Bevel reduction −{shrink:.2f} mm applied"
+                    f"{'' if len(done) == len(lenses) else ' to ' + ', '.join(done)}.")
+        from .export.oma import _TRACE_NOISE_MM, trace_noise_mm
+        noisy = {side: trace_noise_mm(tr.radii_mm) for side, tr in job.traces.items()}
+        noisy = {side: mm for side, mm in noisy.items() if mm > _TRACE_NOISE_MM}
+        if noisy:
+            msg += ("  Smoothed for tracer noise (about "
+                    + ", ".join(f"{side} {mm:.3f} mm" for side, mm in noisy.items()) + ").")
+        if layout.holes:
+            msg += (f"  +{len(layout.holes)} drill hole{'s' if len(layout.holes) != 1 else ''} "
+                    "on DRILL")
+            msg += (" (read as a GuildDraw export from before 2.3, measured from the "
+                    "frame's center)." if layout.legacy else ", each from its lens's center.")
+        if layout.slots:
+            msg += (f"  {layout.slots} slot{'s' if layout.slots != 1 else ''} came in as "
+                    "a round hole at its start.")
+        left = layout.unread + layout.no_lens
+        if left:
+            msg += (f"  {left} drill feature{'s' if left != 1 else ''} not placed"
+                    + (" (measured from the lens edge or box, which GuildDraw does "
+                       "not read)" if layout.unread else " (for a lens the file has no "
+                       "trace of)") + ": place by hand.")
         if len(lenses) == 1:
             msg += (" One lens in the file: the Ghost previews the other; bake it "
                     "with Mirror before handing the front to GuildModel.")
@@ -12493,7 +13829,7 @@ class MainWindow(QMainWindow):
 
         from .export.oma import (
             OmaJob, OmaTrace, build_oma, curve_to_trace, points_to_trace,
-            boxing_center,
+            boxing_center, _EXPORT_OUTLINE_TOL_MM,
         )
         from .boxing import finished_geometry
         # The Ghost pairs a lens drawn alone, as the canvas shows it; a pair
@@ -12532,26 +13868,65 @@ class MainWindow(QMainWindow):
         if depth is None:
             return                              # canceled
 
+        # A formed front (2.3, research Q11): the lab's lens is the shape in
+        # the lens plane, where ISO measures and a 3D tracer leans, so the
+        # radii and HBOX/VBOX are taken there, DBL head-on, and FCRV, ZTILT
+        # and CIRC (the 3D groove length labs size by) are written. A flat
+        # front exports as it always did.
+        ws = self._active_ws
+        ff = self._front_forming(ws) if not ws.thermoform.is_flat else None
+        formed_note = ""
+
         # Build the job before asking for a filename — the tracer rejects
         # non-star-shaped contours and we want that error first.
         try:
             job = OmaJob()
-            boxes = {}
+            boxes, head_boxes, tilts, circs = {}, {}, {}, {}
             for side, c in (("R", od), ("L", os_lens)):
-                bb, outline = finished_geometry(c, depth)
+                bb, outline = finished_geometry(c, depth, _EXPORT_OUTLINE_TOL_MM)
                 if bb is None:
                     raise ValueError("A LENS contour has no area — cannot trace.")
-                radii = (points_to_trace(outline) if outline is not None
-                         else curve_to_trace(c))
+                if ff is not None:
+                    from .forming import GROOVE_APEX_MM, flatten_for_view, lens_readout
+                    from .forming import densify
+                    pts = outline if outline is not None else flatten_for_view(c, 0.001)
+                    # A straight side bows in the lens plane: a polygon lens
+                    # traced from its corners was up to half a millimeter off.
+                    pts = densify(pts, 0.5)
+                    r = lens_readout(ff, pts)
+                    cx = 0.5 * (r.box_flat[0] + r.box_flat[2])
+                    radii = points_to_trace(
+                        [tuple(p) for p in ff.lens_plane(pts, cx, GROOVE_APEX_MM)])
+                    bb, head_boxes[side] = r.box_lens_plane, r.box_head_on
+                    tilts[side], circs[side] = r.tilt_deg, r.circ_3d
+                else:
+                    radii = (points_to_trace(outline) if outline is not None
+                             else curve_to_trace(c))
                 job.traces[side] = OmaTrace(side=side, radii_mm=radii)
                 boxes[side] = bb
             job.set_record("HBOX", ";".join(
                 f"{boxes[s][2] - boxes[s][0]:.2f}" for s in ("R", "L")))
             job.set_record("VBOX", ";".join(
                 f"{boxes[s][3] - boxes[s][1]:.2f}" for s in ("R", "L")))
-            job.set_record("DBL", f"{boxes['L'][0] - boxes['R'][2]:.2f}")
+            dbl_boxes = head_boxes if ff is not None else boxes
+            job.set_record("DBL", f"{dbl_boxes['L'][0] - dbl_boxes['R'][2]:.2f}")
             job.set_record("FED", ";".join(
                 f"{2.0 * max(job.traces[s].radii_mm):.2f}" for s in ("R", "L")))
+            if ff is not None:
+                # The curve the lens must match is the radius in use (a press
+                # row's die is not 530 / D): FCRV says that radius in
+                # diopters, not the row's tag.
+                # A face form or a projection with no base curve has no
+                # radius: 0.00, a tracer's "not measured" (it was a division
+                # by zero, reported as lenses that could not be traced).
+                from .forming import DIOPTER_MM
+                R = ws.thermoform.base_radius_mm
+                D = DIOPTER_MM / R if R > 0.0 else 0.0
+                job.set_record("FCRV", f"{D:.2f};{D:.2f}")
+                job.set_record("ZTILT", ";".join(f"{tilts[s]:.2f}" for s in ("R", "L")))
+                job.set_record("CIRC", ";".join(f"{circs[s]:.2f}" for s in ("R", "L")))
+                formed_note = (" Formed: the radii are in the lens plane; FCRV, "
+                               "ZTILT and CIRC written.")
         except Exception as e:
             # Any failure, not only the tracer's ValueError: a geometry error
             # from a lens with a broken shape left the menu doing nothing.
@@ -12560,24 +13935,29 @@ class MainWindow(QMainWindow):
                 f"The lenses could not be traced: {e}")
             return
 
-        # Drill-mount holes (DRILL layer) → DRILLE features, in the binocular
-        # frame system: origin midway between the two lens centers, y-up.
+        # Drill-mount holes (DRILL layer) → DRILLE features, one record a
+        # hole: its eye, and its place from the box center of that lens's
+        # own trace, x to the right and y up (DCS 3.14 §5.5.2; see OmaDrill
+        # for what was written until 2.3). Of a formed front, both in the
+        # lens plane, where the trace is: the trace's own box there, so a
+        # hole agrees with the HBOX it is written beside.
         from .export.oma import OmaDrill
-        # Both coordinates from that center: y was taken from the scene
-        # origin, and on a front drawn 7 mm above it a hole 5 mm above its
-        # lens went to the lab as 12 mm (the import places the center at the
-        # origin, so the round trip moved the hole too).
-        center_r, center_l = boxing_center(od), boxing_center(os_lens)
-        origin_x = (center_r[0] + center_l[0]) / 2.0
-        origin_y = (center_r[1] + center_l[1]) / 2.0
+        from .forming import GROOVE_APEX_MM
+        flat_c = {"R": boxing_center(od), "L": boxing_center(os_lens)}
+        trace_c = {s: (0.5 * (boxes[s][0] + boxes[s][2]), 0.5 * (boxes[s][1] + boxes[s][3]))
+                   for s in ("R", "L")}
         holes = [c for c in self._doc_curves
                  if not c.mirrored and c.layer == Layer.DRILL
                  and c.kind == "circle" and c.nodes]
         # The Ghost's twin of a hole drawn on one eye only, as for the lenses.
         for c in holes + self._ghost_twins(self._active_ws, holes):
             hx, hy = c.nodes[0].x, c.nodes[0].y
+            side = min(("R", "L"), key=lambda s: abs(flat_c[s][0] - hx))
+            if ff is not None:
+                hx, hy = ff.lens_plane([[hx, hy]], flat_c[side][0], GROOVE_APEX_MM)[0]
             dia = 2.0 * (c.radius or 0.7)
-            job.drills.append(OmaDrill(hx - origin_x, -(hy - origin_y), dia))
+            job.drills.append(OmaDrill(float(hx - trace_c[side][0]),
+                                       float(-(hy - trace_c[side][1])), dia, eye=side))
 
         path, _ = QFileDialog.getSaveFileName(
             self, "Export OMA Trace", self._suggested(".oma"),
@@ -12588,12 +13968,17 @@ class MainWindow(QMainWindow):
         if path is None:
             return
         try:
-            with open(path, "w", encoding="ascii", newline="") as f:
-                f.write(build_oma(job))
+            text = build_oma(job)
+
+            def write(tmp):
+                with open(tmp, "w", encoding="ascii", newline="") as f:
+                    f.write(text)
+            _atomic_write(path, write)          # a failed write left a stub over a good trace
             size = (f"finished lens (+{depth:.2f} mm bevel)" if depth > 0.0
                     else "drawn lens opening (as-is)")
             self._status.showMessage(
-                f"OMA trace exported: {os.path.basename(path)} — {size}.")
+                f"OMA trace exported: {os.path.basename(path)} — {size}."
+                + formed_note)
         except Exception as e:
             QMessageBox.critical(self, "Could Not Export the OMA Trace",
                                  _write_error_text("export the OMA trace", path, e))
@@ -12620,14 +14005,16 @@ class MainWindow(QMainWindow):
         dlg.setWindowTitle("Print at 1:1 Scale")
         if _run_modal(dlg) != QDialog.DialogCode.Accepted:
             return
+        obverse = self.view.is_obverse()
         try:
-            clipped = self._render_1to1(printer, self._view_source_rect())
+            clipped = self._render_1to1(printer, self._view_source_rect(),
+                                        mirrored=obverse)
         except Exception as e:
             QMessageBox.critical(self, "Could Not Print", str(e))
             return
         self._status.showMessage(
-            "Printed at 1:1 — view larger than the page, edges cropped."
-            if clipped else "Printed at 1:1 scale.")
+            ("Printed at 1:1 — view larger than the page, edges cropped."
+             if clipped else "Printed at 1:1 scale.") + self._obverse_note(obverse))
 
     def _export_pdf_1to1(self):
         from PySide6.QtPrintSupport import QPrinter
@@ -12647,15 +14034,26 @@ class MainWindow(QMainWindow):
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
         printer.setOutputFileName(path)
+        obverse = self.view.is_obverse()
         try:
-            clipped = self._render_1to1(printer, self._view_source_rect())
+            clipped = self._render_1to1(printer, self._view_source_rect(),
+                                        mirrored=obverse)
         except Exception as e:
             QMessageBox.critical(self, "Could Not Export the PDF",
                                  _write_error_text("export the PDF", path, e))
             return
         self._status.showMessage(
             f"PDF exported at 1:1: {os.path.basename(path)}"
-            + ("  — view larger than the page, edges cropped." if clipped else ""))
+            + ("  — view larger than the page, edges cropped." if clipped else "")
+            + self._obverse_note(obverse))
+
+    def _obverse_note(self, obverse: bool) -> str:
+        """The status bar's word that an export or print shows the other face,
+        as View Obverse does."""
+        if not obverse:
+            return ""
+        return (f"  ·  the {_OBVERSE_FACE[self._active_ws.workspace_type]}, "
+                "as View Obverse shows it")
 
     def _has_visible_geometry(self) -> bool:
         if any(c.nodes and not c.mirrored and self.scene.is_layer_visible(c.layer)
@@ -12664,7 +14062,7 @@ class MainWindow(QMainWindow):
         return any(t.text.strip() and self.scene.is_layer_visible(t.layer)
                    for t in self._active_ws.doc_texts)
 
-    def _render_1to1(self, printer, source):
+    def _render_1to1(self, printer, source, mirrored: bool = False):
         """Paint the CURRENT VIEW at exactly 1 mm = 1 mm paper scale.
 
         Renders the visible-layer geometry (and its mirror ghost) and the
@@ -12672,6 +14070,9 @@ class MainWindow(QMainWindow):
         vectors in each layer's color at the uniform PDF line weight from
         Settings ▸ PDF, shifted by the vertical frame offset. A 50 mm ruler
         verifies the scale. Content larger than the page is cropped 1:1.
+        *mirrored* turns it left to right, as View Obverse shows the view
+        (2.0.1, the maker's call: the drawn face printed, where PNG export
+        followed the view); the ruler reads as ever.
         """
         from PySide6.QtCore import QRectF as _QRectF
         from PySide6.QtPrintSupport import QPrinter
@@ -12725,6 +14126,9 @@ class MainWindow(QMainWindow):
             painter.setClipRect(target)              # crop to the framed view
             painter.translate(target.left(), target.top())
             painter.scale(px_mm_x, px_mm_y)          # 1 mm = 1 mm
+            if mirrored:                             # about the framed view
+                painter.translate(source.width(), 0.0)
+                painter.scale(-1.0, 1.0)
             painter.translate(-source.left(), -source.top())
             cos_w = lw_mm * px_mm_x                   # cosmetic px == lw_mm on paper
             for c in draw:
@@ -13095,6 +14499,8 @@ class MainWindow(QMainWindow):
         for ws in self._workspaces:
             ws.view.setBackgroundBrush(QBrush(QColor(bg)))
             ws.scene.set_dark_mode(dark)
+            if ws.formed_view:
+                ws.scene.formed.clear()     # repainted in the new pens below
             ws.const_guides.set_dark_mode(dark)
             ws.boxing_guide.set_dark_mode(dark)
             ws.stock_guide.set_dark_mode(dark)
@@ -13107,6 +14513,9 @@ class MainWindow(QMainWindow):
             self._snap_palette.apply_theme()
         self._refresh_layer_panel()   # eye/padlock icons are theme-colored
         self._update_readiness()      # dot colors are theme-aware
+        for h in self._fm_headers:
+            h.setStyleSheet(f"color: {theme.color('chrome.muted')};")
+        self._refresh_formed()        # the overlay's pens are the layers' colors
 
     def _toggle_dark_mode(self, dark: bool):
         self._dark_mode = dark

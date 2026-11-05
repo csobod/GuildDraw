@@ -6,6 +6,10 @@ comma, and refused outright by the HUD fields.
 """
 import math
 
+# A typed length past ten meters is no drawing's: a move of 1e300 was taken,
+# the geometry left the canvas, and Fit silently did nothing (2.0.1).
+_MAX_TYPED_MM = 10_000.0
+
 
 def typed_char(text: str) -> str:
     """One typed character as a number buffer takes it (',' becomes '.')."""
@@ -13,10 +17,10 @@ def typed_char(text: str) -> str:
 
 
 def parse_typed(text: str) -> float | None:
-    """The number in *text*, a comma taken as the decimal point; None when it
-    is not a finite number."""
+    """The length in *text*, a comma taken as the decimal point; None when it
+    is not a finite number or lies past ten meters either way."""
     try:
         v = float(text.strip().replace(",", "."))
     except (ValueError, TypeError, AttributeError):
         return None
-    return v if math.isfinite(v) else None
+    return v if math.isfinite(v) and abs(v) <= _MAX_TYPED_MM else None

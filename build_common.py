@@ -38,6 +38,8 @@ _HIDDEN_FRAMEDRAFT = [
     "framedraft.tooltips",
     "framedraft.collapsible",
     "framedraft.typed",
+    "framedraft.forming",
+    "framedraft.canvas.formed",
     "framedraft.canvas.items",
     "framedraft.canvas.mirror",
     "framedraft.canvas.scene",

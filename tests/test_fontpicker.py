@@ -178,3 +178,44 @@ def test_picking_from_the_list_commits_that_family(combo):
     combo.completer().activated[str].emit(fam)
     combo.lineEdit().setText(fam)
     assert combo.current_family() == fam
+
+
+# ---------------------------------------------------- the settled signal
+
+def test_family_changed_fires_when_a_family_settles_not_per_keystroke(combo):
+    """Anything that reacts to the box while the maker types listens here —
+    never to currentTextChanged with a current_family() call behind it, which
+    commits the half-typed name and eats the rest of the typing."""
+    fam = next((f for f in font_families() if len(f) > 4), None)
+    if fam is None:
+        pytest.skip("no font family long enough to half-type")
+    fired = []
+    combo.family_changed.connect(fired.append)
+    combo.lineEdit().clear()
+    _type(combo, fam[:3])
+    assert fired == [], "typing settled a family"
+    settled = combo.current_family()
+    assert settled.lower().startswith(fam[:3].lower())
+    assert fired == [settled]
+
+
+def test_typing_in_the_text_dialogs_font_box_keeps_every_keystroke():
+    """The 2.0.0 font-box bug: the Text dialog's not-installed note refreshed
+    on every keystroke by asking for the committed family, so the first
+    character became the first family it started and nothing typed after it
+    landed. The dialog's box must type like the bare one."""
+    from framedraft.tools.text import TextDialog
+    fam = next((f for f in font_families() if len(f) > 4), None)
+    if fam is None:
+        pytest.skip("no font family long enough to half-type")
+    stem = fam[:3]
+    dlg = TextDialog()
+    box = dlg._font_combo
+    box.lineEdit().clear()
+    _type(box, stem)
+    shown = box.lineEdit().text()
+    assert shown.lower().startswith(stem.lower()), "a keystroke was eaten"
+    assert len(shown) > len(stem), "nothing was completed"
+    assert box.lineEdit().selectedText() == shown[len(stem):]
+    assert dlg.values()["family"].lower().startswith(stem.lower())
+    dlg.deleteLater()

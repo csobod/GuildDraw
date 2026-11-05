@@ -145,7 +145,10 @@ def test_the_oma_trace_measures_drill_holes_from_the_lenses(win, monkeypatch, tm
                         staticmethod(lambda *a, **k: (str(out), "")))
     win._export_oma()
     [hole] = parse_oma(out.read_text()).drills
-    assert (hole.x, hole.y) == pytest.approx((-22.0, 5.0), abs=1e-6)
+    # From its own lens's box center, on its own eye (2.3: the lab standard's
+    # reading; it was written from the frame's center, x −22, tagged B).
+    assert hole.eye == "R"
+    assert (hole.x, hole.y) == pytest.approx((0.0, 5.0), abs=1e-6)
 
 
 def test_traced_lenses_replace_the_drawn_ones_when_asked(win, monkeypatch, tmp_path):
@@ -161,7 +164,7 @@ def test_traced_lenses_replace_the_drawn_ones_when_asked(win, monkeypatch, tmp_p
     import framedraft.app as app_mod
     monkeypatch.setattr(app_mod.QFileDialog, "getOpenFileName",
                         staticmethod(lambda *a, **k: (str(src), "")))
-    monkeypatch.setattr(win, "_ask_oma_import_bevel", lambda d: 0.0)
+    monkeypatch.setattr(win, "_ask_oma_import_bevel", lambda d, **_k: 0.0)
     asked = []
     monkeypatch.setattr(win, "_ask_oma_import_mode",
                         lambda n: asked.append(n) or "replace")

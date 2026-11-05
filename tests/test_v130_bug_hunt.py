@@ -353,13 +353,16 @@ def test_prefs_load_hands_out_copies(tmp_path, monkeypatch):
     assert "REF" not in prefs_mod.DEFAULTS["catalog_pdf"]["front_layers"]
 
 
-def test_gdraw_refuses_an_oversized_member_before_inflating_it(tmp_path):
-    from framedraft.export import svg as svg_mod
+def test_gdraw_refuses_an_oversized_member_before_inflating_it(tmp_path, monkeypatch):
+    # A .gdraw tab has its own cap since 2.0.1 (_MAX_TAB_BYTES, larger than a
+    # loose SVG's); held small here so the bomb stays small.
+    from framedraft.export import gdraw as gdraw_mod
     from framedraft.export.gdraw import load_gdraw
+    monkeypatch.setattr(gdraw_mod, "_MAX_TAB_BYTES", 8 * 1024 * 1024)
     big = tmp_path / "bomb.gdraw"
     with zipfile.ZipFile(big, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", '{"version": 1, "active_tab": "front"}')
-        zf.writestr("front.svg", b"0" * (svg_mod._MAX_SVG_BYTES + 1024))
+        zf.writestr("front.svg", b"0" * (gdraw_mod._MAX_TAB_BYTES + 1024))
     assert big.stat().st_size < 1024 * 1024
     res = load_gdraw(str(big))
     assert res["errors"] and "Refusing" in res["errors"][0]

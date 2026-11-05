@@ -14,9 +14,9 @@ from framedraft.collapsible import CollapsibleBox
 
 _SECTIONS = {
     "Drawing", "Layers", "Measurements · front", "Measurements · temple",
-    "Construction (Forming)", "Boxing System", "Stock Blank", "Pad Block",
+    "Nose Fit", "Boxing System", "Forming", "Tip Bend", "Stock Blank", "Pad Block",
     "Frame Fill", "Inlay Fill", "Lens Fill", "Reference Images", "Calibration",
-    "Place Hole",
+    "Place Hole", "Measurements · formed",
 }
 
 

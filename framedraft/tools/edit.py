@@ -25,6 +25,9 @@ class EditTool(QObject):
         self._handles:     list[HandleDot] = []
         self._lines:       list            = []
         self._line_data:   list[dict]      = []
+        # The same entries by (id(curve), node index): a drag tick redraws
+        # the lines at the moved node and its neighbors, not the curve's all.
+        self._lines_at:    dict            = {}
         self._smooth_mode  = True
         self._selected_dot: NodeDot | None = None
         self._node_edit_blocked_fn = None   # (Curve) -> bool; True suppresses node dots
@@ -176,11 +179,14 @@ class EditTool(QObject):
         if curve.closed:
             pairs.append(n - 1)
 
-        best_d   = float("inf")
-        best_seg = -1
-        best_t   = 0.5
-
-        SAMPLES = 200
+        # Each segment's control points, and a floor under how near any point
+        # of it can come to the cursor: the segment lies inside the box of
+        # its control points. Scanning 200 points on every segment was half
+        # a second at 5000 nodes; only a segment whose floor is no farther
+        # than the nearest point found yet can hold a nearer one.
+        segs:   list = []
+        floors: list = []
+        first, first_floor = -1, float("inf")
         for i in pairs:
             a  = nodes[i]
             b  = nodes[(i + 1) % n]
@@ -188,16 +194,49 @@ class EditTool(QObject):
             p1 = (a.cp_out.x, a.cp_out.y) if a.cp_out else p0
             p2 = (b.cp_in.x,  b.cp_in.y)  if b.cp_in  else (b.x, b.y)
             p3 = (b.x, b.y)
+            segs.append((p0, p1, p2, p3))
+            gx = max(min(p0[0], p1[0], p2[0], p3[0]) - mx,
+                     mx - max(p0[0], p1[0], p2[0], p3[0]), 0.0)
+            gy = max(min(p0[1], p1[1], p2[1], p3[1]) - my,
+                     my - max(p0[1], p1[1], p2[1], p3[1]), 0.0)
+            floor = math.hypot(gx, gy)
+            floors.append(floor)
+            if floor < first_floor:
+                first, first_floor = len(segs) - 1, floor
+        if first < 0:
+            return False
+
+        best_d   = float("inf")
+        best_seg = -1
+        best_s   = 0
+
+        SAMPLES = 200
+
+        def scan(j):
+            # The nearest of the segment's 201 points; on a tie the one met
+            # first in segment order, as the scan of every segment chose.
+            nonlocal best_d, best_seg, best_s
+            p0, p1, p2, p3 = segs[j]
             for s in range(SAMPLES + 1):
                 t  = s / SAMPLES
                 bx = self._cubic(p0[0], p1[0], p2[0], p3[0], t)
                 by = self._cubic(p0[1], p1[1], p2[1], p3[1], t)
                 d  = math.hypot(mx - bx, my - by)
-                if d < best_d:
-                    best_d, best_seg, best_t = d, i, t
+                if d < best_d or (d == best_d and (j, s) < (best_seg, best_s)):
+                    best_d, best_seg, best_s = d, j, s
+
+        scan(first)
+        # A hair over the nearest distance: a point evaluated in floating
+        # point can sit a few ulps outside its control box.
+        reach = best_d + 1e-9 * (1.0 + abs(mx) + abs(my) + best_d)
+        for j, floor in enumerate(floors):
+            if j != first and floor <= reach:
+                scan(j)
 
         if best_seg < 0:
             return False
+        best_seg = pairs[best_seg]
+        best_t   = best_s / SAMPLES
 
         a  = nodes[best_seg]
         b  = nodes[(best_seg + 1) % n]
@@ -363,7 +402,7 @@ class EditTool(QObject):
             dragged_node = curve.nodes[i]
             is_open_endpoint = (not curve.closed) and i in (0, n_nodes - 1)
             dot = NodeDot(
-                curve, i, self._node_moved,
+                curve, i, lambda c, i=i: self._node_moved(c, i),
                 on_drag_start = self.about_to_modify.emit,
                 on_clicked    = self._on_node_clicked,
                 on_snap       = self._make_ep_snap_fn(dragged_node, is_open_endpoint),
@@ -385,7 +424,8 @@ class EditTool(QObject):
                 if cp is None:
                     continue
 
-                hdot = HandleDot(curve, i, which, self._node_moved,
+                hdot = HandleDot(curve, i, which,
+                                 lambda c, i=i: self._node_moved(c, i),
                                  on_drag_start=self.about_to_modify.emit)
                 hdot.set_smooth(self._smooth_mode)
                 self._scene.addItem(hdot)
@@ -398,14 +438,16 @@ class EditTool(QObject):
                 line.setFlag(line.GraphicsItemFlag.ItemIsSelectable, False)
                 self._lines.append(line)
 
-                self._line_data.append({
+                entry = {
                     "curve":      curve,
                     "node_index": i,
                     "node_dot":   node_dots[i],
                     "which":      which,
                     "handle_dot": hdot,
                     "line_item":  line,
-                })
+                }
+                self._line_data.append(entry)
+                self._lines_at.setdefault((id(curve), i), []).append(entry)
 
                 if which == "cp_out":
                     cp_out_dot = hdot
@@ -420,24 +462,28 @@ class EditTool(QObject):
     # Movement callback
     # ------------------------------------------------------------------
 
-    def _node_moved(self, curve: Curve):
+    def _node_moved(self, curve: Curve, index: int):
+        """A dot at node *index* moved: the node with its handles, or a
+        handle with its sibling, all at that node. Its lines are redrawn, and
+        its neighbors' as a margin (two more apiece). Redrawing every line on
+        the curve, 2 a node, cost 96 to 127 ms a tick at 5000 nodes."""
         self._scene.refresh_curve(curve)
 
-        for entry in self._line_data:
-            if entry["curve"] is not curve:
-                continue
-            node = curve.nodes[entry["node_index"]]
-            cp   = getattr(node, entry["which"])
-            if cp is not None:
-                entry["handle_dot"].set_pos_silent(cp.x, cp.y)
-
-        self._refresh_lines()
-
-    def _refresh_lines(self):
-        for entry in self._line_data:
-            node = entry["curve"].nodes[entry["node_index"]]
-            hp   = entry["handle_dot"].pos()
-            entry["line_item"].setLine(node.x, node.y, hp.x(), hp.y())
+        n = len(curve.nodes)
+        near = {index}
+        for j in (index - 1, index + 1):
+            if curve.closed:
+                near.add(j % n)
+            elif 0 <= j < n:
+                near.add(j)
+        for j in sorted(near):
+            for entry in self._lines_at.get((id(curve), j), ()):
+                node = curve.nodes[j]
+                cp   = getattr(node, entry["which"])
+                if cp is not None:
+                    entry["handle_dot"].set_pos_silent(cp.x, cp.y)
+                hp = entry["handle_dot"].pos()
+                entry["line_item"].setLine(node.x, node.y, hp.x(), hp.y())
 
     # ------------------------------------------------------------------
     # Cleanup
@@ -451,4 +497,5 @@ class EditTool(QObject):
         self._handles.clear()
         self._lines.clear()
         self._line_data.clear()
+        self._lines_at.clear()
         self._selected_dot = None

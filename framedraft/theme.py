@@ -49,6 +49,9 @@ _TOKENS: dict[str, tuple[str, str]] = {
     # print. Chosen for contrast on chrome.bg (about 5:1 in both modes); the
     # gray #888 it replaces read at 2.5:1 on the light chrome.
     "chrome.muted":        ("#6e5520", "#9a917f"),
+    # A warning in the dock's prose (a formed lens past ISO's tolerance, a
+    # bend out of range): a red that holds 4.5:1 on the chrome in both modes.
+    "chrome.warning":      ("#9b2d20", "#e05555"),
     # A dock section's header under the pointer (Road to 2.0, item 5):
     # GuildModel's values, so the two docks' fold headers answer alike.
     "chrome.fold_hover":   ("#8a6d2f", "#e8c07a"),
