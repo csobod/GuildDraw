@@ -417,8 +417,12 @@ def test_the_line_tool_places_no_zero_length_segment(shown):
     _click(v, QPointF(15, 0))
     _click(v, QPointF(15, 0))                     # a slow second click
     _key(v, Qt.Key.Key_Return)
-    pts = [(round(n.x, 4), round(n.y, 4)) for n in ws.doc_curves[-1].nodes]
-    assert pts == [(0.0, 0.0), (15.0, 0.0)]
+    pts = [(n.x, n.y) for n in ws.doc_curves[-1].nodes]
+    # Two nodes, where the clicks were to the pixel they landed on (a click
+    # is a whole pixel, and 15 mm fell between two on Windows' viewport).
+    assert len(pts) == 2
+    assert pts[0] == pytest.approx((0.0, 0.0), abs=0.3)
+    assert pts[1] == pytest.approx((15.0, 0.0), abs=0.3)
 
 
 def test_deleting_a_node_of_a_closed_triangle_is_refused(shown):
@@ -886,9 +890,12 @@ def _area(c) -> float:
 def test_an_inward_offset_of_a_cornered_spline_does_not_cross_itself():
     out = G.offset_curve(_cornered([(0, 0), (10, 0), (10, 6), (0, 6)]), -0.5)
     assert not _crosses_itself(out)
-    pts = sorted((n.x, n.y) for n in out.nodes)
-    assert pts == pytest.approx([(0.5, 0.5), (0.5, 5.5), (9.5, 0.5), (9.5, 5.5)],
-                                abs=1e-9)
+    # Rounded before the sort (a last-bit difference reordered equal x's),
+    # and compared flat: approx takes no list of pairs, which showed only
+    # where the floats were not exactly these (Windows).
+    pts = sorted((round(n.x, 9), round(n.y, 9)) for n in out.nodes)
+    assert [v for p in pts for v in p] == pytest.approx(
+        [0.5, 0.5, 0.5, 5.5, 9.5, 0.5, 9.5, 5.5], abs=1e-9)
 
 
 def test_an_outward_offset_of_a_cornered_spline_keeps_its_bevels():
@@ -918,8 +925,8 @@ def test_an_outward_offset_cuts_its_inside_corner_wherever_the_seam_is(start):
 def test_an_open_offset_trims_its_inside_corner_only():
     src = _cornered([(0, 0), (10, 0), (10, 10)], closed=False)
     inside = G.offset_curve(src, 1.0)
-    assert [(n.x, n.y) for n in inside.nodes] == pytest.approx(
-        [(0, 1), (9, 1), (9, 10)], abs=1e-9)
+    assert [v for n in inside.nodes for v in (n.x, n.y)] == pytest.approx(
+        [0, 1, 9, 1, 9, 10], abs=1e-9)
     assert len(G.offset_curve(src, -1.0).nodes) == 4     # the bevel stays
 
 
